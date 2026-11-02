@@ -1,0 +1,283 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { ethers } from 'ethers';
+import { compileEscrowContract } from './helpers/compiler.mjs';
+import {
+  getProvider,
+  getWallet,
+  isNodeReachable,
+  hasDeployedCode,
+  assertLocalChain,
+  HARDHAT_CHAIN_ID,
+  HARDHAT_MNEMONIC,
+} from './helpers/chain.mjs';
+import { getSeededListings } from './helpers/seed-data.mjs';
+import { EscrowDatabase } from '../server/db.mjs';
+import { canonicalizeAuctionId } from '../server/app.mjs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const ROOT_DIR = path.resolve(__dirname, '..');
+const DATA_DIR = path.resolve(ROOT_DIR, 'data');
+const DEPLOYMENT_PATH = path.resolve(DATA_DIR, 'deployment.json');
+
+async function main() {
+  console.log('[BidPark Deploy] Starting deployment process...');
+
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+
+  const provider = getProvider();
+
+  // Verify node accessibility
+  const reachable = await isNodeReachable();
+  if (!reachable) {
+    throw new Error(
+      'Local blockchain node is not responding at http://127.0.0.1:8545. Please run `npm run chain` first.'
+    );
+  }
+
+  // Security guardrail: verify RPC chainId is strictly 31337 before signing anything
+  await assertLocalChain(provider);
+
+  const deployerWallet = getWallet(0, provider);
+  const buyerWallet = getWallet(1, provider);
+  console.log(`[BidPark Deploy] Deployer account (Vendor index 0): ${deployerWallet.address}`);
+  console.log(`[BidPark Deploy] Demo buyer account (Buyer index 1): ${buyerWallet.address}`);
+
+  const db = new EscrowDatabase();
+
+  // Compile Solidity contract with Shanghai target
+  console.log('[BidPark Deploy] Compiling contracts/ParkingAuctionEscrow.sol (solc, EVM: shanghai)...');
+  const { abi, bytecode } = compileEscrowContract();
+
+  // Check for existing valid deployment (idempotence)
+  let existingDeployment = null;
+  if (fs.existsSync(DEPLOYMENT_PATH)) {
+    try {
+      existingDeployment = JSON.parse(fs.readFileSync(DEPLOYMENT_PATH, 'utf8'));
+    } catch {
+      existingDeployment = null;
+    }
+  }
+
+  let contractAddress = null;
+  let deploymentBlock = 0;
+  let deploymentTxHash = null;
+  let isFreshDeploy = false;
+
+  if (
+    existingDeployment &&
+    existingDeployment.contractAddress &&
+    existingDeployment.deploymentTxHash &&
+    (await hasDeployedCode(existingDeployment.contractAddress, provider))
+  ) {
+    // Verify that the deployment transaction exists in the current node instance
+    const deployedTx = await provider.getTransaction(existingDeployment.deploymentTxHash);
+    if (deployedTx) {
+      console.log(
+        `[BidPark Deploy] Active contract code and deployment transaction verified at ${existingDeployment.contractAddress}. Reusing deployment.`
+      );
+      contractAddress = existingDeployment.contractAddress;
+      deploymentBlock = existingDeployment.deploymentBlock ?? 0;
+      deploymentTxHash = existingDeployment.deploymentTxHash;
+    } else {
+      console.log('[BidPark Deploy] Chain history reset detected (fresh node). Re-deploying.');
+      isFreshDeploy = true;
+    }
+  } else {
+    isFreshDeploy = true;
+  }
+
+  if (isFreshDeploy) {
+    console.log('[BidPark Deploy] Deploying new ParkingAuctionEscrow instance...');
+    const factory = new ethers.ContractFactory(abi, bytecode, deployerWallet);
+    const contract = await factory.deploy();
+    await contract.waitForDeployment();
+    contractAddress = await contract.getAddress();
+    const receipt = await contract.deploymentTransaction()?.wait();
+    deploymentBlock = receipt ? receipt.blockNumber : await provider.getBlockNumber();
+    deploymentTxHash = contract.deploymentTransaction()?.hash || receipt?.hash || null;
+
+    console.log(
+      `[BidPark Deploy] ParkingAuctionEscrow deployed at: ${contractAddress} (block ${deploymentBlock}, tx: ${deploymentTxHash})`
+    );
+
+    // On fresh deploy, clear all prior listing records for this local DB to purge stale same-address data
+    const cleared = db.clearAllListings();
+    if (cleared > 0) {
+      console.log(`[BidPark Deploy] Cleared ${cleared} prior listing records to seed clean database.`);
+    }
+
+    db.setMeta('active_contract_address', contractAddress);
+    db.setMeta('deployment_block', String(deploymentBlock));
+    if (deploymentTxHash) {
+      db.setMeta('deployment_tx_hash', deploymentTxHash);
+    }
+    db.setMeta(`seed_status_${contractAddress}`, 'pending');
+  }
+
+  // Write deployment.json artifact
+  const deploymentConfig = {
+    chainId: HARDHAT_CHAIN_ID,
+    contractAddress,
+    deploymentTxHash,
+    abi,
+    currency: 'ETH',
+    networkName: 'Hardhat Local',
+    demoMnemonic: HARDHAT_MNEMONIC,
+    demoAccountIndex: 1,
+    deploymentBlock,
+  };
+
+  fs.writeFileSync(DEPLOYMENT_PATH, JSON.stringify(deploymentConfig, null, 2), 'utf8');
+  console.log(`[BidPark Deploy] Deployment artifact updated: ${DEPLOYMENT_PATH}`);
+
+  const contract = new ethers.Contract(contractAddress, abi, deployerWallet);
+
+  // Check seed status and resume any unfinished seed auctions or initial bids
+  const seedStatusKey = `seed_status_${contractAddress}`;
+  const isSeedDone = db.getMeta(seedStatusKey) === 'completed';
+
+  const currentBlock = await provider.getBlock('latest');
+  const baseTimestamp = currentBlock ? currentBlock.timestamp : Math.floor(Date.now() / 1000);
+  const seedListings = getSeededListings(baseTimestamp);
+
+  // Check if all seed listings are present in SQLite
+  let allPresent = isSeedDone;
+  if (allPresent) {
+    for (const item of seedListings) {
+      const found = db.getListingByMetadataHash(contractAddress, item.metadataHash);
+      if (!found) {
+        allPresent = false;
+        break;
+      }
+    }
+  }
+
+  if (isFreshDeploy || !allPresent) {
+    console.log('[BidPark Deploy] Seeding or resuming Austin parking listings...');
+    const nextOnchainId = await contract.nextAuctionId();
+    const totalOnchain = Number(nextOnchainId) - 1;
+
+    for (let i = 0; i < seedListings.length; i++) {
+      const item = seedListings[i];
+      let auctionId = null;
+
+      // Check 1: Is this seed listing already registered in SQLite?
+      const existingInDb = db.getListingByMetadataHash(contractAddress, item.metadataHash);
+      if (existingInDb) {
+        const canonicalDbId = canonicalizeAuctionId(existingInDb.auction_id);
+        if (canonicalDbId) {
+          const onchain = await contract.auctions(canonicalDbId);
+          if (
+            onchain &&
+            onchain.owner !== ethers.ZeroAddress &&
+            onchain.metadataHash.toLowerCase() === item.metadataHash.toLowerCase()
+          ) {
+            auctionId = canonicalDbId;
+          }
+        }
+      }
+
+      // Check 2: If not in DB, does it already exist onchain from an interrupted run?
+      if (!auctionId && totalOnchain > 0) {
+        for (let candidateId = 1; candidateId <= totalOnchain; candidateId++) {
+          try {
+            const onchain = await contract.auctions(candidateId);
+            if (
+              onchain &&
+              onchain.owner !== ethers.ZeroAddress &&
+              onchain.metadataHash.toLowerCase() === item.metadataHash.toLowerCase()
+            ) {
+              auctionId = String(candidateId);
+              break;
+            }
+          } catch {
+            // continue scan
+          }
+        }
+      }
+
+      // If not yet onchain, create it now
+      if (!auctionId) {
+        console.log(`  -> Creating auction [${i + 1}/${seedListings.length}]: "${item.metadata.title}"`);
+        const tx = await contract.createAuction(
+          item.metadataHash,
+          item.minBidWei,
+          item.bidEnd,
+          item.parkingStart,
+          item.parkingEnd
+        );
+        const receipt = await tx.wait();
+
+        for (const log of receipt.logs) {
+          try {
+            const parsed = contract.interface.parseLog(log);
+            if (parsed && parsed.name === 'AuctionCreated') {
+              auctionId = canonicalizeAuctionId(String(parsed.args.id));
+              break;
+            }
+          } catch {
+            // not this event
+          }
+        }
+
+        if (!auctionId) {
+          const nextId = await contract.nextAuctionId();
+          auctionId = canonicalizeAuctionId(String(Number(nextId) - 1));
+        }
+      } else {
+        console.log(
+          `  -> Resuming existing seed auction #${auctionId} [${i + 1}/${seedListings.length}]: "${item.metadata.title}"`
+        );
+      }
+
+      // Upsert metadata record into SQLite
+      db.upsertListing({
+        auctionId,
+        contractAddress,
+        metadataHash: item.metadataHash,
+        title: item.metadata.title,
+        address: item.metadata.address,
+        neighborhood: item.metadata.neighborhood,
+        latitude: item.metadata.latitude,
+        longitude: item.metadata.longitude,
+        description: item.metadata.description,
+        image: item.metadata.image,
+        kind: item.metadata.kind,
+        amenities: item.metadata.amenities,
+      });
+
+      // Place initial bid if configured and not yet placed
+      if (item.initialBidEth) {
+        const onchain = await contract.auctions(auctionId);
+        if (onchain && onchain.highestBidder === ethers.ZeroAddress) {
+          console.log(
+            `     Placing initial bid of ${item.initialBidEth} ETH by demo buyer (${buyerWallet.address.slice(0, 8)}...)`
+          );
+          const buyerContract = contract.connect(buyerWallet);
+          const bidTx = await buyerContract.bid(auctionId, {
+            value: ethers.parseEther(item.initialBidEth),
+          });
+          await bidTx.wait();
+        }
+      }
+    }
+
+    db.setMeta(seedStatusKey, 'completed');
+    console.log('[BidPark Deploy] All 7 Austin parking listings seeded and verified.');
+  } else {
+    console.log('[BidPark Deploy] Seeding already complete for this contract deployment. Skipping.');
+  }
+
+  db.close();
+  console.log('[BidPark Deploy] Deployment and seeding complete.');
+}
+
+main().catch((err) => {
+  console.error('[BidPark Deploy] Error:', err);
+  process.exit(1);
+});
