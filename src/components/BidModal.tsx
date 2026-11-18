@@ -9,7 +9,7 @@ import {
 import { formatEther, parseEther } from 'ethers';
 import { useWallet } from '../context/WalletContext';
 import type { Listing } from '../types';
-import { formatEth } from '../utils/formatters';
+import { formatBalance, formatEth } from '../utils/formatters';
 
 interface BidModalProps {
   listing: Listing | null;
@@ -24,7 +24,7 @@ export const BidModal: React.FC<BidModalProps> = ({
   onSubmitBid,
   isSubmitting,
 }) => {
-  const { walletState, wrongChain } = useWallet();
+  const { walletState, wrongChain, balanceRead } = useWallet();
   const [bidAmount, setBidAmount] = useState<string>('');
   const [localError, setLocalError] = useState<string | null>(null);
 
@@ -116,7 +116,12 @@ export const BidModal: React.FC<BidModalProps> = ({
       return;
     }
 
-    const balanceNum = parseEther(walletState.balance || '0');
+    // Only a balance from a successful, current read may decide bid affordability.
+    if (balanceRead.status !== 'success' || walletState.balance === null) {
+      setLocalError('Your wallet balance is unavailable or may be out of date. Refresh and try again.');
+      return;
+    }
+    const balanceNum = parseEther(walletState.balance);
     if (numericBid > balanceNum) {
       setLocalError(
         `Insufficient ETH balance (${formatEth(walletState.balance)} ETH available).`
@@ -180,7 +185,7 @@ export const BidModal: React.FC<BidModalProps> = ({
             <div className="benchmark-col">
               <span className="benchmark-label">Your Wallet Balance</span>
               <span className="benchmark-val">
-                {formatEth(walletState.balance)} ETH
+                {formatBalance(walletState.balance, balanceRead)}
               </span>
             </div>
           </div>

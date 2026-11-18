@@ -1,11 +1,14 @@
 import React, { useEffect, useRef } from 'react';
-import { SearchX } from 'lucide-react';
+import { AlertTriangle, SearchX } from 'lucide-react';
 import type { Listing } from '../types';
+import type { ReadStatus } from '../utils/readState';
 import { SpotCard } from './SpotCard';
 
 interface SpotGridProps {
   listings: Listing[];
-  isLoading: boolean;
+  status: ReadStatus;
+  error: string | null;
+  onRetry: () => void;
   currentAddress: string | null;
   selectedListingId: string | null;
   onSelectListing: (listing: Listing) => void;
@@ -17,7 +20,9 @@ interface SpotGridProps {
 
 export const SpotGrid: React.FC<SpotGridProps> = ({
   listings,
-  isLoading,
+  status,
+  error,
+  onRetry,
   currentAddress,
   selectedListingId,
   onSelectListing,
@@ -37,7 +42,7 @@ export const SpotGrid: React.FC<SpotGridProps> = ({
     }
   }, [selectedListingId]);
 
-  if (isLoading) {
+  if (status === 'loading') {
     return (
       <div className="spot-grid-loading" aria-busy="true" aria-label="Loading parking spots">
         {Array.from({ length: 6 }).map((_, i) => (
@@ -55,9 +60,45 @@ export const SpotGrid: React.FC<SpotGridProps> = ({
     );
   }
 
+  if (status === 'failed') {
+    return (
+      <div className="empty-spots-state spots-unavailable-state" role="alert">
+        <div className="empty-icon-wrap">
+          <AlertTriangle size={36} />
+        </div>
+        <h3 className="empty-title">Parking auctions are unavailable</h3>
+        <p className="empty-desc">
+          The listings could not be loaded{error ? `: ${error}` : ''}. This is not an empty marketplace.
+        </p>
+        <button type="button" className="btn-empty-reset" onClick={onRetry}>
+          Retry listings
+        </button>
+      </div>
+    );
+  }
+
+  const staleNote = status === 'stale' && (
+    <p className="spots-stale-note" role="status">
+      Showing the last known listings. They may be out of date.
+    </p>
+  );
+
+  if (listings.length === 0 && status === 'empty') {
+    return (
+      <div className="empty-spots-state">
+        <div className="empty-icon-wrap">
+          <SearchX size={36} />
+        </div>
+        <h3 className="empty-title">No parking auctions are listed yet</h3>
+        <p className="empty-desc">The listings service responded and reported no auctions.</p>
+      </div>
+    );
+  }
+
   if (listings.length === 0) {
     return (
       <div className="empty-spots-state">
+        {staleNote}
         <div className="empty-icon-wrap">
           <SearchX size={36} />
         </div>
@@ -74,6 +115,7 @@ export const SpotGrid: React.FC<SpotGridProps> = ({
 
   return (
     <div className="spot-grid" ref={containerRef}>
+      {staleNote}
       {listings.map((listing) => (
         <SpotCard
           key={listing.id}
