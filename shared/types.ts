@@ -1,4 +1,5 @@
 import type { InterfaceAbi } from 'ethers';
+import type { ConfirmationPolicy, NetworkProfileId } from './network-profiles.mjs';
 
 export interface SpotMetadata {
   title: string;
@@ -28,13 +29,16 @@ export interface Listing extends SpotMetadata {
 }
 
 export interface Config {
+  profile: NetworkProfileId;
+  confirmation: ConfirmationPolicy;
+  explorerUrl: string | null;
   chainId: number;
   contractAddress: string;
   abi: InterfaceAbi;
   currency: 'ETH';
   networkName: string;
-  demoMnemonic: string;
-  demoAccountIndex: number;
+  demoMnemonic?: string;
+  demoAccountIndex?: number;
   deploymentBlock: number;
   deploymentBlockHash: string;
 }

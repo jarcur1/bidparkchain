@@ -11,6 +11,7 @@ import {
 import { useWallet } from '../context/WalletContext';
 import { DEMO_ACCOUNTS } from '../utils/constants';
 import { formatBalance, shortenAddress } from '../utils/formatters';
+import { webProfile } from '../utils/networkProfile';
 import { Dialog } from './Dialog';
 
 interface WalletModalProps {
@@ -57,7 +58,7 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
                 Connect & Switch Wallet
               </h3>
               <p className="modal-subheading">
-                Local Hardhat Testnet (Chain ID 31337)
+                {webProfile.id === 'local' ? 'Local Hardhat Testnet' : webProfile.networkName} (Chain ID {webProfile.chainId})
               </p>
             </div>
           </div>
@@ -77,7 +78,7 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
             <div className="active-badge-row">
               <span className="active-status-dot" />
               <span className="active-type-text">
-                {walletState.type === 'local' ? 'Local Test Wallet' : 'Injected Browser Wallet'}
+                {import.meta.env.VITE_BIDPARK_PROFILE !== 'sepolia' && walletState.type === 'local' ? 'Local Test Wallet' : 'Injected Browser Wallet'}
               </span>
             </div>
             <div className="active-balance-pill">
@@ -103,7 +104,7 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
           {wrongChain && (
             <div className="wallet-wrong-chain-notice" role="alert">
               <ShieldAlert size={15} />
-              <span>Connected to wrong chain! Contract requires Hardhat 31337.</span>
+              <span>Connected to wrong chain! Contract requires {webProfile.id === 'local' ? 'Hardhat' : webProfile.networkName} {webProfile.chainId}.</span>
               <button
                 type="button"
                 className="btn-switch-network-inline"
@@ -116,6 +117,7 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
         </div>
 
         {/* Option 1: Local Test Wallets (Zero setup) */}
+        {import.meta.env.VITE_BIDPARK_PROFILE !== 'sepolia' && (
         <div className="wallet-section">
           <div className="section-title-row">
             <span className="section-label">Local Test Wallets (Instant, Zero Setup)</span>
@@ -165,6 +167,7 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
             })}
           </div>
         </div>
+        )}
 
         {/* Option 2: Browser Injected Wallet */}
         <div className="wallet-section">
@@ -211,7 +214,9 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
         <div className="wallet-notice-footer">
           <ShieldCheck size={14} />
           <span>
-            Test keys only. Never deposit real mainnet funds. All transactions execute against local RPC.
+            {import.meta.env.VITE_BIDPARK_PROFILE !== 'sepolia'
+              ? 'Test keys only. Never deposit real mainnet funds. All transactions execute against local RPC.'
+              : 'Sepolia test ETH only. Never deposit real mainnet funds.'}
           </span>
         </div>
     </Dialog>

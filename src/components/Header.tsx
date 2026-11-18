@@ -13,6 +13,7 @@ import type { AppTab } from '../types';
 import { DEMO_ACCOUNTS } from '../utils/constants';
 import { formatBalance, shortenAddress } from '../utils/formatters';
 import type { ReadStatus } from '../utils/readState';
+import { webProfile } from '../utils/networkProfile';
 
 interface HeaderProps {
   currentTab: AppTab;
@@ -40,7 +41,7 @@ export const Header: React.FC<HeaderProps> = ({
   const { walletState, wrongChain, balanceRead } = useWallet();
 
   const activeDemo =
-    walletState.type === 'local'
+    import.meta.env.VITE_BIDPARK_PROFILE !== 'sepolia' && walletState.type === 'local'
       ? DEMO_ACCOUNTS.find((a) => a.index === walletState.localAccountIndex)
       : null;
 
@@ -124,7 +125,7 @@ export const Header: React.FC<HeaderProps> = ({
           {/* Network indicator pill */}
           <div className={`network-pill ${wrongChain ? 'wrong-network' : 'healthy-network'}`}>
             <span className="network-dot" />
-            <span className="network-name">{wrongChain ? 'Wrong Chain' : 'Hardhat 31337'}</span>
+            <span className="network-name">{wrongChain ? 'Wrong Chain' : webProfile.id === 'local' ? `Hardhat ${webProfile.chainId}` : `${webProfile.networkName} ${webProfile.chainId}`}</span>
           </div>
 
           {/* Wallet selector button */}
@@ -133,7 +134,7 @@ export const Header: React.FC<HeaderProps> = ({
               type="button"
               className="wallet-btn wallet-btn-unconnected"
               onClick={onOpenWalletModal}
-              title="Connect Local Test Wallet or Browser Wallet"
+              title={import.meta.env.VITE_BIDPARK_PROFILE !== 'sepolia' ? 'Connect Local Test Wallet or Browser Wallet' : 'Connect Browser Wallet'}
             >
               <Wallet size={15} />
               <span className="wallet-btn-label">Connect Wallet</span>
@@ -144,13 +145,13 @@ export const Header: React.FC<HeaderProps> = ({
               type="button"
               className="wallet-btn"
               onClick={onOpenWalletModal}
-              title="Switch local test account or connect browser wallet"
+              title={import.meta.env.VITE_BIDPARK_PROFILE !== 'sepolia' ? 'Switch local test account or connect browser wallet' : 'Manage browser wallet'}
             >
               <div className="wallet-btn-left">
                 <Wallet size={15} />
                 <div className="wallet-btn-info">
                   <span className="wallet-btn-label">
-                    {walletState.type === 'local'
+                    {import.meta.env.VITE_BIDPARK_PROFILE !== 'sepolia' && walletState.type === 'local'
                       ? activeDemo?.label || `Test Account #${walletState.localAccountIndex}`
                       : 'Injected Wallet'}
                   </span>

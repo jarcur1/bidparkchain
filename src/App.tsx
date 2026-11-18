@@ -23,6 +23,7 @@ import {
   parseContractError,
   placeBid,
   settleAuction,
+  TransactionOutcomeUnknown,
   withdrawRefund,
 } from './services/blockchain';
 import { parseEther } from 'ethers';
@@ -30,6 +31,7 @@ import type {
   AppTab,
   ChainSnapshot,
   Config,
+  DeploymentIdentity,
   FilterState,
   Listing,
   ListingsResponse,
@@ -49,6 +51,7 @@ import {
   type ListingTarget,
 } from './utils/eligibility';
 import { formatEth } from './utils/formatters';
+import { webProfile } from './utils/networkProfile';
 import {
   LOADING_READ,
   READ_OK,
@@ -116,6 +119,8 @@ export const AppContent: React.FC<{
   // Never show listings read from a different deployment alongside the current config.
   const configDeployment = deploymentKeyOf(config);
   const deploymentRef = useRef(configDeployment);
+  const configRef = useRef(config);
+  configRef.current = config;
   deploymentRef.current = configDeployment;
   const listingsView =
     configDeployment === null || listingsState.deployment === configDeployment ? listingsState : EMPTY_LISTINGS;
@@ -146,8 +151,11 @@ export const AppContent: React.FC<{
   const [pendingRegistration, setPendingRegistration] = useState<{
     auctionId: string;
     metadata: SpotMetadata;
+    deployment: DeploymentIdentity;
     txHash?: string;
   } | null>(null);
+  const [unconfirmedCreation, setUnconfirmedCreation] = useState<string | null>(null);
+  const unconfirmedCreationRef = useRef<string | null>(null);
 
   // Activity & Refunds
   const [refundState, setRefundState] = useState<RefundState | null>(null);
@@ -228,6 +236,12 @@ export const AppContent: React.FC<{
     try {
       const snapshot = await fetchListings();
       if (isSuperseded()) return READ_SUPERSEDED;
+      if (snapshot.chain && snapshot.chain.chainId !== undefined && snapshot.chain.chainId !== webProfile.chainId) {
+        return fail('Listings are from a different network.');
+      }
+      if (webProfile.id === 'sepolia' && (!snapshot.chain || snapshot.chain.chainId !== webProfile.chainId)) {
+        return fail('Listings did not include the expected network.');
+      }
       const observedDeployment = snapshot.chain ? deploymentKey(snapshot.chain) : null;
       if (requestedDeployment !== null && observedDeployment !== requestedDeployment) {
         if (observedDeployment === null) return fail('Listings did not include the current deployment.');
@@ -252,10 +266,10 @@ export const AppContent: React.FC<{
   }, [onRefreshConfig]);
 
   // A refresh can share a bid's in-flight read, but cannot supersede it on the same deployment.
-  const loadListings = useCallback((forBid = false): Promise<ListingsReadResult> => {
+  const loadListings = useCallback((forBid = false, forceFresh = false): Promise<ListingsReadResult> => {
     const deployment = deploymentRef.current;
     const current = bidReadRef.current;
-    if (current?.deployment === deployment) return current.promise;
+    if (!forceFresh && current?.deployment === deployment) return current.promise;
     const read = readListings();
     if (!forBid) return read;
     const promise = read.finally(() => {
@@ -303,7 +317,7 @@ export const AppContent: React.FC<{
     if (!config?.contractAddress) return fail('Contract configuration is unavailable.');
     try {
       const readContract = getContractInstance(config.contractAddress, config.abi, provider);
-      const wei = await fetchPendingReturns(readContract, identity.address);
+      const wei = await fetchPendingReturns(readContract, identity.address, config.confirmation);
       if (!isCurrent()) return READ_SUPERSEDED;
       setRefundState({ identity, wei, read: readSucceeded(wei === 0n) });
       return READ_OK;
@@ -391,6 +405,41 @@ export const AppContent: React.FC<{
     if (detailTarget && !detailListing) setDetailTarget(null);
   }, [bidTarget, bidModalListing, detailTarget, detailListing, addToast]);
 
+  // Re-read both sources immediately before signing; never trust a render's cached snapshot.
+  const preflightWrite = async (listing?: Listing): Promise<ListingsResponse | undefined> => {
+    if (webProfile.id !== 'sepolia') return undefined;
+    const expectedKey = deploymentKeyOf(config);
+    if (!config || !expectedKey || !signer || (listing && !chain)) {
+      throw new BidPreflightError('Cannot confirm the current wallet or deployment. No transaction was sent.');
+    }
+    const target = listing && chain ? makeListingTarget(listing, chain) : null;
+    let freshConfig: Config;
+    try {
+      freshConfig = await fetchConfig();
+    } catch {
+      throw new BidPreflightError('Could not refresh marketplace configuration. No transaction was sent.');
+    }
+    if (deploymentKeyOf(freshConfig) !== expectedKey || JSON.stringify(freshConfig) !== JSON.stringify(config) ||
+        deploymentRef.current !== expectedKey) {
+      throw new BidPreflightError('The marketplace configuration changed. No transaction was sent.');
+    }
+    const result = await loadListings(true, true);
+    const fresh = result.snapshot;
+    if (result.outcome !== 'ok' || !fresh?.chain || fresh.chain.chainId !== webProfile.chainId ||
+        deploymentKey(fresh.chain) !== expectedKey || deploymentRef.current !== expectedKey ||
+        JSON.stringify(configRef.current) !== JSON.stringify(config) || !isCurrentSigner(signer)) {
+      throw new BidPreflightError('Cannot confirm the current wallet or deployment. No transaction was sent.');
+    }
+    if (target && !resolveListing(fresh.listings, fresh.chain, target)) {
+      throw new BidPreflightError('This auction is no longer available. No transaction was sent.');
+    }
+    return fresh;
+  };
+
+  const reportUnknown = (err: TransactionOutcomeUnknown) => {
+    addToast('info', 'Transaction submitted; finality not established', 'Check the transaction in the explorer before taking further action.', err.hash);
+  };
+
   // Handle Place Bid
   const handlePlaceBid = async (listing: Listing, amountEth: string) => {
     if (isActionBusy) return;
@@ -398,7 +447,7 @@ export const AppContent: React.FC<{
       throw new Error('Contract configuration not loaded');
     }
     if (!walletState.isReady || wrongChain || !signer) {
-      throw new Error('Wallet is not connected or connected to wrong network (requires Hardhat 31337).');
+      throw new Error(`Wallet is not connected or connected to wrong network (requires ${webProfile.networkName} ${webProfile.chainId}).`);
     }
 
     setIsActionBusy(true);
@@ -407,7 +456,9 @@ export const AppContent: React.FC<{
       if (!bidTarget || bidTarget.id !== listing.id) {
         throw new BidPreflightError('This bid dialog is no longer active. No bid was sent.');
       }
-      const { snapshot: fresh } = await loadListings(true);
+      const fresh = webProfile.id === 'sepolia'
+        ? await preflightWrite(listing)
+        : (await loadListings(true)).snapshot;
       if (!isCurrentSigner(signer) || deploymentRef.current !== configDeployment) {
         throw new BidPreflightError('Your wallet or deployment changed. No bid was sent.');
       }
@@ -416,7 +467,7 @@ export const AppContent: React.FC<{
           'Could not confirm the current auction state, so no bid was sent. Your amount was kept; try again.'
         );
       }
-      if (deploymentKey(fresh.chain) !== bidTarget.deployment) {
+      if (deploymentKey(fresh.chain) !== bidTarget.deployment || fresh.chain.chainId !== webProfile.chainId) {
         throw new BidPreflightError(
           'The marketplace deployment changed. Reload the page to continue; no bid was sent.'
         );
@@ -439,7 +490,7 @@ export const AppContent: React.FC<{
       }
 
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
-      const receipt = await placeBid(contract, listing.id, amountEth);
+      const receipt = await placeBid(contract, listing.id, amountEth, config.confirmation);
 
       addToast(
         'success',
@@ -451,6 +502,10 @@ export const AppContent: React.FC<{
       // Auto-refresh data
       await Promise.all([loadListings(), loadPendingRefunds(), refreshBalance()]);
     } catch (err) {
+      if (err instanceof TransactionOutcomeUnknown) {
+        reportUnknown(err);
+        throw new Error('Transaction submitted; finality not established. Check the explorer before bidding again.');
+      }
       if (err instanceof BidPreflightError) throw err;
       const msg = parseContractError(err);
       addToast('error', 'Bid Submission Failed', msg);
@@ -475,11 +530,22 @@ export const AppContent: React.FC<{
       throw new Error('Contract configuration not loaded');
     }
     if (!walletState.isReady || wrongChain || !signer) {
-      throw new Error('Wallet is not connected or connected to wrong network (requires Hardhat 31337).');
+      throw new Error(`Wallet is not connected or connected to wrong network (requires ${webProfile.networkName} ${webProfile.chainId}).`);
     }
+    if (webProfile.id === 'sepolia' && unconfirmedCreationRef.current) {
+      throw new Error('Transaction submitted; finality not established. Check the earlier creation in the explorer before creating another auction.');
+    }
+    const expectedDeployment: DeploymentIdentity = {
+      chainId: config.chainId,
+      contractAddress: config.contractAddress,
+      deploymentBlock: config.deploymentBlock,
+      deploymentBlockHash: config.deploymentBlockHash,
+    };
+    const expectedDeploymentKey = deploymentKey(expectedDeployment);
 
     setIsActionBusy(true);
     try {
+      await preflightWrite();
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
       const { receipt, auctionId } = await createAuctionOnChain(
         contract,
@@ -487,15 +553,23 @@ export const AppContent: React.FC<{
         minBidEth,
         bidEndSec,
         parkingStartSec,
-        parkingEndSec
+        parkingEndSec,
+        config.confirmation
       );
 
       // Register metadata on backend with retry retention
       try {
-        await createListingRecord(auctionId, metadata);
+        if (deploymentRef.current !== expectedDeploymentKey) {
+          throw new Error('The marketplace deployment changed before metadata registration.');
+        }
+        if (webProfile.id === 'sepolia') {
+          await createListingRecord(auctionId, metadata, expectedDeployment);
+        } else {
+          await createListingRecord(auctionId, metadata);
+        }
         setPendingRegistration(null);
       } catch (postErr) {
-        setPendingRegistration({ auctionId, metadata, txHash: receipt.hash });
+        setPendingRegistration({ auctionId, metadata, deployment: expectedDeployment, txHash: receipt.hash });
         const errDetail = postErr instanceof Error ? postErr.message : String(postErr);
         throw new Error(
           `Auction #${auctionId} is confirmed on-chain, but metadata registration failed: ${errDetail}. You can retry registration below without re-creating the auction.`
@@ -513,6 +587,14 @@ export const AppContent: React.FC<{
       setSelectedListingId(auctionId);
       setCurrentTab('marketplace');
     } catch (err) {
+      if (err instanceof TransactionOutcomeUnknown) {
+        if (webProfile.id === 'sepolia') {
+          unconfirmedCreationRef.current = err.hash;
+          setUnconfirmedCreation(err.hash);
+        }
+        reportUnknown(err);
+        throw new Error('Transaction submitted; finality not established. Check the explorer before creating another auction.');
+      }
       const msg = parseContractError(err);
       addToast('error', 'Listing Notice', msg);
       throw new Error(msg);
@@ -524,9 +606,17 @@ export const AppContent: React.FC<{
   // Handle Retry Metadata Registration
   const handleRetryRegistration = async (auctionId: string, metadata: SpotMetadata) => {
     if (isActionBusy) return;
+    if (!pendingRegistration || pendingRegistration.auctionId !== auctionId ||
+        deploymentRef.current !== deploymentKey(pendingRegistration.deployment)) {
+      throw new Error('The marketplace deployment changed. Registration is only available on the original deployment.');
+    }
     setIsActionBusy(true);
     try {
-      await createListingRecord(auctionId, metadata);
+      if (webProfile.id === 'sepolia') {
+        await createListingRecord(auctionId, metadata, pendingRegistration.deployment);
+      } else {
+        await createListingRecord(auctionId, metadata);
+      }
       addToast(
         'success',
         'Registration Confirmed',
@@ -561,18 +651,23 @@ export const AppContent: React.FC<{
 
     setIsActionBusy(true);
     try {
+      await preflightWrite();
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
-      const receipt = await withdrawRefund(contract);
+      const receipt = await withdrawRefund(contract, config.confirmation);
 
       addToast(
         'success',
         'Refund Withdrawn!',
-        `Withdrew ${formatEth(withdrawableWei)} ETH back to your wallet.`,
+        webProfile.id === 'sepolia' ? 'Your refund was withdrawn to your wallet.' : `Withdrew ${formatEth(withdrawableWei)} ETH back to your wallet.`,
         receipt.hash
       );
 
       await Promise.all([loadPendingRefunds(), refreshBalance()]);
     } catch (err) {
+      if (err instanceof TransactionOutcomeUnknown) {
+        reportUnknown(err);
+        return;
+      }
       const msg = parseContractError(err);
       addToast('error', 'Refund Withdrawal Failed', msg);
     } finally {
@@ -590,8 +685,9 @@ export const AppContent: React.FC<{
 
     setIsActionBusy(true);
     try {
+      await preflightWrite(listing);
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
-      const receipt = await settleAuction(contract, listing.id);
+      const receipt = await settleAuction(contract, listing.id, config.confirmation);
 
       addToast(
         'success',
@@ -602,6 +698,10 @@ export const AppContent: React.FC<{
 
       await Promise.all([loadListings(), refreshBalance()]);
     } catch (err) {
+      if (err instanceof TransactionOutcomeUnknown) {
+        reportUnknown(err);
+        return;
+      }
       const msg = parseContractError(err);
       addToast('error', 'Settlement Failed', msg);
     } finally {
@@ -619,8 +719,9 @@ export const AppContent: React.FC<{
 
     setIsActionBusy(true);
     try {
+      await preflightWrite(listing);
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
-      const receipt = await cancelAuction(contract, listing.id);
+      const receipt = await cancelAuction(contract, listing.id, config.confirmation);
 
       addToast(
         'success',
@@ -632,6 +733,10 @@ export const AppContent: React.FC<{
       await loadListings();
       setDetailTarget(null);
     } catch (err) {
+      if (err instanceof TransactionOutcomeUnknown) {
+        reportUnknown(err);
+        return;
+      }
       const msg = parseContractError(err);
       addToast('error', 'Cancellation Failed', msg);
     } finally {
@@ -649,8 +754,9 @@ export const AppContent: React.FC<{
 
     setIsActionBusy(true);
     try {
+      await preflightWrite(listing);
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
-      const receipt = await claimPayout(contract, listing.id);
+      const receipt = await claimPayout(contract, listing.id, config.confirmation);
 
       addToast(
         'success',
@@ -661,6 +767,10 @@ export const AppContent: React.FC<{
 
       await Promise.all([loadListings(), refreshBalance()]);
     } catch (err) {
+      if (err instanceof TransactionOutcomeUnknown) {
+        reportUnknown(err);
+        return;
+      }
       const msg = parseContractError(err);
       addToast('error', 'Payout Claim Failed', msg);
     } finally {
@@ -801,7 +911,13 @@ export const AppContent: React.FC<{
       <Header
         currentTab={currentTab}
         onTabChange={setCurrentTab}
-        onOpenCreate={() => setIsCreateOpen(true)}
+        onOpenCreate={() => {
+          if (unconfirmedCreationRef.current) {
+            addToast('info', 'Transaction submitted; finality not established', 'Check the earlier creation in the explorer before creating another auction.', unconfirmedCreationRef.current);
+            return;
+          }
+          setIsCreateOpen(true);
+        }}
         onOpenWalletModal={() => setIsWalletModalOpen(true)}
         onRefresh={handleRefreshAll}
         isRefreshing={isRefreshing}
@@ -811,6 +927,20 @@ export const AppContent: React.FC<{
       />
 
       <ReadStatusBanner sources={readSources} isRetrying={isRefreshing} />
+      {unconfirmedCreation && (
+        <div className="pending-registration-alert" role="alert">
+          <div className="pending-alert-content">
+            <strong>Transaction submitted; finality not established.</strong>{' '}
+            Check the transaction in the explorer before creating another auction. Creation is blocked for this session.
+            {' '}Transaction hash: {unconfirmedCreation}
+          </div>
+          {config?.explorerUrl && (
+            <a href={`${config.explorerUrl.replace(/\/$/, '')}/tx/${unconfirmedCreation}`} target="_blank" rel="noreferrer">
+              View transaction
+            </a>
+          )}
+        </div>
+      )}
 
       {/* Disclosures & Warnings */}
       <DisclosuresBanner />
@@ -938,7 +1068,7 @@ export const AppContent: React.FC<{
 
       {/* Create Listing Modal */}
       <CreateListingModal
-        isOpen={isCreateOpen}
+        isOpen={isCreateOpen && !unconfirmedCreation}
         onClose={() => setIsCreateOpen(false)}
         onSubmitCreate={handleCreateListing}
         onRetryRegistration={handleRetryRegistration}
@@ -953,7 +1083,7 @@ export const AppContent: React.FC<{
       />
 
       {/* Toast notifications */}
-      <Toast toasts={toasts} onDismiss={dismissToast} />
+      <Toast toasts={toasts} onDismiss={dismissToast} explorerUrl={config?.explorerUrl} />
     </div>
   );
 };

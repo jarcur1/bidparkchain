@@ -1,12 +1,14 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import express from 'express';
 import { ethers } from 'ethers';
 import { EscrowDatabase } from './db.mjs';
 import { validateSpotMetadata } from '../shared/validation.js';
+import { assertProfileDirectory, resolveRuntimeProfile } from '../scripts/helpers/runtime-profile.mjs';
+import { verifyPersistentDeployment } from '../scripts/helpers/persistent-deployment.mjs';
+import { compileEscrowContract } from '../scripts/helpers/compiler.mjs';
+import { getNetworkProfile } from '../shared/network-profiles.mjs';
 
-const DEFAULT_DEPLOYMENT_PATH = path.resolve(process.cwd(), 'data/deployment.json');
-const DEFAULT_RPC_URL = process.env.RPC_URL || 'http://127.0.0.1:8545';
+let sepoliaArtifact;
 
 const ALLOWED_ORIGINS = new Set([
   'http://127.0.0.1:5173',
@@ -38,6 +40,26 @@ export function canonicalizeAuctionId(raw) {
   }
 }
 
+function listingFromRow(id, onchain, row) {
+  return {
+    id, owner: onchain.owner,
+    minBid: ethers.formatEther(onchain.minBid),
+    highestBid: ethers.formatEther(onchain.highestBid),
+    highestBidder: onchain.highestBidder,
+    bidEnd: Number(onchain.bidEnd),
+    parkingStart: Number(onchain.parkingStart),
+    parkingEnd: Number(onchain.parkingEnd),
+    settled: Boolean(onchain.settled),
+    cancelled: Boolean(onchain.cancelled),
+    payoutClaimed: Boolean(onchain.payoutClaimed),
+    metadataHash: onchain.metadataHash,
+    title: row.title, address: row.address, neighborhood: row.neighborhood,
+    latitude: Number(row.latitude), longitude: Number(row.longitude),
+    description: row.description, image: row.image, kind: row.kind,
+    amenities: JSON.parse(row.amenities),
+  };
+}
+
 /**
  * Creates and configures the Express API application.
  * Communicates with SQLite metadata database and local Ethereum node.
@@ -48,21 +70,36 @@ export function canonicalizeAuctionId(raw) {
  * @param {string} [options.rpcUrl]
  */
 export function createApp(options = {}) {
-  const deploymentPath = options.deploymentPath || DEFAULT_DEPLOYMENT_PATH;
-  const rpcUrl = options.rpcUrl || DEFAULT_RPC_URL;
-  const db = new EscrowDatabase(options.dbPath);
+  const supplied = options.runtime;
+  const runtime = supplied
+    ? resolveRuntimeProfile({
+        BIDPARK_PROFILE: supplied.profile?.id,
+        BIDPARK_DATA_DIR: supplied.dataDir,
+        ...(supplied.profile?.id === 'sepolia'
+          ? { BIDPARK_SEPOLIA_RPC_URL: supplied.rpcUrl }
+          : { RPC_URL: supplied.rpcUrl }),
+      })
+    : resolveRuntimeProfile({ RPC_URL: options.rpcUrl ?? process.env.RPC_URL });
+  if (supplied && (
+    supplied.profile !== getNetworkProfile(supplied.profile?.id) &&
+    (supplied.profile?.chainId !== runtime.profile.chainId || supplied.profile?.id !== runtime.profile.id)
+  )) throw new Error('Invalid runtime profile');
+  if (supplied && (supplied.dbPath !== runtime.dbPath || supplied.deploymentPath !== runtime.deploymentPath)) {
+    throw new Error('Invalid runtime paths');
+  }
+  if (runtime.profile.id === 'sepolia' && (options.dbPath || options.deploymentPath || options.rpcUrl)) {
+    throw new Error('Sepolia runtime overrides are not allowed');
+  }
+  const deploymentPath = options.deploymentPath ?? runtime.deploymentPath;
+  const rpcUrl = options.rpcUrl ?? runtime.rpcUrl;
+  const profile = runtime.profile;
+  if (supplied || !options.dbPath) assertProfileDirectory(runtime);
+  const db = new EscrowDatabase(options.dbPath ?? runtime.dbPath);
 
-  // Single shared ethers JsonRpcProvider instance across requests with cacheTimeout: -1
-  const provider = new ethers.JsonRpcProvider(
-    rpcUrl,
-    {
-      chainId: 31337,
-      name: 'hardhat',
-    },
-    {
-      cacheTimeout: -1,
-    }
-  );
+  const provider = new ethers.JsonRpcProvider(rpcUrl, {
+    chainId: profile.chainId,
+    name: profile.id,
+  }, { cacheTimeout: -1 });
 
   const app = express();
 
@@ -97,19 +134,49 @@ export function createApp(options = {}) {
     }
   }
 
-  // Helper to get connected ethers Contract instance using the shared provider
-  function getContract(deployment) {
-    if (!deployment || !deployment.contractAddress || !deployment.abi) {
-      return null;
+  function getContract(deployment, abi = deployment?.abi) {
+    if (!deployment || !deployment.contractAddress || !abi) return null;
+    return new ethers.Contract(deployment.contractAddress, abi, provider);
+  }
+
+  // Verify the deployment against the same finalized block used for all contract reads.
+  async function readFinalizedDeployment(deployment) {
+    if (!deployment) throw new Error('Deployment unavailable');
+    const network = await provider.getNetwork();
+    if (Number(network.chainId) !== profile.chainId) throw new Error('Wrong chain');
+    const finalized = await provider.getBlock('finalized');
+    if (!finalized?.hash) throw new Error('Finalized block unavailable');
+    sepoliaArtifact ??= compileEscrowContract();
+    await verifyPersistentDeployment(provider, deployment, sepoliaArtifact, finalized);
+    return { finalized, iface: new ethers.Interface(sepoliaArtifact.abi) };
+  }
+
+  async function readFinalizedAuction(deployment, iface, finalized, id) {
+    const data = iface.encodeFunctionData('auctions', [id]);
+    const result = await provider.send('eth_call', [
+      { to: deployment.contractAddress, data },
+      { blockHash: finalized.hash, requireCanonical: true },
+    ]);
+    return iface.decodeFunctionResult('auctions', result);
+  }
+
+  function isLocalDeployment(deployment) {
+    return Number(deployment.chainId) === profile.chainId &&
+      (!deployment.profile || deployment.profile === profile.id);
+  }
+
+  async function assertCanonicalFinalized(finalized) {
+    const block = await provider.getBlock(finalized.number);
+    if (!block?.hash || block.hash.toLowerCase() !== finalized.hash.toLowerCase()) {
+      throw new Error('Finalized block changed');
     }
-    return new ethers.Contract(deployment.contractAddress, deployment.abi, provider);
   }
 
   /**
    * Reads the deployment identity and chain clock the listing state is judged against.
    * Throws if the node is unreachable.
    */
-  async function readChainSnapshot(deployment) {
+  async function readChainSnapshot(deployment, finalized) {
     const latest = await provider.getBlock('latest');
     if (!latest) throw new Error('Latest block unavailable');
     const deploymentBlock = Number(deployment.deploymentBlock ?? 0);
@@ -119,8 +186,8 @@ export function createApp(options = {}) {
       contractAddress: deployment.contractAddress,
       deploymentBlock,
       deploymentBlockHash: deployBlock?.hash ?? '',
-      blockNumber: latest.number,
-      blockTimestamp: latest.timestamp,
+      blockNumber: finalized?.number ?? latest.number,
+      blockTimestamp: finalized ? finalized.timestamp : latest.timestamp,
       // The next block is stamped no earlier than the latest block or the node's wall clock.
       chainTime: Math.max(latest.timestamp, Math.floor(Date.now() / 1000)),
     };
@@ -132,8 +199,33 @@ export function createApp(options = {}) {
    */
   app.get('/api/config', async (req, res) => {
     const deployment = loadDeployment();
+    if (profile.id === 'sepolia') {
+      try {
+        const { finalized } = await readFinalizedDeployment(deployment);
+        await assertCanonicalFinalized(finalized);
+        res.json({
+          profile: profile.id,
+          confirmation: profile.confirmation,
+          explorerUrl: profile.explorerUrl,
+          chainId: profile.chainId,
+          contractAddress: deployment.contractAddress,
+          abi: sepoliaArtifact.abi,
+          currency: profile.currency,
+          networkName: profile.networkName,
+          deploymentBlock: deployment.deploymentBlock,
+          deploymentBlockHash: deployment.deploymentBlockHash,
+        });
+      } catch {
+        res.status(503).json({ error: 'Blockchain service unavailable' });
+      }
+      return;
+    }
     if (!deployment) {
       res.status(503).json({ error: 'Smart contract not yet deployed' });
+      return;
+    }
+    if (!isLocalDeployment(deployment)) {
+      res.status(503).json({ error: 'Blockchain service unavailable' });
       return;
     }
 
@@ -151,6 +243,9 @@ export function createApp(options = {}) {
     }
 
     res.json({
+      profile: profile.id,
+      confirmation: profile.confirmation,
+      explorerUrl: profile.explorerUrl,
       deploymentBlockHash,
       chainId: deployment.chainId,
       contractAddress: deployment.contractAddress,
@@ -173,8 +268,33 @@ export function createApp(options = {}) {
   app.get('/api/listings', async (req, res, next) => {
     try {
       const deployment = loadDeployment();
+      if (profile.id === 'sepolia') {
+        try {
+          const { finalized, iface } = await readFinalizedDeployment(deployment);
+          const rows = db.getAllListings(deployment.contractAddress);
+          const listings = [];
+          for (const row of rows) {
+            const id = canonicalizeAuctionId(row.auction_id);
+            if (!id) continue;
+            const onchain = await readFinalizedAuction(deployment, iface, finalized, id);
+            if (!onchain || onchain.owner === ethers.ZeroAddress ||
+                row.metadata_hash.toLowerCase() !== onchain.metadataHash.toLowerCase()) continue;
+            listings.push(listingFromRow(id, onchain, row));
+          }
+          const chain = await readChainSnapshot(deployment, finalized);
+          await assertCanonicalFinalized(finalized);
+          res.json({ listings, chain });
+        } catch {
+          res.status(503).json({ error: 'Blockchain service unavailable' });
+        }
+        return;
+      }
       if (!deployment) {
         res.json({ listings: [], chain: null });
+        return;
+      }
+      if (!isLocalDeployment(deployment)) {
+        res.status(503).json({ error: 'Blockchain service unavailable' });
         return;
       }
 
@@ -217,29 +337,7 @@ export function createApp(options = {}) {
             continue;
           }
 
-          listings.push({
-            id: canonicalId,
-            owner: onchain.owner,
-            minBid: ethers.formatEther(onchain.minBid),
-            highestBid: ethers.formatEther(onchain.highestBid),
-            highestBidder: onchain.highestBidder,
-            bidEnd: Number(onchain.bidEnd),
-            parkingStart: Number(onchain.parkingStart),
-            parkingEnd: Number(onchain.parkingEnd),
-            settled: Boolean(onchain.settled),
-            cancelled: Boolean(onchain.cancelled),
-            payoutClaimed: Boolean(onchain.payoutClaimed),
-            metadataHash: onchain.metadataHash,
-            title: row.title,
-            address: row.address,
-            neighborhood: row.neighborhood,
-            latitude: Number(row.latitude),
-            longitude: Number(row.longitude),
-            description: row.description,
-            image: row.image,
-            kind: row.kind,
-            amenities: JSON.parse(row.amenities),
-          });
+          listings.push(listingFromRow(canonicalId, onchain, row));
         }
         // Read the clock after the auction state so the clock is never older than the state it judges.
         chain = await readChainSnapshot(deployment);
@@ -282,8 +380,48 @@ export function createApp(options = {}) {
       );
 
       const deployment = loadDeployment();
+      if (profile.id === 'sepolia') {
+        try {
+          const { finalized, iface } = await readFinalizedDeployment(deployment);
+          const expected = req.body?.deployment;
+          if (!expected || expected.chainId !== profile.chainId ||
+              expected.deploymentBlock !== deployment.deploymentBlock ||
+              typeof expected.contractAddress !== 'string' ||
+              expected.contractAddress.toLowerCase() !== deployment.contractAddress.toLowerCase() ||
+              typeof expected.deploymentBlockHash !== 'string' ||
+              expected.deploymentBlockHash.toLowerCase() !== deployment.deploymentBlockHash.toLowerCase()) {
+            res.status(409).json({ error: 'Deployment identity does not match' });
+            return;
+          }
+          const onchain = await readFinalizedAuction(deployment, iface, finalized, canonicalId);
+          await assertCanonicalFinalized(finalized);
+          if (!onchain || onchain.owner === ethers.ZeroAddress) {
+            res.status(404).json({ error: `Auction ID ${canonicalId} does not exist onchain` });
+            return;
+          }
+          if (onchain.metadataHash.toLowerCase() !== canonicalHash.toLowerCase()) {
+            res.status(400).json({ error: 'Metadata canonical hash does not match onchain auction metadataHash' });
+            return;
+          }
+          const existing = db.getListing(canonicalId, deployment.contractAddress);
+          const isReconciliation = existing && existing.metadata_hash.toLowerCase() !== canonicalHash.toLowerCase();
+          db.upsertListing({ auctionId: canonicalId, contractAddress: deployment.contractAddress,
+            metadataHash: canonicalHash, ...normalized });
+          res.status(existing && !isReconciliation ? 200 : 201).json({
+            listing: listingFromRow(canonicalId, onchain, { ...normalized, amenities: JSON.stringify(normalized.amenities) }),
+          });
+        } catch {
+          res.status(503).json({ error: 'Blockchain service unavailable' });
+        }
+        return;
+      }
       if (!deployment) {
         res.status(503).json({ error: 'Smart contract not deployed' });
+        return;
+      }
+
+      if (!isLocalDeployment(deployment)) {
+        res.status(503).json({ error: 'Blockchain service unavailable' });
         return;
       }
 
@@ -342,29 +480,9 @@ export function createApp(options = {}) {
         amenities: normalized.amenities,
       });
 
-      const listing = {
-        id: canonicalId,
-        owner: onchain.owner,
-        minBid: ethers.formatEther(onchain.minBid),
-        highestBid: ethers.formatEther(onchain.highestBid),
-        highestBidder: onchain.highestBidder,
-        bidEnd: Number(onchain.bidEnd),
-        parkingStart: Number(onchain.parkingStart),
-        parkingEnd: Number(onchain.parkingEnd),
-        settled: Boolean(onchain.settled),
-        cancelled: Boolean(onchain.cancelled),
-        payoutClaimed: Boolean(onchain.payoutClaimed),
-        metadataHash: onchain.metadataHash,
-        title: normalized.title,
-        address: normalized.address,
-        neighborhood: normalized.neighborhood,
-        latitude: normalized.latitude,
-        longitude: normalized.longitude,
-        description: normalized.description,
-        image: normalized.image,
-        kind: normalized.kind,
-        amenities: normalized.amenities,
-      };
+      const listing = listingFromRow(canonicalId, onchain, {
+        ...normalized, amenities: JSON.stringify(normalized.amenities),
+      });
 
       res.status(existing && !isReconciliation ? 200 : 201).json({ listing });
     } catch (err) {

@@ -17,6 +17,7 @@ import {
   COMMON_AMENITIES,
   CURATED_PARKING_PHOTOS,
 } from '../utils/constants';
+import { webProfile } from '../utils/networkProfile';
 import { Dialog } from './Dialog';
 
 interface ParkingWindowOption {
@@ -182,12 +183,14 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
     setPreview(null);
 
     if (wrongChain) {
-      setFormError('Please switch to Hardhat Local (Chain 31337) before proceeding.');
+      setFormError(`Please switch to ${webProfile.networkName} (Chain ${webProfile.chainId}) before proceeding.`);
       return;
     }
 
     if (!walletState.address) {
-      setFormError('Wallet not connected. Connect a local test account first.');
+      setFormError(import.meta.env.VITE_BIDPARK_PROFILE !== 'sepolia'
+        ? 'Wallet not connected. Connect a local test account first.'
+        : 'Wallet not connected. Connect a browser wallet first.');
       return;
     }
 
@@ -290,7 +293,7 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
               <p className="modal-subheading">
                 {pendingRegistration
                   ? 'Onchain contract confirmed. Complete metadata registration with API.'
-                  : 'Deploy a timed auction with smart contract escrow on Hardhat Local'}
+                  : `Deploy a timed auction with smart contract escrow on ${webProfile.networkName}`}
               </p>
             </div>
           </div>

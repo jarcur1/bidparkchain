@@ -5,7 +5,15 @@ import {
   LOADING_READ, READ_OK, READ_SKIPPED, READ_SUPERSEDED, readFailed, readFailure, readSucceeded,
   type ReadResult, type ReadState,
 } from '../utils/readState';
-import { HARDHAT_CHAIN_HEX, HARDHAT_CHAIN_ID } from '../utils/constants';
+import { HARDHAT_CHAIN_ID } from '../utils/constants';
+import { webProfile } from '../utils/networkProfile';
+
+function configMatches(config: Config | null): boolean {
+  if (!config || config.chainId !== webProfile.chainId) return false;
+  // Component tests may provide older local config fixtures, but not Sepolia fixtures.
+  return (config.profile === webProfile.id || (webProfile.id === 'local' && config.profile === undefined)) &&
+    (config.confirmation === webProfile.confirmation || (webProfile.id === 'local' && config.confirmation === undefined));
+}
 
 export interface WalletContextValue {
   walletState: WalletState;
@@ -36,7 +44,10 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
     signerRef.current = next;
     setSigner(next);
   }, []);
-  const isCurrentSigner = useCallback((candidate: ContractRunner) => signerRef.current === candidate, []);
+  const isCurrentSigner = useCallback((candidate: ContractRunner) =>
+    signerRef.current === candidate && configMatches(configRef.current) &&
+    stateRef.current.chainId === webProfile.chainId &&
+    (webProfile.id === 'local' || stateRef.current.type === 'injected'), []);
   const [provider, setProvider] = useState<Provider | null>(null);
   const [wrongChain, setWrongChain] = useState(false);
   // Each balance read is stamped with the deployment it was read under.
@@ -96,12 +107,15 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
     const index = accountIndex ?? stateRef.current.localAccountIndex;
     const id = begin('local', index);
     try {
+      if (import.meta.env.VITE_BIDPARK_PROFILE === 'sepolia') {
+        throw new Error('Local test wallets are unavailable on Sepolia.');
+      }
       if (!['127.0.0.1', 'localhost'].includes(window.location.hostname)) {
         throw new Error('Local test wallets are restricted to localhost.');
       }
       if (!Number.isInteger(index) || index < 0 || index > 19) throw new Error('Invalid local test account.');
       const currentConfig = configRef.current;
-      if (!currentConfig || currentConfig.chainId !== HARDHAT_CHAIN_ID) {
+      if (!configMatches(currentConfig) || !currentConfig?.demoMnemonic || currentConfig.chainId !== HARDHAT_CHAIN_ID) {
         throw new Error('Local chain configuration is unavailable or unsupported.');
       }
       if (!localProvider.current) {
@@ -113,7 +127,7 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
       if (network.chainId !== BigInt(HARDHAT_CHAIN_ID)) throw new Error('RPC is not local chain 31337.');
       const wallet = HDNodeWallet.fromPhrase(currentConfig.demoMnemonic, undefined, `m/44'/60'/0'/0/${index}`).connect(rpc);
       const balance = formatEther(await rpc.getBalance(wallet.address));
-      if (generation.current !== id) return;
+      if (generation.current !== id || !configMatches(configRef.current) || configRef.current !== currentConfig) return;
       localStorage.setItem(STORAGE_WALLET_TYPE, 'local');
       localStorage.setItem(STORAGE_ACCOUNT_INDEX, String(index));
       activeProvider.current = rpc;
@@ -133,14 +147,17 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
       const accounts = await ethereum.request({ method: requestAccess ? 'eth_requestAccounts' : 'eth_accounts' }) as string[];
       if (!accounts.length) throw new Error('Browser wallet is disconnected. Connect it to continue.');
       if (generation.current !== id) return;
-      const rpc = new BrowserProvider(ethereum, 'any', { cacheTimeout: -1 });
+      const initialRpc = webProfile.id === 'local' ? new BrowserProvider(ethereum, 'any', { cacheTimeout: -1 }) : null;
+      if (initialRpc) providers.current.add(initialRpc);
+      const chainId = initialRpc
+        ? Number((await initialRpc.getNetwork()).chainId)
+        : Number(BigInt(await ethereum.request({ method: 'eth_chainId' }) as string));
+      const mismatch = chainId !== webProfile.chainId || !configMatches(configRef.current);
+      const rpc = initialRpc ?? new BrowserProvider(ethereum, mismatch ? 'any' : webProfile.chainId, { cacheTimeout: -1 });
       providers.current.add(rpc);
-      const network = await rpc.getNetwork();
-      const chainId = Number(network.chainId);
-      const mismatch = chainId !== HARDHAT_CHAIN_ID || configRef.current?.chainId !== HARDHAT_CHAIN_ID;
       const wallet = mismatch ? null : await rpc.getSigner(accounts[0]);
       const balance = mismatch ? null : formatEther(await rpc.getBalance(accounts[0]));
-      if (generation.current !== id) { rpc.destroy(); providers.current.delete(rpc); return; }
+      if (generation.current !== id || (!mismatch && !configMatches(configRef.current))) { rpc.destroy(); providers.current.delete(rpc); return; }
       localStorage.setItem(STORAGE_WALLET_TYPE, 'injected');
       activeProvider.current = rpc;
       setProvider(rpc);
@@ -161,18 +178,24 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
     if (!window.ethereum || stateRef.current.type !== 'injected') return;
     const intent = selection.current;
     const id = generation.current;
+    if (!configMatches(configRef.current)) {
+      fail(id, new Error('Network configuration is unavailable or does not match this build.'));
+      return;
+    }
+    const chainId = `0x${webProfile.chainId.toString(16)}`;
     try {
       try {
-        await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: HARDHAT_CHAIN_HEX }] });
+        await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId }] });
       } catch (error) {
         if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 4902) throw error;
         if (selection.current !== intent || stateRef.current.type !== 'injected') return;
         await window.ethereum.request({ method: 'wallet_addEthereumChain', params: [{
-          chainId: HARDHAT_CHAIN_HEX, chainName: 'Hardhat Local',
-          nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 }, rpcUrls: ['http://127.0.0.1:8545'],
+          chainId, chainName: webProfile.networkName,
+          nativeCurrency: { name: webProfile.currency, symbol: webProfile.currency, decimals: 18 }, rpcUrls: [webProfile.walletRpcUrl],
+          ...(webProfile.explorerUrl ? { blockExplorerUrls: [webProfile.explorerUrl] } : {}),
         }] });
         if (selection.current !== intent || stateRef.current.type !== 'injected') return;
-        await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: HARDHAT_CHAIN_HEX }] });
+        await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId }] });
       }
       if (selection.current === intent && stateRef.current.type === 'injected') await connectBrowser(false);
     } catch (error) {
@@ -232,7 +255,7 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
     restored.current = true;
     const savedType = localStorage.getItem(STORAGE_WALLET_TYPE);
     const savedIndex = Number(localStorage.getItem(STORAGE_ACCOUNT_INDEX) ?? 1);
-    if (savedType === 'local') void connectLocal(Number.isInteger(savedIndex) ? savedIndex : 1);
+    if (savedType === 'local' && import.meta.env.VITE_BIDPARK_PROFILE !== 'sepolia') void connectLocal(Number.isInteger(savedIndex) ? savedIndex : 1);
     else if (savedType === 'injected' && window.ethereum) void connectBrowser(false);
   }, [config, connectLocal, connectBrowser]);
 
@@ -245,7 +268,10 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
     restored.current = false;
   }, []);
 
-  return <WalletContext.Provider value={{ walletState, signer, isCurrentSigner, provider, wrongChain,
+  const usable = configMatches(config) && walletState.chainId === webProfile.chainId &&
+    (webProfile.id === 'local' || walletState.type === 'injected');
+  return <WalletContext.Provider value={{ walletState: usable ? walletState : { ...walletState, isReady: false },
+    signer: usable ? signer : null, isCurrentSigner, provider, wrongChain,
     connectLocal, connectInjected, switchInjectedChain, refreshBalance, balanceRead }}>{children}</WalletContext.Provider>;
 };
 

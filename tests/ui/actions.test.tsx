@@ -50,7 +50,7 @@ beforeAll(async () => {
   catch (error) { await scope.close(); throw error; }
   account = chain.wallet(1).address;
   const deploymentBlockHash = (await chain.provider.getBlock(deployment.deploymentBlock))!.hash!;
-  config = { chainId: 31337, contractAddress: deployment.address, abi: deployment.abi, currency: 'ETH', networkName: 'Owned test chain', demoMnemonic: 'test test test test test test test test test test test junk', demoAccountIndex: 1, deploymentBlock: deployment.deploymentBlock, deploymentBlockHash };
+  config = { profile: 'local', confirmation: 'mined', explorerUrl: null, chainId: 31337, contractAddress: deployment.address, abi: deployment.abi, currency: 'ETH', networkName: 'Hardhat Local', demoMnemonic: 'test test test test test test test test test test test junk', demoAccountIndex: 1, deploymentBlock: deployment.deploymentBlock, deploymentBlockHash };
 }, 60000);
 afterAll(async () => { chain?.provider.destroy(); await scope?.close(); });
 beforeEach(() => {
@@ -141,9 +141,16 @@ describe('real application transaction boundaries', () => {
       parkingStart: Number(auction.parkingStart), parkingEnd: Number(auction.parkingEnd), metadataHash: auction.metadataHash,
     }];
     await connect();
-    let button: HTMLElement;
-    if (action === 'bid') { await click(query('.btn-card-primary')); button = query('.btn-modal-submit-bid'); }
-    else { await click(Array.from(host.querySelectorAll('button')).find((item) => item.textContent?.includes('My Activity'))!); button = query(action === 'withdraw' ? '.btn-withdraw-refund' : '.btn-trigger-settle'); }
+    if (action === 'bid') {
+      await until(() => expect(document.querySelector('.btn-card-primary')).not.toBeNull());
+      await click(query('.btn-card-primary'));
+    } else {
+      await click(Array.from(host.querySelectorAll('button')).find((item) => item.textContent?.includes('My Activity'))!);
+    }
+    const selector = action === 'bid' ? '.btn-modal-submit-bid' :
+      action === 'withdraw' ? '.btn-withdraw-refund' : '.btn-trigger-settle';
+    await until(() => expect(document.querySelector(selector)).not.toBeNull());
+    const button = query(selector);
     hold = true;
     // Separate browser clicks permit React's disabled-state commit between events.
     await click(button); await until(() => expect(sends).toHaveLength(1)); await click(button);

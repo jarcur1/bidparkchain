@@ -3,6 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { compileEscrowContract } from './helpers/compiler.mjs';
+import { resolveRuntimeProfile, assertProfileDirectory } from './helpers/runtime-profile.mjs';
+import { runPersistentDeployment } from './helpers/persistent-deployment.mjs';
 import {
   getProvider,
   getWallet,
@@ -54,6 +56,35 @@ async function placeSeedBid(contract, buyerWallet, provider, auctionId, amount) 
 }
 
 async function main() {
+  const runtime = resolveRuntimeProfile();
+  assertProfileDirectory(runtime);
+  if (runtime.profile.id === 'sepolia') {
+    try {
+      const deployment = await runPersistentDeployment(runtime, process.argv.slice(2), process.env);
+      console.log(`[BidPark Deploy] Verified Sepolia deployment: ${deployment.contractAddress}`);
+    } catch {
+      // RPC and wallet errors may contain credentials or signed transaction data.
+      throw new Error('Sepolia deployment failed. Check the configuration and pending deployment record; never retry creation until any pending transaction is resolved.');
+    }
+    return;
+  }
+  if (process.argv.length > 2) throw new Error('Deployment options are only available for Sepolia.');
+  if (process.env.BIDPARK_DATA_DIR !== undefined) {
+    if (fs.existsSync(`${DEPLOYMENT_PATH}.pending`) || fs.existsSync(`${DEPLOYMENT_PATH}.lock`)) {
+      throw new Error('Refusing local deployment in a directory with a pending persistent deployment.');
+    }
+    if (fs.existsSync(DEPLOYMENT_PATH)) {
+      let existing;
+      try {
+        existing = JSON.parse(fs.readFileSync(DEPLOYMENT_PATH, 'utf8'));
+      } catch {
+        throw new Error('Refusing local deployment with an unreadable deployment descriptor.');
+      }
+      if (existing?.profile === 'sepolia' || Number(existing?.chainId) === 11155111) {
+        throw new Error('Refusing local deployment in a Sepolia data directory.');
+      }
+    }
+  }
   console.log('[BidPark Deploy] Starting deployment process...');
 
   if (!fs.existsSync(DATA_DIR)) {

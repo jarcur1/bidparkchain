@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { getNetworkProfile } from '../shared/network-profiles.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const children = new Set();
@@ -56,6 +57,9 @@ async function ready(url, rpc = false) {
 }
 
 try {
+  if (getNetworkProfile(process.env.BIDPARK_PROFILE).id !== 'local') {
+    throw new Error('npm run dev only supports the local profile.');
+  }
   for (const port of [8545, 3001, 5173]) await assertPortFree(port);
   console.log('\nBidPark local development • test ETH only, no real money\n');
   start('Local Ethereum chain', [path.join(root, 'node_modules/hardhat/dist/src/cli.js'), 'node', '--hostname', '127.0.0.1']);
