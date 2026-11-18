@@ -44,12 +44,15 @@ With `npm run dev` running:
 
 ```sh
 npm run build
+npm test
 npm run smoke
 ```
 
 `build` runs strict TypeScript checking and a Vite production build. `smoke` deploys a separate contract and exercises the live auction, outbid/refund, same-bidder rebid, settlement, payout, cancellation, authorization, and time-boundary paths. It snapshots and restores the local chain, including its clock. **Do not submit app transactions while the smoke script runs**: snapshot restoration also reverts any concurrent transactions.
 
-Run `node --test tests/seed-recovery.test.mjs` to verify interrupted seed recovery on a disposable chain and temporary database. No running app is needed.
+### Read status
+
+Configuration, listings, the claimable-refund read and the wallet balance each track their own state: loading, success, empty (a successful read with nothing in it), failed (nothing known), or stale (the last read failed but the previous value is kept, labeled with the last successful read time). Unknown refund or wallet balances are shown as unavailable, never as zero, and withdrawals and bids are only enabled from a successful current read. Each failed source has its own retry button, and manual refresh re-reads configuration too and reports exactly which sources updated. Switching account, chain, provider or deployment immediately hides values read for the previous identity and ignores late responses from it.
 
 ## Components
 
@@ -77,6 +80,6 @@ If a resumed demo auction can no longer accept its initial bid, deployment repor
 
 This is a functional local prototype, **not an audited or production-ready payment system**. It does not verify listing ownership, availability, identities, municipal permission, gate access, or parking delivery. It has no fiat payments, dispute resolution, cancellation policy after bidding, or production authentication/operations. A wallet address is not proof of property ownership.
 
-All listing fields are public. Do not enter gate codes, personal information, or private access instructions. Contract storage also publicly exposes wallet addresses, bid amounts, and auction times. The public test mnemonic is deliberately for local use only.
+All listing fields are public: they appear in the UI and in `GET /api/listings`. The description is labelled **Public space description**, and the listing form shows a review step (exact normalized public metadata plus a privacy warning) that must be confirmed before anything is signed or sent; editing any field after the preview invalidates it. Safe things to enter are physical attributes of the space: size, surface, lighting, clearance height, cover, and nearby landmarks. Do not enter personal information or any private or access-related information. Private access instructions are **not supported**: there is no private instruction field, and the app does not detect or redact sensitive prose, so whatever you write is published as-is. Contract storage also publicly exposes wallet addresses, bid amounts, and auction times; only a metadata hash goes on-chain. The public test mnemonic is deliberately for local use only.
 
 OpenStreetMap tiles and listing photography require an internet connection; the auction list and local chain do not depend on those image services. Map data © OpenStreetMap contributors. Sample photographs are illustrative, not verification of a listed property.

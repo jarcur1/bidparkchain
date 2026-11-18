@@ -200,7 +200,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
 
             {/* Description */}
             <div className="modal-section">
-              <h4 className="section-label">Space Details & Arrival Notes</h4>
+              <h4 className="section-label">Public Space Description</h4>
               <p className="modal-description-text">{listing.description}</p>
             </div>
 

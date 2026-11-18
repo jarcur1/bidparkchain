@@ -1,5 +1,6 @@
 import { formatEther } from 'ethers';
 import type { Listing } from '../types';
+import type { ReadState } from './readState';
 
 export function shortenAddress(address?: string | null, chars = 4): string {
   if (!address) return '';
@@ -18,6 +19,13 @@ export function formatEth(val?: string | number | bigint | null): string {
   const num = parseFloat(str);
   if (isNaN(num)) return '0.00';
   return num < 0.01 && num > 0 ? num.toFixed(4) : num.toFixed(3);
+}
+
+// Wallet balance text that never presents an unknown balance as zero.
+export function formatBalance(balance: string | null, read: ReadState): string {
+  if (balance === null) return read.status === 'loading' ? 'Loading…' : 'Unavailable';
+  const text = `${formatEth(balance)} ETH`;
+  return read.status === 'stale' ? `${text} (stale)` : text;
 }
 
 export function formatTimestamp(sec: number): string {

@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { useWallet } from '../context/WalletContext';
 import { DEMO_ACCOUNTS } from '../utils/constants';
-import { formatEth, shortenAddress } from '../utils/formatters';
+import { formatBalance, shortenAddress } from '../utils/formatters';
 
 interface WalletModalProps {
   isOpen: boolean;
@@ -24,6 +24,7 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
     connectInjected,
     switchInjectedChain,
     wrongChain,
+    balanceRead,
   } = useWallet();
 
   const [copiedAddr, setCopiedAddr] = useState(false);
@@ -91,7 +92,7 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
               </span>
             </div>
             <div className="active-balance-pill">
-              {formatEth(walletState.balance)} ETH
+              {formatBalance(walletState.balance, balanceRead)}
             </div>
           </div>
 
