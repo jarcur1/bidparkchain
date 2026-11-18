@@ -52,6 +52,9 @@ const PARKING_WINDOW_OPTIONS: readonly ParkingWindowOption[] = [
   },
 ] as const;
 
+export const PUBLIC_WARNING =
+  'Public: this description is shown to everyone, including in the public API. Do not enter private or access-related information; private instructions are not supported.';
+
 interface CreateListingModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -97,6 +100,7 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
   const [selectedWindowId, setSelectedWindowId] = useState<string>('delay30m-3h');
 
   const [formError, setFormError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ key: string; metadata: SpotMetadata } | null>(null);
 
   // Sync state if pendingRegistration is passed or changes
   useEffect(() => {
@@ -146,9 +150,33 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
     );
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const buildMetadata = (): SpotMetadata => ({
+    title: title.trim(),
+    address: address.trim(),
+    neighborhood: neighborhood.trim(),
+    latitude,
+    longitude,
+    description: description.trim(),
+    image: imageUrl.trim() || CURATED_PARKING_PHOTOS[0].url,
+    kind,
+    amenities: selectedAmenities,
+  });
+
+  // Pending registration metadata is immutable: it is the only metadata that may be registered.
+  const previewKey = (): string =>
+    JSON.stringify(
+      pendingRegistration
+        ? ['pending', pendingRegistration.auctionId, pendingRegistration.metadata]
+        : [buildMetadata(), minBidEth, bidDurationMinutes, selectedWindowId]
+    );
+
+  // A preview is only valid while the inputs it was built from are unchanged.
+  const activePreview = preview && preview.key === previewKey() ? preview : null;
+
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
+    setPreview(null);
 
     if (wrongChain) {
       setFormError('Please switch to Hardhat Local (Chain 31337) before proceeding.');
@@ -160,22 +188,12 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
       return;
     }
 
-    if (!title.trim() || !address.trim() || !description.trim()) {
+    const metadata = pendingRegistration ? pendingRegistration.metadata : buildMetadata();
+
+    if (!metadata.title.trim() || !metadata.address.trim() || !metadata.description.trim()) {
       setFormError('Please fill in title, address, and description.');
       return;
     }
-
-    const metadata: SpotMetadata = {
-      title: title.trim(),
-      address: address.trim(),
-      neighborhood: neighborhood.trim(),
-      latitude,
-      longitude,
-      description: description.trim(),
-      image: imageUrl.trim() || CURATED_PARKING_PHOTOS[0].url,
-      kind,
-      amenities: selectedAmenities,
-    };
 
     // Validate metadata against conservative bounds using shared pure validator
     const validation = validateSpotMetadata(metadata);
@@ -183,6 +201,21 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
       setFormError(validation.error || 'Spot metadata failed validation checks.');
       return;
     }
+
+    if (!pendingRegistration) {
+      const minBidNum = parseFloat(minBidEth);
+      if (isNaN(minBidNum) || minBidNum <= 0) {
+        setFormError('Please provide a valid minimum bid in ETH.');
+        return;
+      }
+    }
+
+    setPreview({ key: previewKey(), metadata: validation.normalized });
+  };
+
+  const handleConfirm = async () => {
+    if (!activePreview || isSubmitting) return;
+    setFormError(null);
 
     // IF PENDING REGISTRATION: Do not create another on-chain auction; retry the metadata registration!
     if (pendingRegistration) {
@@ -194,12 +227,6 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
           setFormError(err instanceof Error ? err.message : 'Failed to register metadata');
         }
       }
-      return;
-    }
-
-    const minBidNum = parseFloat(minBidEth);
-    if (isNaN(minBidNum) || minBidNum <= 0) {
-      setFormError('Please provide a valid minimum bid in ETH.');
       return;
     }
 
@@ -225,7 +252,7 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
 
     try {
       await onSubmitCreate(
-        validation.normalized,
+        activePreview.metadata,
         minBidEth,
         bidEndSec,
         parkingStartSec,
@@ -416,18 +443,22 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
           {/* Description */}
           <div className="form-field">
             <label htmlFor="spot-desc" className="form-label">
-              Space Description & Driver Arrival Guidelines
+              Public space description
             </label>
             <textarea
               id="spot-desc"
               rows={3}
               className="form-textarea"
-              placeholder="Describe access route, gate code entry, clearance height, or special instructions..."
+              placeholder="Describe the space: size, surface, lighting, clearance height, or nearby landmarks..."
+              aria-describedby="spot-desc-warning"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               required
               disabled={isSubmitting}
             />
+            <p id="spot-desc-warning" className="public-warning-text" role="note">
+              {PUBLIC_WARNING}
+            </p>
           </div>
 
           {/* Photo Picker */}
@@ -563,6 +594,57 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
             </div>
           )}
 
+          {activePreview && (
+            <section
+              className="form-section-banner submission-preview"
+              aria-labelledby="submission-preview-heading"
+              data-testid="submission-preview"
+              style={{ display: 'block' }}
+            >
+              <h4 id="submission-preview-heading" className="auction-box-heading">
+                Review public listing before signing
+              </h4>
+              <p id="preview-public-warning" className="public-warning-text" role="note">
+                <strong>{PUBLIC_WARNING}</strong> This exact content is what will be published.
+                {pendingRegistration
+                  ? ' Confirming registers only this metadata; no new auction is created.'
+                  : ' Nothing is signed or sent until you confirm.'}
+              </p>
+              <dl data-testid="preview-metadata">
+                <dt>Title</dt>
+                <dd data-field="title">{activePreview.metadata.title}</dd>
+                <dt>Kind</dt>
+                <dd data-field="kind">{activePreview.metadata.kind}</dd>
+                <dt>Street address</dt>
+                <dd data-field="address">{activePreview.metadata.address}</dd>
+                <dt>Neighborhood</dt>
+                <dd data-field="neighborhood">{activePreview.metadata.neighborhood}</dd>
+                <dt>Coordinates</dt>
+                <dd data-field="coordinates">
+                  {activePreview.metadata.latitude}, {activePreview.metadata.longitude}
+                </dd>
+                <dt>Public space description</dt>
+                <dd data-field="description" style={{ whiteSpace: 'pre-wrap' }}>
+                  {activePreview.metadata.description}
+                </dd>
+                <dt>Image URL</dt>
+                <dd data-field="image">{activePreview.metadata.image}</dd>
+                <dt>Amenities</dt>
+                <dd data-field="amenities">
+                  {activePreview.metadata.amenities.length > 0
+                    ? activePreview.metadata.amenities.join(', ')
+                    : 'None'}
+                </dd>
+                {!pendingRegistration && (
+                  <>
+                    <dt>Opening min bid</dt>
+                    <dd data-field="minBid">{minBidEth} ETH</dd>
+                  </>
+                )}
+              </dl>
+            </section>
+          )}
+
           {/* Submit footer */}
           <div className="modal-actions-footer">
             <button
@@ -573,31 +655,49 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
             >
               Cancel
             </button>
-            <button
-              type="submit"
-              className="btn-modal-submit-create"
-              disabled={isSubmitting}
-            >
-              {isSubmitting ? (
-                <>
-                  <Loader2 size={16} className="is-spinning" />
-                  <span>
-                    {pendingRegistration
-                      ? 'Registering Metadata…'
-                      : 'Deploying Auction to Escrow…'}
-                  </span>
-                </>
-              ) : (
-                <>
-                  {pendingRegistration ? <RotateCcw size={16} /> : <Warehouse size={16} />}
-                  <span>
-                    {pendingRegistration
-                      ? `Complete Registration (#${pendingRegistration.auctionId})`
-                      : 'Deploy Auction to Escrow'}
-                  </span>
-                </>
-              )}
-            </button>
+            {activePreview ? (
+              <>
+                <button
+                  type="button"
+                  className="btn-modal-cancel-action"
+                  onClick={() => setPreview(null)}
+                  disabled={isSubmitting}
+                >
+                  Edit listing
+                </button>
+                <button
+                  type="button"
+                  className="btn-modal-submit-create"
+                  onClick={handleConfirm}
+                  disabled={isSubmitting}
+                >
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 size={16} className="is-spinning" />
+                      <span>
+                        {pendingRegistration
+                          ? 'Registering Metadata…'
+                          : 'Deploying Auction to Escrow…'}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      {pendingRegistration ? <RotateCcw size={16} /> : <Warehouse size={16} />}
+                      <span>
+                        {pendingRegistration
+                          ? `Confirm and Complete Registration (#${pendingRegistration.auctionId})`
+                          : 'Confirm and Deploy Auction'}
+                      </span>
+                    </>
+                  )}
+                </button>
+              </>
+            ) : (
+              <button type="submit" className="btn-modal-submit-create" disabled={isSubmitting}>
+                <Check size={16} />
+                <span>Review public listing</span>
+              </button>
+            )}
           </div>
         </form>
       </div>
