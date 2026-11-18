@@ -128,6 +128,12 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
 
   if (!isOpen) return null;
 
+  const handleClose = () => {
+    setPreview(null);
+    setFormError(null);
+    onClose();
+  };
+
   const handlePresetSelect = (presetIndex: number) => {
     const loc = AUSTIN_PRESET_LOCATIONS[presetIndex];
     if (loc) {
@@ -219,7 +225,7 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
       if (onRetryRegistration) {
         try {
           await onRetryRegistration(pendingRegistration.auctionId, pendingRegistration.metadata);
-          onClose();
+          handleClose();
         } catch (err) {
           setFormError(err instanceof Error ? err.message : 'Failed to register metadata');
         }
@@ -255,7 +261,7 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
         parkingStartSec,
         parkingEndSec
       );
-      onClose();
+      handleClose();
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Failed to create auction');
     }
@@ -265,7 +271,7 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
     <Dialog
       className="modal-dialog modal-create-dialog"
       labelledBy="create-listing-title"
-      onClose={onClose}
+      onClose={handleClose}
       canClose={!isSubmitting}
       initialFocusRef={titleInputRef}
     >
@@ -291,7 +297,7 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
           <button
             type="button"
             className="modal-close-btn"
-            onClick={onClose}
+            onClick={handleClose}
             disabled={isSubmitting}
             aria-label="Close dialog"
           >
@@ -658,7 +664,7 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
             <button
               type="button"
               className="btn-modal-cancel-action"
-              onClick={onClose}
+              onClick={handleClose}
               disabled={isSubmitting}
             >
               Cancel

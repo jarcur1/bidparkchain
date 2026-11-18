@@ -10,6 +10,7 @@ import { HARDHAT_CHAIN_HEX, HARDHAT_CHAIN_ID } from '../utils/constants';
 export interface WalletContextValue {
   walletState: WalletState;
   signer: ContractRunner | null;
+  isCurrentSigner: (candidate: ContractRunner) => boolean;
   provider: JsonRpcProvider | BrowserProvider | null;
   wrongChain: boolean;
   connectLocal: (accountIndex?: number) => Promise<void>;
@@ -30,6 +31,12 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
     isReady: false, isConnecting: false, error: null, localAccountIndex: 1,
   });
   const [signer, setSigner] = useState<ContractRunner | null>(null);
+  const signerRef = useRef<ContractRunner | null>(null);
+  const publishSigner = useCallback((next: ContractRunner | null) => {
+    signerRef.current = next;
+    setSigner(next);
+  }, []);
+  const isCurrentSigner = useCallback((candidate: ContractRunner) => signerRef.current === candidate, []);
   const [provider, setProvider] = useState<Provider | null>(null);
   const [wrongChain, setWrongChain] = useState(false);
   // Each balance read is stamped with the deployment it was read under.
@@ -69,13 +76,13 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
     activeProvider.current = null;
     ++balanceSeq.current;
     setBalanceRead(LOADING_READ);
-    setSigner(null);
+    publishSigner(null);
     setProvider(null);
     setWrongChain(false);
     publish({ ...stateRef.current, type, localAccountIndex: index, address: null,
       balance: null, chainId: null, isReady: false, isConnecting: true, error: null });
     return id;
-  }, [publish]);
+  }, [publish, publishSigner]);
 
   const fail = useCallback((id: number, error: unknown) => {
     if (generation.current !== id) return;
@@ -111,12 +118,12 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
       localStorage.setItem(STORAGE_ACCOUNT_INDEX, String(index));
       activeProvider.current = rpc;
       setProvider(rpc);
-      setSigner(wallet);
+      publishSigner(wallet);
       publish({ type: 'local', address: wallet.address, balance, chainId: HARDHAT_CHAIN_ID,
         isReady: true, isConnecting: false, error: null, localAccountIndex: index });
       setBalanceRead(readSucceeded());
     } catch (error) { fail(id, error); }
-  }, [begin, fail, publish]);
+  }, [begin, fail, publish, publishSigner]);
 
   const connectBrowser = useCallback(async (requestAccess: boolean) => {
     const id = begin('injected');
@@ -137,13 +144,13 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
       localStorage.setItem(STORAGE_WALLET_TYPE, 'injected');
       activeProvider.current = rpc;
       setProvider(rpc);
-      setSigner(wallet);
+      publishSigner(wallet);
       setWrongChain(mismatch);
       publish({ ...stateRef.current, type: 'injected', address: accounts[0], balance, chainId,
         isReady: !mismatch, isConnecting: false, error: null });
       setBalanceRead(mismatch ? readFailed(LOADING_READ, 'Wallet is not on the supported network.') : readSucceeded());
     } catch (error) { fail(id, error); }
-  }, [begin, fail, publish]);
+  }, [begin, fail, publish, publishSigner]);
 
   const connectInjected = useCallback(() => {
     ++selection.current;
@@ -231,13 +238,14 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
 
   useEffect(() => () => {
     ++generation.current;
+    signerRef.current = null;
     for (const rpc of providers.current) rpc.destroy();
     providers.current.clear();
     localProvider.current = null;
     restored.current = false;
   }, []);
 
-  return <WalletContext.Provider value={{ walletState, signer, provider, wrongChain,
+  return <WalletContext.Provider value={{ walletState, signer, isCurrentSigner, provider, wrongChain,
     connectLocal, connectInjected, switchInjectedChain, refreshBalance, balanceRead }}>{children}</WalletContext.Provider>;
 };
 

@@ -212,6 +212,18 @@ describe('listings read status', () => {
     expect(text()).not.toContain('No parking auctions are listed yet');
   });
 
+  it('keeps listings stale rather than reporting empty when configuration and listings disagree', async () => {
+    mockListings.mockResolvedValue(snapshot([listing('1', 'Sunny Garage')]));
+    await mount(<App />);
+
+    mockListings.mockResolvedValue({ listings: [], chain: null });
+    await refreshAll();
+
+    expect(text()).toContain('Sunny Garage');
+    expect(text()).toContain('Listings may be out of date');
+    expect(text()).not.toContain('No parking auctions are listed yet');
+  });
+
   it('keeps last known listings labeled stale when a refresh fails and reports the partial result honestly', async () => {
     mockListings.mockResolvedValue(snapshot([listing('1', 'Sunny Garage')]));
     await mount(<App />);

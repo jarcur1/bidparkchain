@@ -58,6 +58,13 @@ test('host lists, drivers bid and refund, winner reserves, host receives payout'
   await create.getByRole('button', { name: 'Review public listing', exact: true }).click();
   await expect(create.getByRole('heading', { name: 'Review public listing before signing' })).toBeFocused();
   expect(await escrow.nextAuctionId()).toBe(auctionId);
+  await page.keyboard.press('Escape');
+  await expect(create).toBeHidden();
+  await page.getByRole('button', { name: 'List a Spot' }).click();
+  await expect(create.getByLabel('Listing Title')).toBeFocused();
+  await expect(create.getByLabel('Listing Title')).toHaveValue(title);
+  await expect(create.getByRole('button', { name: 'Confirm and Deploy Auction', exact: true })).toBeHidden();
+  await create.getByRole('button', { name: 'Review public listing', exact: true }).click();
   await create.getByRole('button', { name: 'Confirm and Deploy Auction', exact: true }).click();
   await expect(create).toBeHidden();
   await expect(page.getByRole('article', { name: `Listing: ${title}`, exact: true })).toBeVisible();

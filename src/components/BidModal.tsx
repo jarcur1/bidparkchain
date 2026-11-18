@@ -141,6 +141,9 @@ export const BidModal: React.FC<BidModalProps> = ({
       onClose={onClose}
       canClose={!isSubmitting}
       initialFocusRef={amountInputRef}
+      focusFallback={() =>
+        document.getElementById(`spot-card-${listing.id}`)?.querySelector<HTMLButtonElement>('.btn-card-secondary') ?? null
+      }
     >
         {/* Modal Header */}
         <div className="modal-header">
@@ -250,7 +253,11 @@ export const BidModal: React.FC<BidModalProps> = ({
                     <button
                       type="button"
                       className="chip-btn"
-                      onClick={() => setEditedAmount(formatEther(minimumWei))}
+                      onClick={() => {
+                        setEditedAmount(formatEther(minimumWei));
+                        setLocalError(null);
+                        amountInputRef.current?.focus();
+                      }}
                     >
                       Use minimum
                     </button>

@@ -62,13 +62,15 @@ CI (`.github/workflows/ci.yml`) runs all of the above on every pull request usin
 
 Configuration, listings, the claimable-refund read and the wallet balance each track their own state: loading, success, empty (a successful read with nothing in it), failed (nothing known), or stale (the last read failed but the previous value is kept, labeled with the last successful read time). Unknown refund or wallet balances are shown as unavailable, never as zero, and withdrawals and bids are only enabled from a successful current read. Each failed source has its own retry button, and manual refresh re-reads configuration too and reports exactly which sources updated. Switching account, chain, provider or deployment immediately hides values read for the previous identity and ignores late responses from it.
 
-`npm run test:ui` includes bid eligibility regressions for competing bids, closure during editing, deployment changes, and agreement between cards and map popups.
+If a listings response belongs to a different deployment, the interface keeps any previous listings marked stale, closes their dialogs, and refreshes configuration. Bid preflight will not sign if the wallet changes while the fresh listing is being read.
+
+`npm run test:ui` covers competing bids, closure during editing, wallet and deployment changes, and agreement between cards and map popups.
 
 The UI suite also exercises native keyboard controls and the shared dialog, including focus restoration, stacked dialogs, Escape, and busy close guards.
 
 ### Keyboard use
 
-Use **Connect Wallet** to choose an account with Enter or Space, **List a Spot** to open the form, and **Details** or **Bid Now** on a card to act without using the map. The listing review moves focus to the public preview before confirmation; **Edit listing** returns focus to the form. Dialogs contain Tab navigation and make the background inert. Escape closes only the topmost dialog and is ignored while it is submitting. Closing a dialog normally returns focus to its opener. The layout reflows on narrow screens and respects `prefers-reduced-motion`.
+Use **Connect Wallet** to choose an account with Enter or Space, **List a Spot** to open the form, and **Details** or **Bid Now** on a card to act without using the map. The listing review moves focus to the public preview before confirmation; **Edit listing** returns focus to the form. Dismissing the form keeps the draft but requires a fresh review. Dialogs contain Tab navigation and make the background inert. Escape closes only the topmost dialog and is ignored while it is submitting. Closing a dialog returns focus to its opener when possible. The layout reflows on narrow screens and respects `prefers-reduced-motion`.
 
 ## Components
 

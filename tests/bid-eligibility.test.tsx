@@ -1,7 +1,7 @@
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ChainSnapshot, Config, Listing } from '../src/types';
+import type { ChainSnapshot, Config, Listing, ListingsResponse } from '../src/types';
 
 // ---------------------------------------------------------------------------
 // Mocks: wallet context, HTTP API, wallet transactions, and Leaflet (no layout in jsdom)
@@ -24,6 +24,7 @@ const h = vi.hoisted(() => {
       localAccountIndex: 1,
     },
     signer: {},
+    isCurrentSigner: (candidate: unknown) => candidate === wallet.signer,
     provider: null,
     wrongChain: false,
     balanceRead: { status: 'success', lastSuccessAt: 0, error: null },
@@ -288,6 +289,38 @@ describe('open bid dialog stays synchronized with chain listing state', () => {
     expect(bidDialog()).toBeNull();
   });
 
+  it('does not send a bid if the wallet changes during preflight', async () => {
+    await mountApp();
+    await openBidDialogFor('1');
+    await typeAmount('0.5');
+
+    const pending = Promise.withResolvers<ListingsResponse>();
+    vi.mocked(fetchListings).mockReturnValueOnce(pending.promise);
+    await click(submitButton());
+
+    // The signing session can already be invalid even before React publishes a new wallet render.
+    h.wallet.signer = {};
+    await act(async () => pending.resolve({ listings: server.listings, chain: server.chain }));
+
+    expect(placeBid).not.toHaveBeenCalled();
+    expect(dialogAlerts()).toContain('Your wallet or deployment changed');
+    expect(amountInput()!.value).toBe('0.5');
+  });
+
+  it('does not let a background refresh supersede a pending bid preflight', async () => {
+    await mountApp();
+    await openBidDialogFor('1');
+    const pending = Promise.withResolvers<ListingsResponse>();
+    vi.mocked(fetchListings).mockReturnValueOnce(pending.promise);
+
+    await click(submitButton());
+    await poll();
+    await act(async () => pending.resolve({ listings: server.listings, chain: server.chain }));
+
+    expect(placeBid).toHaveBeenCalledTimes(1);
+    expect(bidDialog()).toBeNull();
+  });
+
   describe('competing bid', () => {
     it('flags a newer highest bid that undercuts the typed amount and offers the new minimum', async () => {
       await mountApp();
@@ -305,6 +338,14 @@ describe('open bid dialog stays synchronized with chain listing state', () => {
       expect(placeBid).not.toHaveBeenCalled();
       expect(dialogAlerts()).toContain('strictly higher');
       expect(amountInput()!.value).toBe('0.5');
+
+      const useMinimum = Array.from(bidDialog()!.querySelectorAll('button')).find(
+        (button) => button.textContent === 'Use minimum',
+      )!;
+      useMinimum.focus();
+      await click(useMinimum);
+      expect(document.activeElement).toBe(amountInput());
+      expect(amountInput()!.value).toBe('0.600000000000000001');
     });
 
     it('rejects at submit when a competing bid landed since the last poll, without sending a transaction', async () => {
@@ -327,6 +368,7 @@ describe('open bid dialog stays synchronized with chain listing state', () => {
   describe('closure during edit', () => {
     it('disables bidding at the chain cutoff, keeping the typed amount', async () => {
       await mountApp();
+      card('1')!.querySelector<HTMLButtonElement>('.btn-card-primary')!.focus();
       await openBidDialogFor('1');
       await typeAmount('0.5');
       expect(cardHasBid('1')).toBe(true);
@@ -340,6 +382,12 @@ describe('open bid dialog stays synchronized with chain listing state', () => {
       expect(amountInput()!.value).toBe('0.5');
       expect(cardHasBid('1')).toBe(false);
       expect(popupHasBid('Spot 1')).toBe(false);
+
+      await act(async () => document.activeElement!.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+      ));
+      expect(bidDialog()).toBeNull();
+      expect(document.activeElement).toBe(card('1')!.querySelector('.btn-card-secondary'));
     });
 
     it.each([
@@ -399,9 +447,13 @@ describe('open bid dialog stays synchronized with chain listing state', () => {
       await openBidDialogFor('1');
 
       server.chain = { ...baseChain, deploymentBlockHash: '0xdeploy-b' };
+      server.listings = [makeListing('1', { title: 'Different deployment', minBid: '1' })];
       await poll();
 
       expect(bidDialog()).toBeNull();
+      expect(card('1')?.textContent).toContain('Spot 1');
+      expect(card('1')?.textContent).not.toContain('Different deployment');
+      expect(document.body.textContent).toContain('Listings may be out of date');
       expect(placeBid).not.toHaveBeenCalled();
       expect(document.body.textContent).toContain('Bid dialog closed');
     });

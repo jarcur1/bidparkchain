@@ -127,6 +127,8 @@ export interface DialogProps {
   canClose?: boolean;
   /** Element to focus on open; defaults to the dialog surface itself. */
   initialFocusRef?: React.RefObject<HTMLElement | null>;
+  /** A stable control to focus if the opener disappeared and no lower dialog remains. */
+  focusFallback?: () => HTMLElement | null;
   children: React.ReactNode;
 }
 
@@ -136,6 +138,7 @@ export const Dialog: React.FC<DialogProps> = ({
   onClose,
   canClose = true,
   initialFocusRef,
+  focusFallback,
   children,
 }) => {
   const [host] = useState(() => document.createElement('div'));
@@ -181,14 +184,14 @@ export const Dialog: React.FC<DialogProps> = ({
         const next = stack[stack.length - 1];
         const restored =
           focusElement(entry.opener) ||
-          (next?.dialog ? focusElement(next.dialog) : false);
+          (next ? focusElement(next.dialog) : focusElement(focusFallback?.() ?? null));
         if (!restored && host.contains(document.activeElement)) {
           (document.activeElement as HTMLElement).blur();
         }
       }
       host.remove();
     };
-    // The dialog is mounted only while open; initialFocusRef is read once on open.
+    // The dialog mounts only while open; focus targets belong to this opening.
   }, [host]);
 
   return createPortal(
