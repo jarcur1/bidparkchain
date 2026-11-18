@@ -63,7 +63,16 @@ describe('listing API with real SQLite and onchain auctions', () => {
   });
 
   it('recovers delayed registration using canonical normalized metadata and is idempotent', async () => {
-    expect((await request('/api/listings')).json).toEqual({ listings: [] });
+    const { json } = await request('/api/listings');
+    const { json: config } = await request('/api/config');
+    expect(json).toEqual({
+      listings: [],
+      chain: expect.objectContaining({
+        contractAddress: deployment.address,
+        deploymentBlockHash: config.deploymentBlockHash,
+        chainTime: expect.any(Number),
+      }),
+    });
     const variant = Object.fromEntries(Object.entries(metadata).reverse().map(([key, value]) => [
       key, typeof value === 'string' && key !== 'kind' ? `  ${value}  ` : key === 'amenities' ? value.map((item) => ` ${item} `) : value,
     ]));
@@ -171,7 +180,7 @@ describe('listing API with real SQLite and onchain auctions', () => {
         if (malformed) fs.writeFileSync(deploymentPath, '{not json');
         else fs.unlinkSync(deploymentPath);
         expect((await request('/api/config')).status).toBe(503);
-        expect((await request('/api/listings')).json).toEqual({ listings: [] });
+        expect((await request('/api/listings')).json).toEqual({ listings: [], chain: null });
         expect((await register()).status).toBe(503);
       }
     } finally { fs.writeFileSync(deploymentPath, contents); }
@@ -184,7 +193,7 @@ describe('listing API with real SQLite and onchain auctions', () => {
     writeDeployment(path.dirname(deploymentPath), deployment);
     const replacement = { ...metadata, title: 'Replacement garage' };
     expect(await createAuction(replacement)).toBe('1');
-    expect((await request('/api/listings')).json).toEqual({ listings: [] });
+    expect((await request('/api/listings')).json.listings).toEqual([]);
     expect((await register()).status).toBe(400);
     const result = await register('1', replacement);
     expect(result.status).toBe(201);
@@ -192,14 +201,14 @@ describe('listing API with real SQLite and onchain auctions', () => {
     expect((await request('/api/listings')).json.listings).toEqual([result.json.listing]);
     expect(runtime.db.getListing('1').title).toBe(replacement.title);
   });
-  it('returns listing outage errors but still serves configuration when its chain stops', async () => {
+  it('returns listing and configuration outage errors when its chain stops', async () => {
     await chain.stop();
     for (const result of [await request('/api/listings'), await register()]) {
       expect(result.status).toBe(503);
       expect(result.json.error).toMatch(/node is unavailable/);
     }
     const config = await request('/api/config');
-    expect(config.status).toBe(200);
-    expect(config.json.contractAddress).toBe(deployment.address);
+    expect(config.status).toBe(503);
+    expect(config.json.error).toMatch(/deployment block unavailable/i);
   });
 });

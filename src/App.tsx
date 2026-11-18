@@ -25,14 +25,29 @@ import {
   settleAuction,
   withdrawRefund,
 } from './services/blockchain';
+import { parseEther } from 'ethers';
 import type {
   AppTab,
+  ChainSnapshot,
   Config,
   FilterState,
   Listing,
+  ListingsResponse,
   SpotMetadata,
   ToastMessage,
 } from './types';
+import {
+  deploymentKey,
+  getBidEligibility,
+  getChainNowSec,
+  getMinimumBidWei,
+  makeListingTarget,
+  resetChainClock,
+  resolveListing,
+  syncChainClock,
+  targetKey,
+  type ListingTarget,
+} from './utils/eligibility';
 import { formatEth } from './utils/formatters';
 import {
   LOADING_READ,
@@ -49,6 +64,7 @@ import {
 interface ListingsState {
   deployment: string | null;
   data: Listing[];
+  chain: ChainSnapshot | null;
   read: ReadState;
 }
 
@@ -65,7 +81,7 @@ interface RefundState {
   read: ReadState;
 }
 
-const EMPTY_LISTINGS: ListingsState = { deployment: null, data: [], read: LOADING_READ };
+const EMPTY_LISTINGS: ListingsState = { deployment: null, data: [], chain: null, read: LOADING_READ };
 const UNKNOWN_REFUND = { wei: null, read: LOADING_READ };
 
 const sameRefundIdentity = (a: RefundIdentity, b: RefundIdentity) =>
@@ -76,6 +92,9 @@ export const deploymentKeyOf = (config: Config | null) =>
   config
     ? `${config.chainId}:${config.contractAddress.toLowerCase()}:${config.deploymentBlock}:${config.deploymentBlockHash}`
     : null;
+
+/** A bid rejected by revalidation against current chain state; no transaction was sent. */
+class BidPreflightError extends Error {}
 
 export const AppContent: React.FC<{
   config: Config | null;
@@ -89,14 +108,31 @@ export const AppContent: React.FC<{
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isActionBusy, setIsActionBusy] = useState(false);
 
+  // Never show listings read from a different deployment alongside the current config.
+  const configDeployment = deploymentKeyOf(config);
+  const deploymentRef = useRef(configDeployment);
+  deploymentRef.current = configDeployment;
+  const listingsView =
+    configDeployment === null || listingsState.deployment === configDeployment ? listingsState : EMPTY_LISTINGS;
+  const { data: listings, chain } = listingsView;
+
   // Navigation & View
   const [currentTab, setCurrentTab] = useState<AppTab>('marketplace');
   const [viewMode, setViewMode] = useState<'split' | 'cards' | 'map'>('split');
   const [selectedListingId, setSelectedListingId] = useState<string | null>(null);
 
   // Modals
-  const [detailListing, setDetailListing] = useState<Listing | null>(null);
-  const [bidModalListing, setBidModalListing] = useState<Listing | null>(null);
+  // Dialogs hold a stable identity (deployment + auction id + metadata hash), never a listing snapshot.
+  const [detailTarget, setDetailTarget] = useState<ListingTarget | null>(null);
+  const [bidTarget, setBidTarget] = useState<ListingTarget | null>(null);
+  const detailListing = useMemo(
+    () => resolveListing(listings, chain, detailTarget),
+    [listings, chain, detailTarget]
+  );
+  const bidModalListing = useMemo(
+    () => resolveListing(listings, chain, bidTarget),
+    [listings, chain, bidTarget]
+  );
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isWalletModalOpen, setIsWalletModalOpen] = useState(false);
 
@@ -140,42 +176,51 @@ export const AppContent: React.FC<{
     setSelectedListingId(listing.id);
   }, []);
 
+  const walletAddressRef = useRef(walletState.address);
+  walletAddressRef.current = walletState.address;
+  const chainRef = useRef(chain);
+  chainRef.current = chain;
+
   const handleOpenBidModal = useCallback((listing: Listing) => {
-    setBidModalListing(listing);
-  }, []);
+    const eligibility = getBidEligibility(listing, walletAddressRef.current);
+    if (!eligibility.canBid) {
+      addToast('info', 'Bidding unavailable', eligibility.message ?? undefined);
+      return;
+    }
+    setBidTarget(makeListingTarget(listing, chainRef.current));
+  }, [addToast]);
 
   const handleOpenDetailModal = useCallback((listing: Listing) => {
-    setDetailListing(listing);
+    setDetailTarget(makeListingTarget(listing, chainRef.current));
   }, []);
 
-  // Listings belong to one deployment: a different deployment never shows the previous one's values.
-  const deploymentKey = deploymentKeyOf(config);
-  const deploymentRef = useRef(deploymentKey);
-  deploymentRef.current = deploymentKey;
-  const listingsView =
-    listingsState.deployment === null || listingsState.deployment === deploymentKey ? listingsState : EMPTY_LISTINGS;
-  const listings = listingsView.data;
   const listingsReqRef = useRef(0);
 
-  // Fetch listings from API; only the newest request for the current deployment may publish.
-  const loadListings = useCallback(async (): Promise<ReadResult> => {
+  // Only the newest request for the current deployment may publish or re-anchor the clock.
+  const loadListings = useCallback(async (): Promise<ReadResult & { snapshot?: ListingsResponse }> => {
     const reqId = ++listingsReqRef.current;
     const requestedDeployment = deploymentRef.current;
     const isSuperseded = () =>
-      reqId !== listingsReqRef.current ||
-      (requestedDeployment !== null && requestedDeployment !== deploymentRef.current);
+      reqId !== listingsReqRef.current || requestedDeployment !== deploymentRef.current;
     try {
-      const data = await fetchListings();
+      const snapshot = await fetchListings();
       if (isSuperseded()) return READ_SUPERSEDED;
-      setListingsState({ deployment: deploymentRef.current, data, read: readSucceeded(data.length === 0) });
-      return READ_OK;
+      if (snapshot.chain) syncChainClock(snapshot.chain.chainTime);
+      else resetChainClock();
+      setListingsState({
+        deployment: snapshot.chain ? deploymentKey(snapshot.chain) : requestedDeployment,
+        data: snapshot.listings,
+        chain: snapshot.chain,
+        read: readSucceeded(snapshot.listings.length === 0),
+      });
+      return { ...READ_OK, snapshot };
     } catch (err) {
       console.error('Failed to load listings:', err);
       if (isSuperseded()) return READ_SUPERSEDED;
       setListingsState((prev) => {
         const base =
           prev.deployment === null || prev.deployment === deploymentRef.current ? prev : EMPTY_LISTINGS;
-        return { deployment: deploymentRef.current, data: base.data, read: readFailed(base.read, err) };
+        return { ...base, deployment: deploymentRef.current, read: readFailed(base.read, err) };
       });
       return readFailure(err);
     }
@@ -186,7 +231,7 @@ export const AppContent: React.FC<{
     address: walletState.address,
     chainId: walletState.chainId,
     provider,
-    deployment: deploymentKey,
+    deployment: configDeployment,
   };
   const refundIdentityRef = useRef(refundIdentity);
   refundIdentityRef.current = refundIdentity;
@@ -202,7 +247,7 @@ export const AppContent: React.FC<{
       address: walletState.address,
       chainId: walletState.chainId,
       provider,
-      deployment: deploymentKey,
+      deployment: configDeployment,
     };
     const thisReqId = ++refundReqIdRef.current;
     const isCurrent = () =>
@@ -228,7 +273,7 @@ export const AppContent: React.FC<{
       if (!isCurrent()) return READ_SUPERSEDED;
       return fail(err);
     }
-  }, [config, deploymentKey, walletState.address, walletState.chainId, walletState.isReady, provider]);
+  }, [config, configDeployment, walletState.address, walletState.chainId, walletState.isReady, provider]);
 
   // Manual refresh all: reports what each source actually did.
   const handleRefreshAll = useCallback(async () => {
@@ -257,6 +302,7 @@ export const AppContent: React.FC<{
       } else {
         addToast('error', 'Refresh failed', `Could not read: ${failedText}.`);
       }
+      return null;
     } finally {
       setIsRefreshing(false);
     }
@@ -290,15 +336,21 @@ export const AppContent: React.FC<{
     }, 10000);
 
     return () => clearInterval(interval);
-  }, [loadListings, loadPendingRefunds, refreshBalance, onRefreshConfig, deploymentKey]);
+  }, [loadListings, loadPendingRefunds, refreshBalance, onRefreshConfig, configDeployment]);
 
-  // Keep detailListing updated when listings refresh
+  // Close dialogs whose listing vanished or whose deployment / metadata identity changed,
+  // so an id reused by a different listing can never reattach to an old dialog.
   useEffect(() => {
-    if (detailListing) {
-      const updated = listings.find((l) => l.id === detailListing.id);
-      if (updated) setDetailListing(updated);
+    if (bidTarget && !bidModalListing) {
+      setBidTarget(null);
+      addToast(
+        'info',
+        'Bid dialog closed',
+        'This listing changed or is no longer available on the current deployment. No bid was sent.'
+      );
     }
-  }, [listings, detailListing?.id]);
+    if (detailTarget && !detailListing) setDetailTarget(null);
+  }, [bidTarget, bidModalListing, detailTarget, detailListing, addToast]);
 
   // Handle Place Bid
   const handlePlaceBid = async (listing: Listing, amountEth: string) => {
@@ -312,6 +364,44 @@ export const AppContent: React.FC<{
 
     setIsActionBusy(true);
     try {
+      // Revalidate against the current chain listing and clock before asking the wallet to sign.
+      if (!bidTarget || bidTarget.id !== listing.id) {
+        throw new BidPreflightError('This bid dialog is no longer active. No bid was sent.');
+      }
+      const { snapshot: fresh } = await loadListings();
+      if (!fresh || !fresh.chain) {
+        throw new BidPreflightError(
+          'Could not confirm the current auction state, so no bid was sent. Your amount was kept; try again.'
+        );
+      }
+      if (
+        deploymentKey(fresh.chain) !== bidTarget.deployment ||
+        fresh.chain.contractAddress.toLowerCase() !== config.contractAddress.toLowerCase()
+      ) {
+        throw new BidPreflightError(
+          'The marketplace deployment changed. Reload the page to continue; no bid was sent.'
+        );
+      }
+      const current = resolveListing(fresh.listings, fresh.chain, bidTarget);
+      if (!current) {
+        throw new BidPreflightError('This auction is no longer available. No bid was sent.');
+      }
+      if (!sameRefundIdentity(refundIdentityRef.current, refundIdentity)) {
+        throw new BidPreflightError('Your wallet or deployment changed. No bid was sent.');
+      }
+      const eligibility = getBidEligibility(current, walletState.address, getChainNowSec());
+      if (!eligibility.canBid) {
+        throw new BidPreflightError(`${eligibility.message} No bid was sent.`);
+      }
+      if (parseEther(amountEth) < getMinimumBidWei(current)) {
+        const hasBids = parseEther(current.highestBid) > 0n;
+        throw new BidPreflightError(
+          hasBids
+            ? `Another bid raised the price to ${current.highestBid} ETH. Your amount of ${amountEth} ETH was kept; bid higher than ${current.highestBid} ETH to continue. No bid was sent.`
+            : `Your amount of ${amountEth} ETH is below the ${current.minBid} ETH opening bid. No bid was sent.`
+        );
+      }
+
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
       const receipt = await placeBid(contract, listing.id, amountEth);
 
@@ -325,8 +415,11 @@ export const AppContent: React.FC<{
       // Auto-refresh data
       await Promise.all([loadListings(), loadPendingRefunds(), refreshBalance()]);
     } catch (err) {
+      if (err instanceof BidPreflightError) throw err;
       const msg = parseContractError(err);
       addToast('error', 'Bid Submission Failed', msg);
+      // The chain may have moved (competing bid, cutoff); refresh so the open dialog shows current state.
+      void loadListings();
       throw new Error(msg);
     } finally {
       setIsActionBusy(false);
@@ -501,7 +594,7 @@ export const AppContent: React.FC<{
       );
 
       await loadListings();
-      setDetailListing(null);
+      setDetailTarget(null);
     } catch (err) {
       const msg = parseContractError(err);
       addToast('error', 'Cancellation Failed', msg);
@@ -541,7 +634,7 @@ export const AppContent: React.FC<{
 
   // Filter & Sort Logic
   const filteredListings = useMemo(() => {
-    const now = Math.floor(Date.now() / 1000);
+    const now = getChainNowSec();
     const searchLower = filters.search.trim().toLowerCase();
 
     return listings
@@ -619,7 +712,7 @@ export const AppContent: React.FC<{
   // Compute active bids count for badge
   const activeBidsCount = useMemo(() => {
     if (!walletState.address) return 0;
-    const now = Math.floor(Date.now() / 1000);
+    const now = getChainNowSec();
     const addr = walletState.address.toLowerCase();
     return listings.filter(
       (l) =>
@@ -752,6 +845,7 @@ export const AppContent: React.FC<{
                 <div className="layout-map-column">
                   <ParkingMap
                     listings={filteredListings}
+                    currentAddress={walletState.address}
                     selectedListingId={selectedListingId}
                     onSelectListing={handleSelectListing}
                     onOpenBid={handleOpenBidModal}
@@ -789,7 +883,7 @@ export const AppContent: React.FC<{
         listing={detailListing}
         contractAddress={config?.contractAddress}
         currentAddress={walletState.address}
-        onClose={() => setDetailListing(null)}
+        onClose={() => setDetailTarget(null)}
         onOpenBid={handleOpenBidModal}
         onSettle={handleSettleListing}
         onCancel={handleCancelListing}
@@ -799,8 +893,9 @@ export const AppContent: React.FC<{
 
       {/* Bid Modal */}
       <BidModal
+        key={targetKey(bidTarget)}
         listing={bidModalListing}
-        onClose={() => setBidModalListing(null)}
+        onClose={() => setBidTarget(null)}
         onSubmitBid={handlePlaceBid}
         isSubmitting={isActionBusy}
       />

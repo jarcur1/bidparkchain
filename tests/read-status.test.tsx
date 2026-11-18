@@ -2,7 +2,7 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Config, Listing } from '../src/types';
+import type { Config, Listing, ListingsResponse } from '../src/types';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -74,6 +74,15 @@ const CONFIG_A = configFor('0xContractA');
 const CONFIG_B = configFor('0xContractB');
 // Same chain and contract address as A, but a reset chain produced a different deployment block.
 const CONFIG_A_RESET = configFor('0xContractA', '0xhash2');
+
+function snapshot(listings: Listing[], config = CONFIG_A): ListingsResponse {
+  const { chainId, contractAddress, deploymentBlock, deploymentBlockHash } = config;
+  const chainTime = Math.floor(Date.now() / 1000);
+  return {
+    listings,
+    chain: { chainId, contractAddress, deploymentBlock, deploymentBlockHash, blockNumber: 1, blockTimestamp: chainTime, chainTime },
+  };
+}
 
 const listing = (id: string, title: string): Listing => ({
   id,
@@ -157,7 +166,7 @@ beforeEach(() => {
   mockRefund.mockReset();
   rpc.getBalance.mockReset();
   mockConfig.mockResolvedValue(CONFIG_A);
-  mockListings.mockResolvedValue([]);
+  mockListings.mockResolvedValue(snapshot([]));
   mockRefund.mockResolvedValue(0n);
   rpc.getBalance.mockResolvedValue(ETH + ETH / 2n);
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -187,7 +196,7 @@ describe('listings read status', () => {
     expect(text()).toContain('Spot availability unavailable');
     expect(text()).not.toContain('0 spots available');
 
-    mockListings.mockResolvedValue([]);
+    mockListings.mockResolvedValue(snapshot([]));
     await click(button('Retry listings'));
 
     expect(text()).toContain('No parking auctions are listed yet');
@@ -197,14 +206,14 @@ describe('listings read status', () => {
   });
 
   it('distinguishes a successful empty read from populated listings', async () => {
-    mockListings.mockResolvedValue([listing('1', 'Sunny Garage')]);
+    mockListings.mockResolvedValue(snapshot([listing('1', 'Sunny Garage')]));
     await mount(<App />);
     expect(text()).toContain('Sunny Garage');
     expect(text()).not.toContain('No parking auctions are listed yet');
   });
 
   it('keeps last known listings labeled stale when a refresh fails and reports the partial result honestly', async () => {
-    mockListings.mockResolvedValue([listing('1', 'Sunny Garage')]);
+    mockListings.mockResolvedValue(snapshot([listing('1', 'Sunny Garage')]));
     await mount(<App />);
     expect(text()).not.toContain('may be out of date');
 
@@ -267,16 +276,16 @@ describe('configuration read status', () => {
   });
 
   it('hides foreign listings on a deployment change and ignores superseded listing responses', async () => {
-    const queue: Deferred<Listing[]>[] = [];
+    const queue: Deferred<ListingsResponse>[] = [];
     mockListings.mockImplementation(() => {
-      const d = deferred<Listing[]>();
+      const d = deferred<ListingsResponse>();
       queue.push(d);
       return d.promise;
     });
     await mount(<App />);
     // The initial read restarts once the configuration identifies the deployment; only the newest publishes.
     const base = queue.length;
-    await act(async () => queue[base - 1].resolve([listing('1', 'Deployment A Spot')]));
+    await act(async () => queue[base - 1].resolve(snapshot([listing('1', 'Deployment A Spot')])));
     await settle();
     expect(text()).toContain('Deployment A Spot');
 
@@ -287,25 +296,25 @@ describe('configuration read status', () => {
     expect(text()).not.toContain('Deployment A Spot');
 
     // Late response for the old deployment must be dropped; the new deployment's read wins.
-    await act(async () => queue[base].resolve([listing('9', 'Late Deployment A Spot')]));
+    await act(async () => queue[base].resolve(snapshot([listing('9', 'Late Deployment A Spot')])));
     await settle();
     expect(text()).not.toContain('Late Deployment A Spot');
-    await act(async () => queue[base + 1].resolve([listing('2', 'Deployment B Spot')]));
+    await act(async () => queue[base + 1].resolve(snapshot([listing('2', 'Deployment B Spot')], CONFIG_B)));
     await settle();
     expect(text()).toContain('Deployment B Spot');
     expect(text()).not.toContain('Deployment A Spot');
   });
 
   it('only the newest overlapping listings request may publish', async () => {
-    const queue: Deferred<Listing[]>[] = [];
+    const queue: Deferred<ListingsResponse>[] = [];
     mockListings.mockImplementation(() => {
-      const d = deferred<Listing[]>();
+      const d = deferred<ListingsResponse>();
       queue.push(d);
       return d.promise;
     });
     await mount(<App />);
     const base = queue.length;
-    await act(async () => queue[base - 1].resolve([listing('1', 'Initial Spot')]));
+    await act(async () => queue[base - 1].resolve(snapshot([listing('1', 'Initial Spot')])));
     await settle();
 
     // Two overlapping manual refreshes: the older response arrives last.
@@ -314,8 +323,8 @@ describe('configuration read status', () => {
       (container.querySelector('[aria-label="Refresh data"]') as HTMLElement).click();
     });
     expect(queue).toHaveLength(base + 2);
-    await act(async () => queue[base + 1].resolve([listing('3', 'Newest Spot')]));
-    await act(async () => queue[base].resolve([listing('2', 'Older Spot')]));
+    await act(async () => queue[base + 1].resolve(snapshot([listing('3', 'Newest Spot')])));
+    await act(async () => queue[base].resolve(snapshot([listing('2', 'Older Spot')])));
     await settle();
     expect(text()).toContain('Newest Spot');
     expect(text()).not.toContain('Older Spot');
@@ -484,15 +493,15 @@ describe('identity changes', () => {
 
 describe('deployment fingerprint and retry honesty', () => {
   it('hides listings and drops late responses when only the deployment fingerprint changes', async () => {
-    const queue: Deferred<Listing[]>[] = [];
+    const queue: Deferred<ListingsResponse>[] = [];
     mockListings.mockImplementation(() => {
-      const d = deferred<Listing[]>();
+      const d = deferred<ListingsResponse>();
       queue.push(d);
       return d.promise;
     });
     await mount(<App />);
     const base = queue.length;
-    await act(async () => queue[base - 1].resolve([listing('1', 'Before Reset Spot')]));
+    await act(async () => queue[base - 1].resolve(snapshot([listing('1', 'Before Reset Spot')])));
     await settle();
     expect(text()).toContain('Before Reset Spot');
 
@@ -500,18 +509,18 @@ describe('deployment fingerprint and retry honesty', () => {
     await refreshAll();
     expect(text()).not.toContain('Before Reset Spot');
 
-    await act(async () => queue[base].resolve([listing('9', 'Late Old Chain Spot')]));
+    await act(async () => queue[base].resolve(snapshot([listing('9', 'Late Old Chain Spot')])));
     await settle();
     expect(text()).not.toContain('Late Old Chain Spot');
-    await act(async () => queue[base + 1].resolve([listing('2', 'After Reset Spot')]));
+    await act(async () => queue[base + 1].resolve(snapshot([listing('2', 'After Reset Spot')], CONFIG_A_RESET)));
     await settle();
     expect(text()).toContain('After Reset Spot');
   });
 
   it('targeted retry does not claim success when its read was superseded', async () => {
-    const queue: Deferred<Listing[]>[] = [];
+    const queue: Deferred<ListingsResponse>[] = [];
     mockListings.mockImplementation(() => {
-      const d = deferred<Listing[]>();
+      const d = deferred<ListingsResponse>();
       queue.push(d);
       return d.promise;
     });
@@ -524,7 +533,7 @@ describe('deployment fingerprint and retry honesty', () => {
       button('Retry listings').click();
       button('Retry listings').click();
     });
-    await act(async () => queue[queue.length - 2].resolve([listing('1', 'Spot')]));
+    await act(async () => queue[queue.length - 2].resolve(snapshot([listing('1', 'Spot')])));
     await settle();
     expect(text()).toContain('read was replaced by a newer request');
     expect(text()).not.toContain('Listings reloaded');

@@ -139,11 +139,28 @@ export async function claimPayout(
   return receipt;
 }
 
+const CONTRACT_ERROR_MESSAGES: Record<string, string> = {
+  BidTooLow: 'Another bid reached or passed your amount first. Your input was kept; raise it above the new highest bid.',
+  AuctionEnded: 'Bidding closed on-chain before your bid was mined.',
+  AlreadySettled: 'This auction was already settled.',
+  AlreadyCancelled: 'This auction was cancelled.',
+  AuctionCancelledError: 'This auction was cancelled.',
+  AuctionNotFound: 'This auction does not exist on the connected deployment.',
+  OwnerCannotBid: 'Spot owners cannot bid on their own listing.',
+};
+
 export function parseContractError(err: unknown): string {
   if (!err) return 'Unknown error occurred';
 
   if (typeof err === 'object') {
     const errorObj = err as Record<string, unknown>;
+
+    // Decoded custom errors from the escrow contract ABI
+    const revert = errorObj.revert;
+    if (revert && typeof revert === 'object') {
+      const known = CONTRACT_ERROR_MESSAGES[(revert as Record<string, unknown>).name as string];
+      if (known) return known;
+    }
 
     // Ethers custom error or reason
     if (typeof errorObj.reason === 'string') return errorObj.reason;

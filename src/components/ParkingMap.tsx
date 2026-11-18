@@ -3,9 +3,11 @@ import L from 'leaflet';
 import { AlertCircle, RotateCcw } from 'lucide-react';
 import type { Listing } from '../types';
 import { formatEth } from '../utils/formatters';
+import { getBidEligibility } from '../utils/eligibility';
 
 interface ParkingMapProps {
   listings: Listing[];
+  currentAddress: string | null;
   selectedListingId: string | null;
   onSelectListing: (listing: Listing) => void;
   onOpenBid: (listing: Listing) => void;
@@ -45,7 +47,8 @@ function createMarkerPinElement(priceEth: string, isSelected: boolean, isSettled
 function createPopupCardElement(
   listing: Listing,
   onOpenDetail: (l: Listing) => void,
-  onOpenBid: (l: Listing) => void
+  onOpenBid: (l: Listing) => void,
+  canBid: boolean
 ): HTMLElement {
   const hasBids = parseFloat(listing.highestBid) > 0;
   const displayPrice = hasBids ? listing.highestBid : listing.minBid;
@@ -117,7 +120,7 @@ function createPopupCardElement(
   });
   btnRow.appendChild(detailsBtn);
 
-  if (!listing.settled && !listing.cancelled) {
+  if (canBid) {
     const bidBtn = document.createElement('button');
     bidBtn.type = 'button';
     bidBtn.className = 'popup-action-btn popup-btn-bid';
@@ -137,6 +140,7 @@ function createPopupCardElement(
 
 export const ParkingMap: React.FC<ParkingMapProps> = ({
   listings,
+  currentAddress,
   selectedListingId,
   onSelectListing,
   onOpenBid,
@@ -147,6 +151,16 @@ export const ParkingMap: React.FC<ParkingMapProps> = ({
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
   const markersMapRef = useRef<Map<string, { marker: L.Marker; listing: Listing }>>(new Map());
   const [hasMapError, setHasMapError] = useState(false);
+
+  // Re-evaluate eligibility every second so a popup stops offering Bid at the chain cutoff.
+  const [, setClockTick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setClockTick((n) => n + 1), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const eligibilityKey = listings
+    .map((l) => `${l.id}:${getBidEligibility(l, currentAddress).canBid ? 1 : 0}`)
+    .join(',');
 
   // Stable callbacks ref so marker event listeners always call the latest functions
   const callbacksRef = useRef({ onSelectListing, onOpenBid, onOpenDetail });
@@ -250,7 +264,8 @@ export const ParkingMap: React.FC<ParkingMapProps> = ({
           const newPopupContent = createPopupCardElement(
             listing,
             (l) => callbacksRef.current.onOpenDetail(l),
-            (l) => callbacksRef.current.onOpenBid(l)
+            (l) => callbacksRef.current.onOpenBid(l),
+            getBidEligibility(listing, currentAddress).canBid
           );
           popup.setContent(newPopupContent);
         }
@@ -271,7 +286,8 @@ export const ParkingMap: React.FC<ParkingMapProps> = ({
         const popupContent = createPopupCardElement(
           listing,
           (l) => callbacksRef.current.onOpenDetail(l),
-          (l) => callbacksRef.current.onOpenBid(l)
+          (l) => callbacksRef.current.onOpenBid(l),
+          getBidEligibility(listing, currentAddress).canBid
         );
 
         marker.bindPopup(popupContent, {
@@ -287,7 +303,7 @@ export const ParkingMap: React.FC<ParkingMapProps> = ({
         currentMap.set(listing.id, { marker, listing });
       }
     });
-  }, [listings]); // listings only, NOT selectedListingId or callbacks!
+  }, [listings, currentAddress, eligibilityKey]); // NOT selectedListingId or callbacks!
 
   // Update selection CSS class and map pan without clearing markers or closing popups
   useEffect(() => {

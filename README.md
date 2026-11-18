@@ -34,6 +34,8 @@ An injected Ethereum wallet is also supported on local chain **31337**. If addin
 - A bid must meet the opening price and exceed the current highest bid. Owners cannot bid on their own auctions.
 - Each transaction sends the **entire new bid**, not a top-up. A displaced bid—including your own previous bid when raising it—becomes a withdrawable refund.
 - Owners cannot cancel an auction after any bid. The current winner cannot withdraw their winning bid.
+- Bid eligibility (open, not cancelled or settled, not the owner) is one rule shared by cards, the detail view, map popups and the bid dialog. It is judged against **chain time**, not the browser clock: `GET /api/listings` returns a `chain` object (deployment identity plus the latest block timestamp and a `chainTime` lower bound for the next block), and the browser advances that value with its monotonic clock between polls.
+- An open bid dialog is bound to the listing's deployment, auction id and metadata hash, not a snapshot. Price, owner and eligibility refresh with every poll while the amount you typed is kept. If the deployment or committed metadata changes, or the listing disappears, the dialog closes. Before the wallet is asked to sign, the bid is revalidated against freshly read chain state; a competing bid, cutoff, cancellation or settlement is reported with your input retained and no transaction sent.
 - Bidding ends at the contract's `bidEnd` timestamp. The winner is confirmed by calling `settle` after that deadline.
 - Seller payout is available only after settlement and `parkingEnd`, and can be claimed once.
 - There is **no automatic refund or dispute process for an inaccessible space**. Time-locked escrow does not prove physical access or delivery.
@@ -59,6 +61,8 @@ CI (`.github/workflows/ci.yml`) runs all of the above on every pull request usin
 ### Read status
 
 Configuration, listings, the claimable-refund read and the wallet balance each track their own state: loading, success, empty (a successful read with nothing in it), failed (nothing known), or stale (the last read failed but the previous value is kept, labeled with the last successful read time). Unknown refund or wallet balances are shown as unavailable, never as zero, and withdrawals and bids are only enabled from a successful current read. Each failed source has its own retry button, and manual refresh re-reads configuration too and reports exactly which sources updated. Switching account, chain, provider or deployment immediately hides values read for the previous identity and ignores late responses from it.
+
+`npm run test:ui` includes bid eligibility regressions for competing bids, closure during editing, deployment changes, and agreement between cards and map popups.
 
 ## Components
 
