@@ -40,14 +40,21 @@ An injected Ethereum wallet is also supported on local chain **31337**. If addin
 
 ## Verify
 
-With `npm run dev` running:
+Tests do not need `npm run dev` and never touch its chain, API, web server, or `data/`. Each suite starts its own Hardhat node, API, and Vite server on free loopback ports with a temporary data directory, and removes them on success, failure, or interruption.
 
 ```sh
-npm run build
-npm run smoke
+npm run build            # strict TypeScript check and production build
+npm test                 # ui + contracts + api suites
+npm run test:ui          # jsdom component tests
+npm run test:contracts   # escrow contract suite on an owned chain
+npm run test:api         # API, metadata, and deploy/seed integration
+npx playwright install chromium   # once
+npm run test:e2e         # browser host/driver journey on an owned stack
 ```
 
-`build` runs strict TypeScript checking and a Vite production build. `smoke` deploys a separate contract and exercises the live auction, outbid/refund, same-bidder rebid, settlement, payout, cancellation, authorization, and time-boundary paths. It snapshots and restores the local chain, including its clock. **Do not submit app transactions while the smoke script runs**: snapshot restoration also reverts any concurrent transactions.
+CI (`.github/workflows/ci.yml`) runs all of the above on every pull request using `npm ci`.
+
+`npm run health` is a separate, read-only check for a shared or public-testnet deployment: chain id, contract code, latest-block age, and API identity. It only issues read RPC methods. Configure it with `HEALTH_RPC_URL`, `HEALTH_CHAIN_ID`, `HEALTH_CONTRACT_ADDRESS`, and optionally `HEALTH_API_URL` / `HEALTH_MAX_BLOCK_AGE`; the **Deployment health** workflow runs it on demand.
 
 ## Components
 
@@ -59,7 +66,8 @@ npm run smoke
 | `shared/` | Shared types and canonical metadata normalization |
 | `scripts/deploy.mjs` | Local Solidity compilation, deployment, seeded listings |
 | `scripts/dev.mjs` | Cross-platform local service launcher |
-| `scripts/smoke.mjs` | Live-chain escrow lifecycle checks |
+| `tests/` | Isolated suites; `tests/support/` owns disposable chains, services, and temp data |
+| `scripts/health.mjs` | Read-only health check for shared deployments |
 
 ### Data and restarts
 

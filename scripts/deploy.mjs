@@ -19,7 +19,7 @@ import { canonicalizeAuctionId } from '../server/app.mjs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, '..');
-const DATA_DIR = path.resolve(ROOT_DIR, 'data');
+const DATA_DIR = path.resolve(process.env.BIDPARK_DATA_DIR || path.resolve(ROOT_DIR, 'data'));
 const DEPLOYMENT_PATH = path.resolve(DATA_DIR, 'deployment.json');
 
 async function main() {
@@ -47,7 +47,7 @@ async function main() {
   console.log(`[BidPark Deploy] Deployer account (Vendor index 0): ${deployerWallet.address}`);
   console.log(`[BidPark Deploy] Demo buyer account (Buyer index 1): ${buyerWallet.address}`);
 
-  const db = new EscrowDatabase();
+  const db = new EscrowDatabase(path.resolve(DATA_DIR, 'bidpark.db'));
 
   // Compile Solidity contract with Shanghai target
   console.log('[BidPark Deploy] Compiling contracts/ParkingAuctionEscrow.sol (solc, EVM: shanghai)...');
