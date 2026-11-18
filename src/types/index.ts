@@ -1,6 +1,13 @@
-import type { SpotMetadata, Listing, Config } from '../../shared/types';
+import type {
+  SpotMetadata,
+  Listing,
+  Config,
+  DeploymentIdentity,
+  ChainSnapshot,
+  ListingsResponse,
+} from '../../shared/types';
 
-export type { SpotMetadata, Listing, Config };
+export type { SpotMetadata, Listing, Config, DeploymentIdentity, ChainSnapshot, ListingsResponse };
 
 export type WalletType = 'local' | 'injected';
 

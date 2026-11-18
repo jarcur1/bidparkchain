@@ -1,4 +1,4 @@
-import type { Config, Listing, SpotMetadata } from '../types';
+import type { ChainSnapshot, Config, Listing, ListingsResponse, SpotMetadata } from '../types';
 
 export class ApiError extends Error {
   status: number;
@@ -32,17 +32,19 @@ export async function fetchConfig(): Promise<Config> {
   return data as Config;
 }
 
-export async function fetchListings(): Promise<Listing[]> {
+export async function fetchListings(): Promise<ListingsResponse> {
   const res = await fetch('/api/listings');
   if (!res.ok) {
     const msg = await extractErrorMessage(res);
     throw new ApiError(msg, res.status);
   }
   const data: unknown = await res.json();
-  if (data && typeof data === 'object' && 'listings' in data && Array.isArray(data.listings)) {
-    return data.listings as Listing[];
+  if (!data || typeof data !== 'object' || !('listings' in data) || !Array.isArray(data.listings)) {
+    return { listings: [], chain: null };
   }
-  return [];
+  const chain =
+    'chain' in data && data.chain && typeof data.chain === 'object' ? (data.chain as ChainSnapshot) : null;
+  return { listings: data.listings as Listing[], chain };
 }
 
 export async function createListingRecord(

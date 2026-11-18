@@ -16,6 +16,7 @@ import {
   getAuctionTimeRemaining,
   getListingStatus,
 } from '../utils/formatters';
+import { getBidEligibility, isOwnerOf } from '../utils/eligibility';
 
 interface SpotCardProps {
   listing: Listing;
@@ -61,9 +62,8 @@ export const SpotCard: React.FC<SpotCardProps> = ({
     Boolean(listing.highestBidder) &&
     listing.highestBidder.toLowerCase() === currentAddress?.toLowerCase();
 
-  const isOwner =
-    Boolean(currentAddress) &&
-    listing.owner.toLowerCase() === currentAddress?.toLowerCase();
+  const isOwner = isOwnerOf(listing, currentAddress);
+  const canBid = getBidEligibility(listing, currentAddress).canBid;
 
   const hasBids = parseFloat(listing.highestBid) > 0;
   const currentPriceEth = hasBids ? listing.highestBid : listing.minBid;
@@ -201,7 +201,7 @@ export const SpotCard: React.FC<SpotCardProps> = ({
             <span>Details</span>
           </button>
 
-          {status.isBiddable && !isOwner && (
+          {canBid && (
             <button
               type="button"
               className="btn-card-primary"

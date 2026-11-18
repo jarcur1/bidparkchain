@@ -34,6 +34,8 @@ An injected Ethereum wallet is also supported on local chain **31337**. If addin
 - A bid must meet the opening price and exceed the current highest bid. Owners cannot bid on their own auctions.
 - Each transaction sends the **entire new bid**, not a top-up. A displaced bid—including your own previous bid when raising it—becomes a withdrawable refund.
 - Owners cannot cancel an auction after any bid. The current winner cannot withdraw their winning bid.
+- Bid eligibility (open, not cancelled or settled, not the owner) is one rule shared by cards, the detail view, map popups and the bid dialog. It is judged against **chain time**, not the browser clock: `GET /api/listings` returns a `chain` object (deployment identity plus the latest block timestamp and a `chainTime` lower bound for the next block), and the browser advances that value with its monotonic clock between polls.
+- An open bid dialog is bound to the listing's deployment, auction id and metadata hash, not a snapshot. Price, owner and eligibility refresh with every poll while the amount you typed is kept. If the deployment or committed metadata changes, or the listing disappears, the dialog closes. Before the wallet is asked to sign, the bid is revalidated against freshly read chain state; a competing bid, cutoff, cancellation or settlement is reported with your input retained and no transaction sent.
 - Bidding ends at the contract's `bidEnd` timestamp. The winner is confirmed by calling `settle` after that deadline.
 - Seller payout is available only after settlement and `parkingEnd`, and can be claimed once.
 - There is **no automatic refund or dispute process for an inaccessible space**. Time-locked escrow does not prove physical access or delivery.
@@ -46,6 +48,8 @@ With `npm run dev` running:
 npm run build
 npm run smoke
 ```
+
+`npm test` runs the Vitest component regressions (competing bid, closure during edit, owner/deployment change, shared card/map eligibility) under jsdom; it needs no running services.
 
 `build` runs strict TypeScript checking and a Vite production build. `smoke` deploys a separate contract and exercises the live auction, outbid/refund, same-bidder rebid, settlement, payout, cancellation, authorization, and time-boundary paths. It snapshots and restores the local chain, including its clock. **Do not submit app transactions while the smoke script runs**: snapshot restoration also reverts any concurrent transactions.
 

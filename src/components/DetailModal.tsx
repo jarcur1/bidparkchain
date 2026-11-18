@@ -21,6 +21,7 @@ import {
   getListingStatus,
   shortenAddress,
 } from '../utils/formatters';
+import { getBidEligibility, getChainNowSec } from '../utils/eligibility';
 
 interface DetailModalProps {
   listing: Listing | null;
@@ -71,7 +72,8 @@ export const DetailModal: React.FC<DetailModalProps> = ({
 
   const status = getListingStatus(listing);
   const parkingWindow = formatParkingWindow(listing.parkingStart, listing.parkingEnd);
-  const now = Math.floor(Date.now() / 1000);
+  const now = getChainNowSec();
+  const canBid = getBidEligibility(listing, currentAddress, now).canBid;
 
   const isOwner =
     Boolean(currentAddress) &&
@@ -287,7 +289,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
               </div>
 
               <div className="bid-action-right">
-                {status.isBiddable && !isOwner && (
+                {canBid && (
                   <button
                     type="button"
                     className="btn-modal-bid"

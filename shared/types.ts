@@ -37,3 +37,29 @@ export interface Config {
   demoAccountIndex: number;
   deploymentBlock: number;
 }
+
+/** Identity of the contract deployment a listing snapshot was read from. */
+export interface DeploymentIdentity {
+  chainId: number;
+  contractAddress: string;
+  deploymentBlock: number;
+  /** Hash of the deployment block; distinguishes a reset chain that reuses address and block number. */
+  deploymentBlockHash: string;
+}
+
+/** Chain state observed when listings were read. */
+export interface ChainSnapshot extends DeploymentIdentity {
+  blockNumber: number;
+  /** Timestamp of the latest block (unix seconds). */
+  blockTimestamp: number;
+  /**
+   * Lower bound for the timestamp of the next block (unix seconds):
+   * max(latest block timestamp, node wall clock). Bids are judged against this clock.
+   */
+  chainTime: number;
+}
+
+export interface ListingsResponse {
+  listings: Listing[];
+  chain: ChainSnapshot | null;
+}

@@ -19,6 +19,7 @@ import {
   getListingStatus,
   shortenAddress,
 } from '../utils/formatters';
+import { getChainNowSec } from '../utils/eligibility';
 
 interface ActivityViewProps {
   currentAddress: string | null;
@@ -59,7 +60,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
     );
   }
 
-  const now = Math.floor(Date.now() / 1000);
+  const now = getChainNowSec();
   const addrLower = currentAddress.toLowerCase();
 
   // 1. Confirmed reservations: strictly require settled === true
