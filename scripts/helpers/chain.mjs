@@ -71,33 +71,3 @@ export async function hasDeployedCode(address, provider = getProvider()) {
     return false;
   }
 }
-
-/**
- * Increases chain time on local node via evm_increaseTime.
- */
-export async function advanceTime(seconds, provider = getProvider()) {
-  await provider.send('evm_increaseTime', [seconds]);
-  await provider.send('evm_mine', []);
-}
-
-/**
- * Takes an EVM snapshot on local node.
- * @returns {Promise<string>} snapshot ID
- */
-export async function takeSnapshot(provider = getProvider()) {
-  return await provider.send('evm_snapshot', []);
-}
-
-/**
- * Reverts EVM state to a previously captured snapshot ID.
- * Strictly verifies that evm_revert returned true.
- * @param {string} snapshotId
- * @returns {Promise<boolean>}
- */
-export async function revertSnapshot(snapshotId, provider = getProvider()) {
-  const result = await provider.send('evm_revert', [snapshotId]);
-  if (result !== true) {
-    throw new Error(`evm_revert failed: provider returned ${result} for snapshot ${snapshotId}`);
-  }
-  return true;
-}

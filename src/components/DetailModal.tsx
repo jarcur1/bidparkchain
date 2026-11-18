@@ -21,6 +21,8 @@ import {
   getListingStatus,
   shortenAddress,
 } from '../utils/formatters';
+import { getBidEligibility, getChainNowSec } from '../utils/eligibility';
+import { Dialog } from './Dialog';
 
 interface DetailModalProps {
   listing: Listing | null;
@@ -51,15 +53,6 @@ export const DetailModal: React.FC<DetailModalProps> = ({
   );
 
   useEffect(() => {
-    if (!listing) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [listing, onClose]);
-
-  useEffect(() => {
     if (!listing || listing.settled || listing.cancelled) return;
     const interval = setInterval(() => {
       setTimeRemaining(getAuctionTimeRemaining(listing.bidEnd));
@@ -71,7 +64,8 @@ export const DetailModal: React.FC<DetailModalProps> = ({
 
   const status = getListingStatus(listing);
   const parkingWindow = formatParkingWindow(listing.parkingStart, listing.parkingEnd);
-  const now = Math.floor(Date.now() / 1000);
+  const now = getChainNowSec();
+  const canBid = getBidEligibility(listing, currentAddress, now).canBid;
 
   const isOwner =
     Boolean(currentAddress) &&
@@ -101,14 +95,11 @@ export const DetailModal: React.FC<DetailModalProps> = ({
   )}`;
 
   return (
-    <div
-      className="modal-backdrop"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="modal-listing-title"
+    <Dialog
+      className="modal-dialog modal-detail-dialog"
+      labelledBy="modal-listing-title"
+      onClose={onClose}
     >
-      <div className="modal-dialog modal-detail-dialog" onClick={(e) => e.stopPropagation()}>
         {/* Modal Header */}
         <div className="modal-detail-header">
           <div className="modal-header-left">
@@ -287,7 +278,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
               </div>
 
               <div className="bid-action-right">
-                {status.isBiddable && !isOwner && (
+                {canBid && (
                   <button
                     type="button"
                     className="btn-modal-bid"
@@ -354,7 +345,6 @@ export const DetailModal: React.FC<DetailModalProps> = ({
             </div>
           </div>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 };

@@ -106,6 +106,27 @@ export function createApp(options = {}) {
   }
 
   /**
+   * Reads the deployment identity and chain clock the listing state is judged against.
+   * Throws if the node is unreachable.
+   */
+  async function readChainSnapshot(deployment) {
+    const latest = await provider.getBlock('latest');
+    if (!latest) throw new Error('Latest block unavailable');
+    const deploymentBlock = Number(deployment.deploymentBlock ?? 0);
+    const deployBlock = await provider.getBlock(deploymentBlock);
+    return {
+      chainId: Number(deployment.chainId),
+      contractAddress: deployment.contractAddress,
+      deploymentBlock,
+      deploymentBlockHash: deployBlock?.hash ?? '',
+      blockNumber: latest.number,
+      blockTimestamp: latest.timestamp,
+      // The next block is stamped no earlier than the latest block or the node's wall clock.
+      chainTime: Math.max(latest.timestamp, Math.floor(Date.now() / 1000)),
+    };
+  }
+
+  /**
    * GET /api/config
    * Returns runtime chain config, contract address, and ABI.
    */
@@ -145,6 +166,7 @@ export function createApp(options = {}) {
   /**
    * GET /api/listings
    * Returns all active parking listings merged with live onchain state.
+   * Includes the deployment identity and chain clock (`chain`) the state was read at.
    * Compares stored metadata_hash with onchain.metadataHash and skips stale rows.
    * Fails with 503 if chain is unreachable.
    */
@@ -152,13 +174,13 @@ export function createApp(options = {}) {
     try {
       const deployment = loadDeployment();
       if (!deployment) {
-        res.json({ listings: [] });
+        res.json({ listings: [], chain: null });
         return;
       }
 
       const contract = getContract(deployment);
       if (!contract) {
-        res.json({ listings: [] });
+        res.json({ listings: [], chain: null });
         return;
       }
 
@@ -171,14 +193,11 @@ export function createApp(options = {}) {
       }
 
       const metadataRows = db.getAllListings(deployment.contractAddress);
-      if (metadataRows.length === 0) {
-        res.json({ listings: [] });
-        return;
-      }
+      const listings = [];
 
       // Query onchain state for each stored listing.
       // Do not suppress network RPC errors; allow them to throw 503.
-      const listings = [];
+      let chain;
       try {
         for (const row of metadataRows) {
           const canonicalId = canonicalizeAuctionId(row.auction_id);
@@ -222,12 +241,14 @@ export function createApp(options = {}) {
             amenities: JSON.parse(row.amenities),
           });
         }
+        // Read the clock after the auction state so the clock is never older than the state it judges.
+        chain = await readChainSnapshot(deployment);
       } catch (rpcErr) {
         res.status(503).json({ error: 'Failed to read listing state from blockchain node' });
         return;
       }
 
-      res.json({ listings });
+      res.json({ listings, chain });
     } catch (err) {
       next(err);
     }

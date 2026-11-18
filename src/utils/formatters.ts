@@ -1,5 +1,6 @@
 import { formatEther } from 'ethers';
 import type { Listing } from '../types';
+import { getChainNowSec, isAuctionOpen } from './eligibility';
 import type { ReadState } from './readState';
 
 export function shortenAddress(address?: string | null, chars = 4): string {
@@ -74,7 +75,7 @@ export function getAuctionTimeRemaining(bidEndSec: number): {
   text: string;
   totalSeconds: number;
 } {
-  const now = Math.floor(Date.now() / 1000);
+  const now = getChainNowSec();
   const diff = bidEndSec - now;
 
   if (diff <= 0) {
@@ -97,13 +98,13 @@ export function getAuctionTimeRemaining(bidEndSec: number): {
   return { isEnded: false, text: `${minutes}m ${seconds}s`, totalSeconds: diff };
 }
 
-export function getListingStatus(listing: Listing): {
+export function getListingStatus(listing: Listing, nowSec: number = getChainNowSec()): {
   label: string;
   colorClass: string;
   isBiddable: boolean;
   canSettle: boolean;
 } {
-  const now = Math.floor(Date.now() / 1000);
+  const now = nowSec;
 
   if (listing.cancelled) {
     return {
@@ -137,7 +138,7 @@ export function getListingStatus(listing: Listing): {
     return {
       label: 'Ending Soon',
       colorClass: 'status-ending-soon',
-      isBiddable: true,
+      isBiddable: isAuctionOpen(listing, now),
       canSettle: false,
     };
   }
@@ -145,7 +146,7 @@ export function getListingStatus(listing: Listing): {
   return {
     label: 'Active Auction',
     colorClass: 'status-active',
-    isBiddable: true,
+    isBiddable: isAuctionOpen(listing, now),
     canSettle: false,
   };
 }

@@ -34,25 +34,43 @@ An injected Ethereum wallet is also supported on local chain **31337**. If addin
 - A bid must meet the opening price and exceed the current highest bid. Owners cannot bid on their own auctions.
 - Each transaction sends the **entire new bid**, not a top-up. A displaced bid—including your own previous bid when raising it—becomes a withdrawable refund.
 - Owners cannot cancel an auction after any bid. The current winner cannot withdraw their winning bid.
+- Bid eligibility (open, not cancelled or settled, not the owner) is one rule shared by cards, the detail view, map popups and the bid dialog. It is judged against **chain time**, not the browser clock: `GET /api/listings` returns a `chain` object (deployment identity plus the latest block timestamp and a `chainTime` lower bound for the next block), and the browser advances that value with its monotonic clock between polls.
+- An open bid dialog is bound to the listing's deployment, auction id and metadata hash, not a snapshot. Price, owner and eligibility refresh with every poll while the amount you typed is kept. If the deployment or committed metadata changes, or the listing disappears, the dialog closes. Before the wallet is asked to sign, the bid is revalidated against freshly read chain state; a competing bid, cutoff, cancellation or settlement is reported with your input retained and no transaction sent.
 - Bidding ends at the contract's `bidEnd` timestamp. The winner is confirmed by calling `settle` after that deadline.
 - Seller payout is available only after settlement and `parkingEnd`, and can be claimed once.
 - There is **no automatic refund or dispute process for an inaccessible space**. Time-locked escrow does not prove physical access or delivery.
 
 ## Verify
 
-With `npm run dev` running:
+Tests do not need `npm run dev` and never touch its chain, API, web server, or `data/`. Suites that need services start their own on free loopback ports with temporary data and clean them up.
 
 ```sh
-npm run build
-npm test
-npm run smoke
+npm run build            # strict TypeScript check and production build
+npm test                 # UI, contracts, API, and seed recovery
+npm run test:ui          # jsdom component tests
+npm run test:contracts   # escrow contract suite on an owned chain
+npm run test:api         # API, metadata, and deploy/seed integration
+npx playwright install chromium   # once
+npm run test:e2e         # browser host/driver journey on an owned stack
 ```
 
-`build` runs strict TypeScript checking and a Vite production build. `smoke` deploys a separate contract and exercises the live auction, outbid/refund, same-bidder rebid, settlement, payout, cancellation, authorization, and time-boundary paths. It snapshots and restores the local chain, including its clock. **Do not submit app transactions while the smoke script runs**: snapshot restoration also reverts any concurrent transactions.
+CI (`.github/workflows/ci.yml`) runs all of the above on every pull request using `npm ci`.
+
+`npm run health` is a separate, read-only check for a shared or public-testnet deployment: chain id, contract code, latest-block age, and API identity. It only issues read RPC methods. Configure it with `HEALTH_RPC_URL`, `HEALTH_CHAIN_ID`, `HEALTH_CONTRACT_ADDRESS`, and optionally `HEALTH_API_URL` / `HEALTH_MAX_BLOCK_AGE`; the **Deployment health** workflow runs it on demand.
 
 ### Read status
 
 Configuration, listings, the claimable-refund read and the wallet balance each track their own state: loading, success, empty (a successful read with nothing in it), failed (nothing known), or stale (the last read failed but the previous value is kept, labeled with the last successful read time). Unknown refund or wallet balances are shown as unavailable, never as zero, and withdrawals and bids are only enabled from a successful current read. Each failed source has its own retry button, and manual refresh re-reads configuration too and reports exactly which sources updated. Switching account, chain, provider or deployment immediately hides values read for the previous identity and ignores late responses from it.
+
+If a listings response belongs to a different deployment, the interface keeps any previous listings marked stale, closes their dialogs, and refreshes configuration. Bid preflight will not sign if the wallet changes while the fresh listing is being read.
+
+`npm run test:ui` covers competing bids, closure during editing, wallet and deployment changes, and agreement between cards and map popups.
+
+The UI suite also exercises native keyboard controls and the shared dialog, including focus restoration, stacked dialogs, Escape, and busy close guards.
+
+### Keyboard use
+
+Use **Connect Wallet** to choose an account with Enter or Space, **List a Spot** to open the form, and **Details** or **Bid Now** on a card to act without using the map. The listing review moves focus to the public preview before confirmation; **Edit listing** returns focus to the form. Dismissing the form keeps the draft but requires a fresh review. Dialogs contain Tab navigation and make the background inert. Escape closes only the topmost dialog and is ignored while it is submitting. Closing a dialog returns focus to its opener when possible. The layout reflows on narrow screens and respects `prefers-reduced-motion`.
 
 ## Components
 
@@ -64,7 +82,8 @@ Configuration, listings, the claimable-refund read and the wallet balance each t
 | `shared/` | Shared types and canonical metadata normalization |
 | `scripts/deploy.mjs` | Local Solidity compilation, deployment, seeded listings |
 | `scripts/dev.mjs` | Cross-platform local service launcher |
-| `scripts/smoke.mjs` | Live-chain escrow lifecycle checks |
+| `tests/` | Isolated suites; `tests/support/` owns disposable chains, services, and temp data |
+| `scripts/health.mjs` | Read-only health check for shared deployments |
 
 ### Data and restarts
 

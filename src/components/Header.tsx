@@ -51,18 +51,23 @@ export const Header: React.FC<HeaderProps> = ({
     <header className="site-header">
       <div className="header-inner">
         {/* Brand identity */}
-        <div className="header-brand" onClick={() => onTabChange('marketplace')} role="button" tabIndex={0}>
-          <div className="brand-icon-wrapper">
+        <button
+          type="button"
+          className="header-brand"
+          onClick={() => onTabChange('marketplace')}
+          aria-label="BidPark home: discover spots"
+        >
+          <span className="brand-icon-wrapper">
             <Car className="brand-icon" size={22} />
-          </div>
-          <div className="brand-titles">
-            <div className="brand-logo-row">
+          </span>
+          <span className="brand-titles">
+            <span className="brand-logo-row">
               <span className="brand-title">BidPark</span>
               <span className="brand-badge">Austin MVP</span>
-            </div>
+            </span>
             <span className="brand-tagline">Private parking auctions • Smart contract escrow</span>
-          </div>
-        </div>
+          </span>
+        </button>
 
         {/* Primary Navigation */}
         <nav className="header-nav">

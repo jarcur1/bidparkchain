@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   Gavel,
@@ -9,7 +9,9 @@ import {
 import { formatEther, parseEther } from 'ethers';
 import { useWallet } from '../context/WalletContext';
 import type { Listing } from '../types';
+import { getBidEligibility, getChainNowSec, getMinimumBidWei } from '../utils/eligibility';
 import { formatBalance, formatEth } from '../utils/formatters';
+import { Dialog } from './Dialog';
 
 interface BidModalProps {
   listing: Listing | null;
@@ -25,46 +27,45 @@ export const BidModal: React.FC<BidModalProps> = ({
   isSubmitting,
 }) => {
   const { walletState, wrongChain, balanceRead } = useWallet();
-  const [bidAmount, setBidAmount] = useState<string>('');
+  // null = user has not edited; the amount then follows the live suggested bid.
+  const [editedAmount, setEditedAmount] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  const openedHighestBidRef = useRef<string | null>(listing ? listing.highestBid : null);
+  const amountInputRef = useRef<HTMLInputElement>(null);
 
-  // Determine minimum next bid
+  // Re-evaluate eligibility every second so cutoff disables the dialog without waiting for a poll.
+  const [, setClockTick] = useState(0);
+  const isOpen = listing !== null;
   useEffect(() => {
-    if (!listing) return;
-    const hasBids = parseEther(listing.highestBid) > 0n;
-    if (hasBids) {
-      setBidAmount(formatEther(parseEther(listing.highestBid) + parseEther('0.01')));
-    } else {
-      setBidAmount(listing.minBid);
-    }
-    setLocalError(null);
-  }, [listing]);
-
-  // Handle escape key
-  useEffect(() => {
-    if (!listing) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !isSubmitting) onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [listing, onClose, isSubmitting]);
+    if (!isOpen) return;
+    const timer = setInterval(() => setClockTick((n) => n + 1), 1000);
+    return () => clearInterval(timer);
+  }, [isOpen]);
+  const nowSec = getChainNowSec();
 
   if (!listing) return null;
 
   const hasBids = parseEther(listing.highestBid) > 0n;
   const currentPrice = hasBids ? listing.highestBid : listing.minBid;
-  const minRequired = hasBids
-    ? formatEther(parseEther(listing.highestBid) + 1n)
+  const minimumWei = getMinimumBidWei(listing);
+  const suggestedAmount = hasBids
+    ? formatEther(parseEther(listing.highestBid) + parseEther('0.01'))
     : listing.minBid;
+  const bidAmount = editedAmount ?? suggestedAmount;
+  const eligibility = getBidEligibility(listing, walletState.address, nowSec);
+  const priceChanged =
+    openedHighestBidRef.current !== null && openedHighestBidRef.current !== listing.highestBid;
 
-  const isOwner =
-    Boolean(walletState.address) &&
-    listing.owner.toLowerCase() === walletState.address?.toLowerCase();
+  let amountBelowMinimum = false;
+  try {
+    amountBelowMinimum = parseEther(bidAmount) < minimumWei;
+  } catch {
+    amountBelowMinimum = false;
+  }
 
   const handleIncrement = (inc: string) => {
     try {
-      setBidAmount(formatEther(parseEther(bidAmount || minRequired) + parseEther(inc)));
+      setEditedAmount(formatEther(parseEther(bidAmount || formatEther(minimumWei)) + parseEther(inc)));
       setLocalError(null);
     } catch {
       setLocalError('Enter a decimal ETH amount with at most 18 decimal places.');
@@ -75,6 +76,11 @@ export const BidModal: React.FC<BidModalProps> = ({
     e.preventDefault();
     setLocalError(null);
 
+    if (!eligibility.canBid) {
+      setLocalError(eligibility.message);
+      return;
+    }
+
     if (wrongChain) {
       setLocalError('Please switch to Hardhat Local (Chain 31337) to submit bids.');
       return;
@@ -82,11 +88,6 @@ export const BidModal: React.FC<BidModalProps> = ({
 
     if (!walletState.address) {
       setLocalError('Wallet not connected. Connect a test or browser wallet.');
-      return;
-    }
-
-    if (isOwner) {
-      setLocalError('Spot owners cannot place bids on their own listing.');
       return;
     }
 
@@ -102,16 +103,11 @@ export const BidModal: React.FC<BidModalProps> = ({
       return;
     }
 
-    if (hasBids && numericBid <= parseEther(listing.highestBid)) {
+    if (numericBid < minimumWei) {
       setLocalError(
-        `Bid must be strictly higher than the current winning bid of ${formatEth(listing.highestBid)} ETH.`
-      );
-      return;
-    }
-
-    if (!hasBids && numericBid < parseEther(listing.minBid)) {
-      setLocalError(
-        `Bid must be at least the starting minimum of ${formatEth(listing.minBid)} ETH.`
+        hasBids
+          ? `Bid must be strictly higher than the current winning bid of ${formatEth(listing.highestBid)} ETH.`
+          : `Bid must be at least the starting minimum of ${formatEth(listing.minBid)} ETH.`
       );
       return;
     }
@@ -133,22 +129,22 @@ export const BidModal: React.FC<BidModalProps> = ({
       await onSubmitBid(listing, bidAmount);
       onClose();
     } catch (err) {
-      // Error handled by parent or captured here
+      // The typed amount is retained; the parent has refreshed the listing so the dialog shows current state.
       setLocalError(err instanceof Error ? err.message : 'Failed to place bid');
     }
   };
 
   return (
-    <div
-      className="modal-backdrop"
-      onClick={() => {
-        if (!isSubmitting) onClose();
-      }}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="bid-dialog-title"
+    <Dialog
+      className="modal-dialog modal-bid-dialog"
+      labelledBy="bid-dialog-title"
+      onClose={onClose}
+      canClose={!isSubmitting}
+      initialFocusRef={amountInputRef}
+      focusFallback={() =>
+        document.getElementById(`spot-card-${listing.id}`)?.querySelector<HTMLButtonElement>('.btn-card-secondary') ?? null
+      }
     >
-      <div className="modal-dialog modal-bid-dialog" onClick={(e) => e.stopPropagation()}>
         {/* Modal Header */}
         <div className="modal-header">
           <div className="modal-header-icon-title">
@@ -203,12 +199,12 @@ export const BidModal: React.FC<BidModalProps> = ({
                 className="input-number-large"
                 value={bidAmount}
                 onChange={(e) => {
-                  setBidAmount(e.target.value);
+                  setEditedAmount(e.target.value);
                   setLocalError(null);
                 }}
-                disabled={isSubmitting}
+                disabled={isSubmitting || !eligibility.canBid}
                 required
-                autoFocus
+                ref={amountInputRef}
               />
               <span className="currency-suffix">ETH</span>
             </div>
@@ -223,7 +219,7 @@ export const BidModal: React.FC<BidModalProps> = ({
                 type="button"
                 className="chip-btn"
                 onClick={() => handleIncrement(inc)}
-                disabled={isSubmitting}
+                disabled={isSubmitting || !eligibility.canBid}
               >
                 +{inc} ETH
               </button>
@@ -238,6 +234,39 @@ export const BidModal: React.FC<BidModalProps> = ({
             </div>
           </div>
 
+          {/* Live eligibility / price notices */}
+          {!eligibility.canBid && (
+            <div className="form-error-alert" role="alert" data-testid="bid-blocked">
+              <AlertCircle size={15} />
+              <span>{eligibility.message} Your entered amount is kept but cannot be submitted.</span>
+            </div>
+          )}
+          {eligibility.canBid && priceChanged && (
+            <div className="form-error-alert" role="status" data-testid="bid-price-changed">
+              <AlertCircle size={15} />
+              <span>
+                The price changed while this dialog was open. {hasBids ? 'Current highest bid' : 'Opening bid'}:{' '}
+                {formatEth(currentPrice)} ETH.
+                {amountBelowMinimum && (
+                  <>
+                    {' '}Your amount is now below the minimum of {formatEther(minimumWei)} ETH.{' '}
+                    <button
+                      type="button"
+                      className="chip-btn"
+                      onClick={() => {
+                        setEditedAmount(formatEther(minimumWei));
+                        setLocalError(null);
+                        amountInputRef.current?.focus();
+                      }}
+                    >
+                      Use minimum
+                    </button>
+                  </>
+                )}
+              </span>
+            </div>
+          )}
+
           {/* Error notice */}
           {localError && (
             <div className="form-error-alert" role="alert">
@@ -245,6 +274,10 @@ export const BidModal: React.FC<BidModalProps> = ({
               <span>{localError}</span>
             </div>
           )}
+
+          <p className="sr-only" role="status">
+            {isSubmitting ? 'Submitting bid to chain' : ''}
+          </p>
 
           {/* Footer actions */}
           <div className="modal-actions-footer">
@@ -259,7 +292,7 @@ export const BidModal: React.FC<BidModalProps> = ({
             <button
               type="submit"
               className="btn-modal-submit-bid"
-              disabled={isSubmitting || isOwner}
+              disabled={isSubmitting || !eligibility.canBid}
             >
               {isSubmitting ? (
                 <>
@@ -275,7 +308,6 @@ export const BidModal: React.FC<BidModalProps> = ({
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </Dialog>
   );
 };
