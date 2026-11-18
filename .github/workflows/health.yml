@@ -1,0 +1,38 @@
+name: Deployment health (read-only)
+
+# Manual check of a shared/public-testnet deployment. Never mutates the target chain.
+on:
+  workflow_dispatch:
+    inputs:
+      rpc_url:
+        description: JSON-RPC endpoint
+        required: true
+      chain_id:
+        description: Expected chain id (decimal)
+        required: true
+      contract_address:
+        description: Expected escrow contract address
+        required: true
+      api_url:
+        description: Marketplace API base URL (optional)
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run health
+        env:
+          HEALTH_RPC_URL: ${{ inputs.rpc_url }}
+          HEALTH_CHAIN_ID: ${{ inputs.chain_id }}
+          HEALTH_CONTRACT_ADDRESS: ${{ inputs.contract_address }}
+          HEALTH_API_URL: ${{ inputs.api_url }}
