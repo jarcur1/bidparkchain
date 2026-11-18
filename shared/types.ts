@@ -36,4 +36,5 @@ export interface Config {
   demoMnemonic: string;
   demoAccountIndex: number;
   deploymentBlock: number;
+  deploymentBlockHash: string;
 }

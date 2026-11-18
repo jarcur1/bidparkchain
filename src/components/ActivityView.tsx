@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  AlertTriangle,
   ArrowDownLeft,
   Clock,
   ExternalLink,
@@ -12,6 +13,7 @@ import {
   Zap,
 } from 'lucide-react';
 import type { Listing } from '../types';
+import type { ReadState } from '../utils/readState';
 import {
   formatEth,
   formatParkingWindow,
@@ -23,7 +25,9 @@ import {
 interface ActivityViewProps {
   currentAddress: string | null;
   listings: Listing[];
-  claimableRefundWei: bigint;
+  claimableRefundWei: bigint | null;
+  refundRead: ReadState;
+  onRetryRefund: () => void;
   onWithdrawRefund: () => Promise<void>;
   onSettleListing: (listing: Listing) => Promise<void>;
   onCancelListing: (listing: Listing) => Promise<void>;
@@ -37,6 +41,8 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
   currentAddress,
   listings,
   claimableRefundWei,
+  refundRead,
+  onRetryRefund,
   onWithdrawRefund,
   onSettleListing,
   onCancelListing,
@@ -100,7 +106,9 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
     (l) => l.owner && l.owner.toLowerCase() === addrLower
   );
 
-  const hasRefund = claimableRefundWei > 0n;
+  // Only a successful current read may offer a withdrawal; unknown is never shown as zero.
+  const hasRefund = refundRead.status === 'success' && claimableRefundWei !== null && claimableRefundWei > 0n;
+  const refundUnavailable = refundRead.status === 'failed' || refundRead.status === 'stale';
 
   return (
     <div className="activity-container">
@@ -126,7 +134,29 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
           )}
         </div>
 
-        {hasRefund ? (
+        {refundRead.status === 'loading' ? (
+          <div className="activity-empty-box" aria-busy="true">
+            <Loader2 size={22} className="is-spinning" />
+            <div>
+              <p className="activity-empty-heading">Checking for refunds…</p>
+            </div>
+          </div>
+        ) : refundUnavailable ? (
+          <div className="activity-empty-box refund-unavailable-box" role="alert">
+            <AlertTriangle size={22} />
+            <div>
+              <p className="activity-empty-heading">Refund balance unavailable</p>
+              <p className="activity-empty-text">
+                {refundRead.error}.
+                {claimableRefundWei !== null && ` Last known amount (stale): ${formatEth(claimableRefundWei)} ETH.`}
+                {' '}Withdrawal is disabled until the balance can be read again.
+              </p>
+              <button type="button" className="read-status-retry" onClick={onRetryRefund}>
+                Retry refund balance
+              </button>
+            </div>
+          </div>
+        ) : hasRefund ? (
           <div className="refund-card refund-card-active">
             <div className="refund-card-body">
               <div className="refund-amount-col">

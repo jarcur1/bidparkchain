@@ -7,6 +7,7 @@ import { DisclosuresBanner } from './components/DisclosuresBanner';
 import { FilterBar } from './components/FilterBar';
 import { Footer } from './components/Footer';
 import { Header } from './components/Header';
+import { ReadStatusBanner, type ReadSource } from './components/ReadStatusBanner';
 import { ParkingMap } from './components/ParkingMap';
 import { SpotGrid } from './components/SpotGrid';
 import { Toast } from './components/Toast';
@@ -33,16 +34,58 @@ import type {
   ToastMessage,
 } from './types';
 import { formatEth } from './utils/formatters';
+import {
+  LOADING_READ,
+  READ_OK,
+  READ_SKIPPED,
+  READ_SUPERSEDED,
+  readFailed,
+  readFailure,
+  readSucceeded,
+  type ReadResult,
+  type ReadState,
+} from './utils/readState';
+
+interface ListingsState {
+  deployment: string | null;
+  data: Listing[];
+  read: ReadState;
+}
+
+interface RefundIdentity {
+  address: string | null;
+  chainId: number | null;
+  provider: unknown;
+  deployment: string | null;
+}
+
+interface RefundState {
+  identity: RefundIdentity;
+  wei: bigint | null;
+  read: ReadState;
+}
+
+const EMPTY_LISTINGS: ListingsState = { deployment: null, data: [], read: LOADING_READ };
+const UNKNOWN_REFUND = { wei: null, read: LOADING_READ };
+
+const sameRefundIdentity = (a: RefundIdentity, b: RefundIdentity) =>
+  a.address === b.address && a.chainId === b.chainId && a.provider === b.provider &&
+  a.deployment === b.deployment;
+
+export const deploymentKeyOf = (config: Config | null) =>
+  config
+    ? `${config.chainId}:${config.contractAddress.toLowerCase()}:${config.deploymentBlock}:${config.deploymentBlockHash}`
+    : null;
 
 export const AppContent: React.FC<{
   config: Config | null;
-  configError: string | null;
-}> = ({ config, configError }) => {
-  const { walletState, signer, provider, wrongChain, refreshBalance } = useWallet();
+  configRead: ReadState;
+  onRefreshConfig: () => Promise<ReadResult>;
+}> = ({ config, configRead, onRefreshConfig }) => {
+  const { walletState, signer, provider, wrongChain, refreshBalance, balanceRead } = useWallet();
 
   // Primary state
-  const [listings, setListings] = useState<Listing[]>([]);
-  const [isLoadingListings, setIsLoadingListings] = useState(true);
+  const [listingsState, setListingsState] = useState<ListingsState>(EMPTY_LISTINGS);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isActionBusy, setIsActionBusy] = useState(false);
 
@@ -65,7 +108,7 @@ export const AppContent: React.FC<{
   } | null>(null);
 
   // Activity & Refunds
-  const [claimableRefundWei, setClaimableRefundWei] = useState<bigint>(0n);
+  const [refundState, setRefundState] = useState<RefundState | null>(null);
 
   // Notifications
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -105,89 +148,149 @@ export const AppContent: React.FC<{
     setDetailListing(listing);
   }, []);
 
-  // Fetch listings from API
-  const loadListings = useCallback(async (isSilent = false) => {
-    if (!isSilent) setIsRefreshing(true);
+  // Listings belong to one deployment: a different deployment never shows the previous one's values.
+  const deploymentKey = deploymentKeyOf(config);
+  const deploymentRef = useRef(deploymentKey);
+  deploymentRef.current = deploymentKey;
+  const listingsView =
+    listingsState.deployment === null || listingsState.deployment === deploymentKey ? listingsState : EMPTY_LISTINGS;
+  const listings = listingsView.data;
+  const listingsReqRef = useRef(0);
+
+  // Fetch listings from API; only the newest request for the current deployment may publish.
+  const loadListings = useCallback(async (): Promise<ReadResult> => {
+    const reqId = ++listingsReqRef.current;
+    const requestedDeployment = deploymentRef.current;
+    const isSuperseded = () =>
+      reqId !== listingsReqRef.current ||
+      (requestedDeployment !== null && requestedDeployment !== deploymentRef.current);
     try {
       const data = await fetchListings();
-      setListings(data);
+      if (isSuperseded()) return READ_SUPERSEDED;
+      setListingsState({ deployment: deploymentRef.current, data, read: readSucceeded(data.length === 0) });
+      return READ_OK;
     } catch (err) {
       console.error('Failed to load listings:', err);
-      if (!isSilent) {
-        addToast('error', 'Failed to load listings', err instanceof Error ? err.message : String(err));
+      if (isSuperseded()) return READ_SUPERSEDED;
+      setListingsState((prev) => {
+        const base =
+          prev.deployment === null || prev.deployment === deploymentRef.current ? prev : EMPTY_LISTINGS;
+        return { deployment: deploymentRef.current, data: base.data, read: readFailed(base.read, err) };
+      });
+      return readFailure(err);
+    }
+  }, []);
+
+  // Refund reads are scoped to account, chain, provider and contract; foreign values are never shown.
+  const refundIdentity: RefundIdentity = {
+    address: walletState.address,
+    chainId: walletState.chainId,
+    provider,
+    deployment: deploymentKey,
+  };
+  const refundIdentityRef = useRef(refundIdentity);
+  refundIdentityRef.current = refundIdentity;
+  const refundReqIdRef = useRef(0);
+  const refund =
+    refundState && sameRefundIdentity(refundState.identity, refundIdentity) ? refundState : UNKNOWN_REFUND;
+  const claimableRefundWei = refund.wei;
+  const refundRead = refund.read;
+
+  // Load pending returns from onchain contract
+  const loadPendingRefunds = useCallback(async (): Promise<ReadResult> => {
+    const identity: RefundIdentity = {
+      address: walletState.address,
+      chainId: walletState.chainId,
+      provider,
+      deployment: deploymentKey,
+    };
+    const thisReqId = ++refundReqIdRef.current;
+    const isCurrent = () =>
+      thisReqId === refundReqIdRef.current && sameRefundIdentity(refundIdentityRef.current, identity);
+    const fail = (err: unknown): ReadResult => {
+      setRefundState((prev) => {
+        const known = prev && sameRefundIdentity(prev.identity, identity) ? prev : null;
+        return { identity, wei: known?.wei ?? null, read: readFailed(known?.read ?? LOADING_READ, err) };
+      });
+      return readFailure(err);
+    };
+    if (!identity.address || !provider) return READ_SKIPPED;
+    if (!walletState.isReady) return fail('Wallet is not connected to the supported network.');
+    if (!config?.contractAddress) return fail('Contract configuration is unavailable.');
+    try {
+      const readContract = getContractInstance(config.contractAddress, config.abi, provider);
+      const wei = await fetchPendingReturns(readContract, identity.address);
+      if (!isCurrent()) return READ_SUPERSEDED;
+      setRefundState({ identity, wei, read: readSucceeded(wei === 0n) });
+      return READ_OK;
+    } catch (err) {
+      console.warn('Failed to load pending returns:', err);
+      if (!isCurrent()) return READ_SUPERSEDED;
+      return fail(err);
+    }
+  }, [config, deploymentKey, walletState.address, walletState.chainId, walletState.isReady, provider]);
+
+  // Manual refresh all: reports what each source actually did.
+  const handleRefreshAll = useCallback(async () => {
+    setIsRefreshing(true);
+    try {
+      const sources: [string, Promise<ReadResult>][] = [
+        ['Configuration', onRefreshConfig()],
+        ['Listings', loadListings()],
+        ['Refund balance', loadPendingRefunds()],
+        ['Wallet balance', refreshBalance()],
+      ];
+      const results = await Promise.all(sources.map(([, p]) => p));
+      const named = sources.map(([label], i) => ({ label, ...results[i] }));
+      const updated = named.filter((r) => r.outcome === 'ok').map((r) => r.label);
+      const failed = named.filter((r) => r.outcome === 'failed');
+      const failedText = failed.map((r) => `${r.label} (${r.error})`).join('; ');
+      if (failed.length === 0) {
+        const retried = named.some((r) => r.outcome === 'superseded');
+        addToast(
+          'success',
+          'Refreshed',
+          `Updated: ${updated.join(', ') || 'nothing to read'}.${retried ? ' Some reads were replaced by a newer request.' : ''}`
+        );
+      } else if (updated.length > 0) {
+        addToast('error', 'Refresh partly failed', `Updated: ${updated.join(', ')}. Still unavailable: ${failedText}.`);
+      } else {
+        addToast('error', 'Refresh failed', `Could not read: ${failedText}.`);
       }
     } finally {
-      setIsLoadingListings(false);
+      setIsRefreshing(false);
+    }
+  }, [onRefreshConfig, loadListings, loadPendingRefunds, refreshBalance, addToast]);
+
+  // Targeted retry for one failed source.
+  const retrySource = useCallback(async (label: string, read: () => Promise<ReadResult>) => {
+    setIsRefreshing(true);
+    try {
+      const result = await read();
+      if (result.outcome === 'failed') addToast('error', `${label} still unavailable`, result.error);
+      else if (result.outcome === 'ok') addToast('success', `${label} reloaded`);
+      else if (result.outcome === 'superseded') addToast('info', `${label} read was replaced by a newer request`);
+      else addToast('info', `${label} was not read`, 'Nothing to read for the current wallet or configuration.');
+    } finally {
       setIsRefreshing(false);
     }
   }, [addToast]);
 
-  // Sequence ref to scope refund data identity and ignore stale / superseded responses
-  const refundReqIdRef = useRef(0);
-  const refundIdentityRef = useRef({ address: walletState.address, chainId: walletState.chainId, provider, contractAddress: config?.contractAddress });
-  refundIdentityRef.current = { address: walletState.address, chainId: walletState.chainId, provider, contractAddress: config?.contractAddress };
-
-  // Load pending returns from onchain contract
-  const loadPendingRefunds = useCallback(async () => {
-    const currentAddress = walletState.address;
-    const isCurrentWallet = () => {
-      const current = refundIdentityRef.current;
-      return current.address === currentAddress && current.chainId === walletState.chainId &&
-        current.provider === provider && current.contractAddress === config?.contractAddress;
-    };
-    if (!isCurrentWallet()) return;
-    const thisReqId = ++refundReqIdRef.current;
-    if (!config?.contractAddress || !currentAddress || !provider || !walletState.isReady) {
-      setClaimableRefundWei(0n);
-      return;
-    }
-    try {
-      const readContract = getContractInstance(config.contractAddress, config.abi, provider);
-      const wei = await fetchPendingReturns(readContract, currentAddress);
-      if (
-        thisReqId === refundReqIdRef.current &&
-        isCurrentWallet()
-      ) {
-        setClaimableRefundWei(wei);
-      }
-    } catch (err) {
-      console.warn('Failed to load pending returns:', err);
-      if (
-        thisReqId === refundReqIdRef.current &&
-        isCurrentWallet()
-      ) {
-        setClaimableRefundWei(0n);
-      }
-    }
-  }, [config, walletState.address, walletState.chainId, walletState.isReady, provider]);
-
-  // Synchronously clear refund data whenever wallet account or chain changes
+  // Initial load and periodic polling every 10 seconds (restarts when identity changes)
   useEffect(() => {
-    ++refundReqIdRef.current;
-    setClaimableRefundWei(0n);
-  }, [walletState.address, walletState.chainId]);
-
-  // Manual refresh all
-  const handleRefreshAll = useCallback(async () => {
-    setIsRefreshing(true);
-    await Promise.all([loadListings(true), loadPendingRefunds(), refreshBalance()]);
-    setIsRefreshing(false);
-    addToast('info', 'Refreshed', 'Marketplace and wallet data synced.');
-  }, [loadListings, loadPendingRefunds, refreshBalance, addToast]);
-
-  // Periodic polling every 10 seconds
-  useEffect(() => {
-    loadListings();
-    loadPendingRefunds();
+    void loadListings();
+    void loadPendingRefunds();
+    void refreshBalance();
 
     const interval = setInterval(() => {
-      loadListings(true);
-      loadPendingRefunds();
-      refreshBalance();
+      void onRefreshConfig();
+      void loadListings();
+      void loadPendingRefunds();
+      void refreshBalance();
     }, 10000);
 
     return () => clearInterval(interval);
-  }, [loadListings, loadPendingRefunds, refreshBalance]);
+  }, [loadListings, loadPendingRefunds, refreshBalance, onRefreshConfig, deploymentKey]);
 
   // Keep detailListing updated when listings refresh
   useEffect(() => {
@@ -220,7 +323,7 @@ export const AppContent: React.FC<{
       );
 
       // Auto-refresh data
-      await Promise.all([loadListings(true), loadPendingRefunds(), refreshBalance()]);
+      await Promise.all([loadListings(), loadPendingRefunds(), refreshBalance()]);
     } catch (err) {
       const msg = parseContractError(err);
       addToast('error', 'Bid Submission Failed', msg);
@@ -277,7 +380,7 @@ export const AppContent: React.FC<{
         receipt.hash
       );
 
-      await Promise.all([loadListings(true), refreshBalance()]);
+      await Promise.all([loadListings(), refreshBalance()]);
       setSelectedListingId(auctionId);
       setCurrentTab('marketplace');
     } catch (err) {
@@ -301,7 +404,7 @@ export const AppContent: React.FC<{
         `Auction #${auctionId} metadata registered successfully.`
       );
       setPendingRegistration(null);
-      await loadListings(true);
+      await loadListings();
       setSelectedListingId(auctionId);
       setCurrentTab('marketplace');
     } catch (err) {
@@ -320,6 +423,12 @@ export const AppContent: React.FC<{
       addToast('error', 'Wallet Error', 'Wallet is not connected or connected to wrong network.');
       return;
     }
+    // Withdrawal is only offered from a successful, current refund read.
+    const withdrawableWei = refundRead.status === 'success' ? claimableRefundWei : null;
+    if (withdrawableWei === null || withdrawableWei <= 0n) {
+      addToast('error', 'Refund balance unavailable', 'Refresh the refund balance before withdrawing.');
+      return;
+    }
 
     setIsActionBusy(true);
     try {
@@ -329,7 +438,7 @@ export const AppContent: React.FC<{
       addToast(
         'success',
         'Refund Withdrawn!',
-        `Withdrew ${formatEth(claimableRefundWei)} ETH back to your wallet.`,
+        `Withdrew ${formatEth(withdrawableWei)} ETH back to your wallet.`,
         receipt.hash
       );
 
@@ -362,7 +471,7 @@ export const AppContent: React.FC<{
         receipt.hash
       );
 
-      await Promise.all([loadListings(true), refreshBalance()]);
+      await Promise.all([loadListings(), refreshBalance()]);
     } catch (err) {
       const msg = parseContractError(err);
       addToast('error', 'Settlement Failed', msg);
@@ -391,7 +500,7 @@ export const AppContent: React.FC<{
         receipt.hash
       );
 
-      await loadListings(true);
+      await loadListings();
       setDetailListing(null);
     } catch (err) {
       const msg = parseContractError(err);
@@ -421,7 +530,7 @@ export const AppContent: React.FC<{
         receipt.hash
       );
 
-      await Promise.all([loadListings(true), refreshBalance()]);
+      await Promise.all([loadListings(), refreshBalance()]);
     } catch (err) {
       const msg = parseContractError(err);
       addToast('error', 'Payout Claim Failed', msg);
@@ -522,6 +631,41 @@ export const AppContent: React.FC<{
     ).length;
   }, [listings, walletState.address]);
 
+  const readSources: ReadSource[] = [
+    {
+      key: 'config',
+      label: 'Configuration',
+      read: configRead,
+      impact: 'Wallet connection and contract actions are unavailable until it loads.',
+      onRetry: () => void retrySource('Configuration', onRefreshConfig),
+    },
+    {
+      key: 'listings',
+      label: 'Listings',
+      read: listingsView.read,
+      impact: 'Auction data may not match the marketplace.',
+      onRetry: () => void retrySource('Listings', loadListings),
+    },
+    ...(walletState.address
+      ? ([
+          {
+            key: 'refund',
+            label: 'Refund balance',
+            read: refundRead,
+            impact: 'Withdrawal is disabled until it can be read.',
+            onRetry: () => void retrySource('Refund balance', loadPendingRefunds),
+          },
+          {
+            key: 'balance',
+            label: 'Wallet balance',
+            read: balanceRead,
+            impact: 'Bids are blocked until the balance can be read.',
+            onRetry: () => void retrySource('Wallet balance', refreshBalance),
+          },
+        ] satisfies ReadSource[])
+      : []),
+  ];
+
   return (
     <div className="site-wrapper">
       {/* Top Header */}
@@ -532,9 +676,12 @@ export const AppContent: React.FC<{
         onOpenWalletModal={() => setIsWalletModalOpen(true)}
         onRefresh={handleRefreshAll}
         isRefreshing={isRefreshing}
-        claimableRefundEth={formatEth(claimableRefundWei)}
+        claimableRefundEth={claimableRefundWei === null ? undefined : formatEth(claimableRefundWei)}
+        refundStatus={refundRead.status}
         activeBidsCount={activeBidsCount}
       />
+
+      <ReadStatusBanner sources={readSources} isRetrying={isRefreshing} />
 
       {/* Disclosures & Warnings */}
       <DisclosuresBanner />
@@ -565,6 +712,7 @@ export const AppContent: React.FC<{
               onFilterChange={setFilters}
               totalSpots={listings.length}
               filteredCount={filteredListings.length}
+              listingsStatus={listingsView.read.status}
               viewMode={viewMode}
               onViewModeChange={setViewMode}
             />
@@ -576,7 +724,9 @@ export const AppContent: React.FC<{
                 <div className="layout-cards-column">
                   <SpotGrid
                     listings={filteredListings}
-                    isLoading={isLoadingListings}
+                    status={listingsView.read.status}
+                    error={listingsView.read.error}
+                    onRetry={() => void retrySource('Listings', loadListings)}
                     currentAddress={walletState.address}
                     selectedListingId={selectedListingId}
                     onSelectListing={handleSelectListing}
@@ -618,6 +768,8 @@ export const AppContent: React.FC<{
             currentAddress={walletState.address}
             listings={listings}
             claimableRefundWei={claimableRefundWei}
+            refundRead={refundRead}
+            onRetryRefund={() => void retrySource('Refund balance', loadPendingRefunds)}
             onWithdrawRefund={handleWithdrawRefund}
             onSettleListing={handleSettleListing}
             onCancelListing={handleCancelListing}
@@ -676,21 +828,39 @@ export const AppContent: React.FC<{
 };
 
 export const App: React.FC = () => {
-  const [config, setConfig] = useState<Config | null>(null);
-  const [configError, setConfigError] = useState<string | null>(null);
+  const [configState, setConfigState] = useState<{ config: Config | null; read: ReadState }>({
+    config: null,
+    read: LOADING_READ,
+  });
+  const configReqRef = useRef(0);
 
-  useEffect(() => {
-    fetchConfig()
-      .then((cfg) => setConfig(cfg))
-      .catch((err) => {
-        console.warn('Config fetch error (backend may still be booting):', err);
-        setConfigError(err instanceof Error ? err.message : String(err));
-      });
+  // Fetch the deployment configuration; a failed refresh keeps the last known configuration, labeled stale.
+  const refreshConfig = useCallback(async (): Promise<ReadResult> => {
+    const reqId = ++configReqRef.current;
+    try {
+      const next = await fetchConfig();
+      if (reqId !== configReqRef.current) return READ_SUPERSEDED;
+      setConfigState((prev) => ({
+        // An unchanged deployment keeps its identity so dependent reads are not restarted.
+        config: prev.config && JSON.stringify(prev.config) === JSON.stringify(next) ? prev.config : next,
+        read: readSucceeded(),
+      }));
+      return READ_OK;
+    } catch (err) {
+      console.warn('Config fetch error (backend may still be booting):', err);
+      if (reqId !== configReqRef.current) return READ_SUPERSEDED;
+      setConfigState((prev) => ({ config: prev.config, read: readFailed(prev.read, err) }));
+      return readFailure(err);
+    }
   }, []);
 
+  useEffect(() => {
+    void refreshConfig();
+  }, [refreshConfig]);
+
   return (
-    <WalletProvider config={config}>
-      <AppContent config={config} configError={configError} />
+    <WalletProvider config={configState.config}>
+      <AppContent config={configState.config} configRead={configState.read} onRefreshConfig={refreshConfig} />
     </WalletProvider>
   );
 };

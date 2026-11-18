@@ -109,14 +109,28 @@ export function createApp(options = {}) {
    * GET /api/config
    * Returns runtime chain config, contract address, and ABI.
    */
-  app.get('/api/config', (req, res) => {
+  app.get('/api/config', async (req, res) => {
     const deployment = loadDeployment();
     if (!deployment) {
       res.status(503).json({ error: 'Smart contract not yet deployed' });
       return;
     }
 
+    // The hash of the deployment block distinguishes a reset chain that reuses the same address.
+    let deploymentBlockHash;
+    try {
+      const block = await provider.getBlock(deployment.deploymentBlock ?? 0);
+      deploymentBlockHash = block?.hash;
+    } catch {
+      deploymentBlockHash = null;
+    }
+    if (!deploymentBlockHash) {
+      res.status(503).json({ error: 'Deployment block unavailable from the local chain' });
+      return;
+    }
+
     res.json({
+      deploymentBlockHash,
       chainId: deployment.chainId,
       contractAddress: deployment.contractAddress,
       abi: deployment.abi,

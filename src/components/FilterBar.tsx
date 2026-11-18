@@ -7,6 +7,7 @@ import {
   Search,
   Warehouse,
 } from 'lucide-react';
+import type { ReadStatus } from '../utils/readState';
 import type { FilterState, SortOption, SpotKindFilter, AuctionStatusFilter } from '../types';
 
 interface FilterBarProps {
@@ -14,6 +15,7 @@ interface FilterBarProps {
   onFilterChange: (filters: FilterState) => void;
   totalSpots: number;
   filteredCount: number;
+  listingsStatus: ReadStatus;
   viewMode: 'split' | 'cards' | 'map';
   onViewModeChange: (mode: 'split' | 'cards' | 'map') => void;
 }
@@ -23,6 +25,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
   onFilterChange,
   totalSpots,
   filteredCount,
+  listingsStatus,
   viewMode,
   onViewModeChange,
 }) => {
@@ -150,7 +153,11 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           {/* Results count indicator */}
           <div className="filter-count-badge">
             <span>
-              {filteredCount} {filteredCount === 1 ? 'spot' : 'spots'} available
+              {listingsStatus === 'loading'
+                ? 'Loading spots…'
+                : listingsStatus === 'failed'
+                  ? 'Spot availability unavailable'
+                  : `${filteredCount} ${filteredCount === 1 ? 'spot' : 'spots'} ${listingsStatus === 'stale' ? 'last known' : 'available'}`}
             </span>
           </div>
 

@@ -11,7 +11,8 @@ import {
 import { useWallet } from '../context/WalletContext';
 import type { AppTab } from '../types';
 import { DEMO_ACCOUNTS } from '../utils/constants';
-import { formatEth, shortenAddress } from '../utils/formatters';
+import { formatBalance, shortenAddress } from '../utils/formatters';
+import type { ReadStatus } from '../utils/readState';
 
 interface HeaderProps {
   currentTab: AppTab;
@@ -21,6 +22,7 @@ interface HeaderProps {
   onRefresh: () => void;
   isRefreshing: boolean;
   claimableRefundEth?: string;
+  refundStatus: ReadStatus;
   activeBidsCount: number;
 }
 
@@ -32,9 +34,10 @@ export const Header: React.FC<HeaderProps> = ({
   onRefresh,
   isRefreshing,
   claimableRefundEth,
+  refundStatus,
   activeBidsCount,
 }) => {
-  const { walletState, wrongChain } = useWallet();
+  const { walletState, wrongChain, balanceRead } = useWallet();
 
   const activeDemo =
     walletState.type === 'local'
@@ -42,6 +45,7 @@ export const Header: React.FC<HeaderProps> = ({
       : null;
 
   const hasClaimable = claimableRefundEth && parseFloat(claimableRefundEth) > 0;
+  const refundUnknown = refundStatus === 'failed' || refundStatus === 'stale';
 
   return (
     <header className="site-header">
@@ -78,9 +82,12 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <Sparkles size={16} />
             <span>My Activity</span>
-            {(hasClaimable || activeBidsCount > 0) && (
-              <span className="nav-badge-alert" title={hasClaimable ? 'Refund ready to withdraw!' : 'Active bids'}>
-                {hasClaimable ? 'Refund' : activeBidsCount}
+            {(hasClaimable || refundUnknown || activeBidsCount > 0) && (
+              <span
+                className="nav-badge-alert"
+                title={refundUnknown ? 'Refund balance unavailable' : hasClaimable ? 'Refund ready to withdraw!' : 'Active bids'}
+              >
+                {refundUnknown ? 'Refund?' : hasClaimable ? 'Refund' : activeBidsCount}
               </span>
             )}
           </button>
@@ -150,7 +157,7 @@ export const Header: React.FC<HeaderProps> = ({
 
               <div className="wallet-btn-right">
                 <span className="wallet-btn-balance">
-                  {formatEth(walletState.balance)} ETH
+                  {formatBalance(walletState.balance, balanceRead)}
                 </span>
                 <ChevronDown size={14} className="wallet-btn-caret" />
               </div>
