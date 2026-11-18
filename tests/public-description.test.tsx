@@ -30,13 +30,13 @@ afterEach(() => {
 });
 
 const q = <T extends Element>(sel: string): T => {
-  const el = container.querySelector<T>(sel);
+  const el = document.querySelector<T>(sel);
   if (!el) throw new Error(`missing ${sel}`);
   return el;
 };
 
 const button = (text: string): HTMLButtonElement => {
-  const el = Array.from(container.querySelectorAll('button')).find((b) =>
+  const el = Array.from(document.querySelectorAll('button')).find((b) =>
     b.textContent?.includes(text)
   );
   if (!el) throw new Error(`missing button ${text}`);
@@ -103,7 +103,7 @@ describe('public description field', () => {
 
     const copy = `${label.textContent} ${textarea.placeholder} ${warning.textContent}`;
     expect(copy).not.toMatch(/gate|pin\b|passcode|access route|arrival/i);
-    expect(container.textContent).not.toMatch(/arrival guidelines/i);
+    expect(q('[role="dialog"]').textContent).not.toMatch(/arrival guidelines/i);
   });
 });
 
@@ -152,16 +152,17 @@ describe('submission preview', () => {
     const { onSubmitCreate } = renderCreate();
     fillForm();
     submitForm();
-    expect(container.querySelector('[data-testid="submission-preview"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="submission-preview"]')).not.toBeNull();
 
     click(button('Edit listing'));
-    expect(container.querySelector('[data-testid="submission-preview"]')).toBeNull();
+    expect(document.querySelector('[data-testid="submission-preview"]')).toBeNull();
+    expect(document.activeElement).toBe(q('#spot-title'));
     expect(onSubmitCreate).not.toHaveBeenCalled();
 
     submitForm();
-    expect(container.querySelector('[data-testid="submission-preview"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="submission-preview"]')).not.toBeNull();
     typeInto(q<HTMLTextAreaElement>('#spot-desc'), 'Changed description of the space.');
-    expect(container.querySelector('[data-testid="submission-preview"]')).toBeNull();
+    expect(document.querySelector('[data-testid="submission-preview"]')).toBeNull();
     expect(() => button('Confirm and Deploy Auction')).toThrow();
 
     submitForm();
@@ -178,7 +179,7 @@ describe('submission preview', () => {
     fillForm();
     typeInto(q<HTMLTextAreaElement>('#spot-desc'), 'short');
     submitForm();
-    expect(container.querySelector('[data-testid="submission-preview"]')).toBeNull();
+    expect(document.querySelector('[data-testid="submission-preview"]')).toBeNull();
     expect(q('[role="alert"]').textContent).toMatch(/Description length/);
     expect(onSubmitCreate).not.toHaveBeenCalled();
   });
@@ -239,7 +240,7 @@ describe('submission preview', () => {
     expect(failingRetry).toHaveBeenCalledWith('7', pendingMetadata);
     expect(q('[role="alert"]').textContent).toBe('API down');
     expect(onClose).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-testid="submission-preview"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="submission-preview"]')).not.toBeNull();
   });
 });
 
@@ -282,9 +283,10 @@ describe('detail modal', () => {
         />
       )
     );
-    const headings = Array.from(container.querySelectorAll('h4')).map((h) => h.textContent);
+    const dialog = q('[role="dialog"]');
+    const headings = Array.from(dialog.querySelectorAll('h4')).map((h) => h.textContent);
     expect(headings).toContain('Public Space Description');
-    expect(container.textContent).not.toMatch(/arrival notes/i);
-    expect(container.textContent).toContain('Level driveway with good lighting.');
+    expect(dialog.textContent).not.toMatch(/arrival notes/i);
+    expect(dialog.textContent).toContain('Level driveway with good lighting.');
   });
 });

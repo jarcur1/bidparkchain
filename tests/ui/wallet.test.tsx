@@ -17,7 +17,11 @@ vi.mock('ethers', async (original) => {
   } };
 });
 
-const config = { chainId: 31337, demoMnemonic: 'test test test test test test test test test test test junk' } as Config;
+const config: Config = {
+  chainId: 31337, contractAddress: '0x0000000000000000000000000000000000000001', abi: [],
+  currency: 'ETH', networkName: 'Hardhat Local', deploymentBlock: 1, deploymentBlockHash: '0xdeploy',
+  demoMnemonic: 'test test test test test test test test test test test junk', demoAccountIndex: 1,
+};
 const a = '0x1111111111111111111111111111111111111111';
 const b = '0x2222222222222222222222222222222222222222';
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((r) => { resolve = r; }); return { promise, resolve }; }
@@ -42,7 +46,7 @@ function Controls() {
   return <><output data-state>{JSON.stringify(walletState)}</output><button onClick={() => void refreshBalance()}>Refresh balance</button></>;
 }
 let host: HTMLDivElement, root: Root, injected: Injected;
-const query = (selector: string) => host.querySelector(selector)!;
+const query = (selector: string) => document.querySelector(selector)!;
 async function click(element: Element) { await act(async () => { (element as HTMLElement).click(); }); }
 async function until(check: () => void) { await vi.waitFor(async () => { await act(async () => { await new Promise((r) => setTimeout(r, 5)); }); check(); }, { timeout: 3000 }); }
 const state = () => JSON.parse(query('[data-state]').textContent!);
@@ -55,9 +59,9 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
 async function render() {
-  await act(async () => root.render(<WalletProvider config={config}><Header currentTab="marketplace" onTabChange={() => {}} onOpenCreate={() => {}} onOpenWalletModal={() => {}} onRefresh={() => {}} isRefreshing={false} activeBidsCount={0}/><WalletModal isOpen onClose={() => {}}/><Controls/></WalletProvider>));
+  await act(async () => root.render(<WalletProvider config={config}><Header currentTab="marketplace" onTabChange={() => {}} onOpenCreate={() => {}} onOpenWalletModal={() => {}} onRefresh={() => {}} isRefreshing={false} refundStatus="empty" activeBidsCount={0}/><WalletModal isOpen onClose={() => {}}/><Controls/></WalletProvider>));
 }
-async function connect() { await render(); await click(query('.avatar-injected').closest('[role="button"]')!); await until(() => expect(state().isReady).toBe(true)); }
+async function connect() { await render(); await click(query('.avatar-injected').closest('button')!); await until(() => expect(state().isReady).toBe(true)); }
 
 describe('wallet identity and network regressions', () => {
   it('updates the rendered address and balance on account changes and disconnects on an empty account list', async () => {
@@ -73,7 +77,7 @@ describe('wallet identity and network regressions', () => {
   it('offers a network switch and restores readiness when switching back', async () => {
     await connect();
     await act(async () => { injected.chainId = '0x1'; injected.emit('chainChanged', '0x1'); });
-    await until(() => expect(host.textContent).toContain('Connected to wrong chain!'));
+    await until(() => expect(query('.wallet-wrong-chain-notice').textContent).toContain('Connected to wrong chain!'));
     expect(state().isReady).toBe(false); expect(state().balance).toBeNull(); expect(query('.network-name').textContent).toBe('Wrong Chain');
     await click(query('.btn-switch-network-inline'));
     await until(() => expect(state().isReady).toBe(true));
@@ -92,20 +96,20 @@ describe('wallet identity and network regressions', () => {
     });
     await until(() => expect(state().isConnecting).toBe(false));
     await act(async () => { slow.resolve(`0x${parseEther('99').toString(16)}`); });
-    expect(host.textContent).not.toContain('99.000');
+    expect(document.body.textContent).not.toContain('99.000');
     expect(state().balance).toBe(kind === 'account' ? '22.0' : null);
   });
 
   it('selects a local test account and only shows a connected header after its RPC succeeds', async () => {
     await render(); expect(query('.wallet-btn').textContent).toContain('Connect Wallet');
-    await click(host.querySelectorAll('.demo-account-item')[1]);
+    await click(document.querySelectorAll('.demo-accounts-list button')[1]);
     await until(() => expect(state().isReady).toBe(true));
     expect(state().type).toBe('local'); expect(state().localAccountIndex).toBe(0);
     expect(query('.active-address-text').textContent).toBe(state().address); expect(query('.wallet-btn-balance').textContent).toContain('42.000');
   });
 
   it('keeps the header disconnected when the local RPC rejects the selected wallet', async () => {
-    local.error = true; await render(); await click(host.querySelectorAll('.demo-account-item')[1]);
+    local.error = true; await render(); await click(document.querySelectorAll('.demo-accounts-list button')[1]);
     await until(() => expect(state().error).toBe('Local RPC unavailable'));
     expect(state().isReady).toBe(false); expect(query('.wallet-btn').textContent).toContain('Connect Wallet'); expect(query('.active-address-text').textContent).toBe('Not connected');
   });

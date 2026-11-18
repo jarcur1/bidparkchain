@@ -64,6 +64,12 @@ Configuration, listings, the claimable-refund read and the wallet balance each t
 
 `npm run test:ui` includes bid eligibility regressions for competing bids, closure during editing, deployment changes, and agreement between cards and map popups.
 
+The UI suite also exercises native keyboard controls and the shared dialog, including focus restoration, stacked dialogs, Escape, and busy close guards.
+
+### Keyboard use
+
+Use **Connect Wallet** to choose an account with Enter or Space, **List a Spot** to open the form, and **Details** or **Bid Now** on a card to act without using the map. The listing review moves focus to the public preview before confirmation; **Edit listing** returns focus to the form. Dialogs contain Tab navigation and make the background inert. Escape closes only the topmost dialog and is ignored while it is submitting. Closing a dialog normally returns focus to its opener. The layout reflows on narrow screens and respects `prefers-reduced-motion`.
+
 ## Components
 
 | Path | Purpose |

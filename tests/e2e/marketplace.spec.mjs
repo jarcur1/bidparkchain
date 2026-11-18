@@ -15,8 +15,8 @@ async function selectWallet(page, index) {
 }
 
 async function bid(page, title, amount) {
-  await page.getByRole('button', { name: 'Discover Spots' }).click();
-  const card = page.getByRole('region', { name: `Listing: ${title}`, exact: true });
+  await page.getByRole('button', { name: 'Discover Spots', exact: true }).click();
+  const card = page.getByRole('article', { name: `Listing: ${title}`, exact: true });
   await card.getByRole('button', { name: 'Bid Now' }).click();
   const dialog = page.getByRole('dialog').filter({ has: page.getByLabel('Your New Bid Amount (ETH)') });
   await dialog.getByLabel('Your New Bid Amount (ETH)').fill(amount);
@@ -51,13 +51,16 @@ test('host lists, drivers bid and refund, winner reserves, host receives payout'
   await create.getByLabel('Listing Title').fill(title);
   await create.getByLabel('Parking Space Kind').selectOption('covered');
   await create.getByLabel('Street Address').fill(address);
-  await create.getByLabel('Space Description & Driver Arrival Guidelines').fill('Public covered driveway. Enter from Rainey Street and park in the marked bay.');
+  await create.getByLabel('Public space description').fill('Covered concrete driveway with good lighting and 2.1 m clearance.');
   await create.getByLabel('Opening Min Bid (ETH)').fill('0.05');
   await create.getByLabel('Bidding Cutoff').selectOption('15');
   await create.getByLabel('Parking Window').selectOption('immediate-2h');
-  await create.getByRole('button', { name: 'Deploy Auction to Escrow', exact: true }).click();
+  await create.getByRole('button', { name: 'Review public listing', exact: true }).click();
+  await expect(create.getByRole('heading', { name: 'Review public listing before signing' })).toBeFocused();
+  expect(await escrow.nextAuctionId()).toBe(auctionId);
+  await create.getByRole('button', { name: 'Confirm and Deploy Auction', exact: true }).click();
   await expect(create).toBeHidden();
-  await expect(page.getByRole('region', { name: `Listing: ${title}`, exact: true })).toBeVisible();
+  await expect(page.getByRole('article', { name: `Listing: ${title}`, exact: true })).toBeVisible();
   let auction = await escrow.auctions(auctionId);
   expect(auction.owner).toBe(chain.wallet(0).address);
   expect(auction.minBid).toBe(parseEther('0.05'));

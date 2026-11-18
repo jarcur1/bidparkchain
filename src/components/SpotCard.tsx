@@ -76,8 +76,6 @@ export const SpotCard: React.FC<SpotCardProps> = ({
       className={`spot-card ${isSelected ? 'is-selected' : ''}`}
       onClick={() => onSelect(listing)}
       id={`spot-card-${listing.id}`}
-      tabIndex={0}
-      role="region"
       aria-label={`Listing: ${listing.title}`}
     >
       {/* Card media container */}
@@ -128,7 +126,20 @@ export const SpotCard: React.FC<SpotCardProps> = ({
           <span className="card-id-pill">#{listing.id}</span>
         </div>
 
-        <h3 className="card-title">{listing.title}</h3>
+        <h3 className="card-title">
+          <button
+            type="button"
+            className="card-select-btn"
+            aria-pressed={Boolean(isSelected)}
+            aria-label={`Select ${listing.title} on map`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect(listing);
+            }}
+          >
+            {listing.title}
+          </button>
+        </h3>
         <p className="card-address">{listing.address}</p>
 
         {/* Parking reservation window info */}

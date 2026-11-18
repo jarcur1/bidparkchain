@@ -126,7 +126,7 @@ const storage = new JSDOM('', { url: 'http://localhost/' }).window.localStorage;
 Object.defineProperty(globalThis, 'localStorage', { value: storage, configurable: true });
 Object.defineProperty(window, 'localStorage', { value: storage, configurable: true });
 
-const text = () => container.textContent ?? '';
+const text = () => document.body.textContent ?? '';
 async function settle() {
   for (let i = 0; i < 6; i++) {
     await act(async () => {
@@ -404,7 +404,7 @@ describe('wallet and refund read status (RPC down)', () => {
     expect(text()).toContain('1.500 ETH (stale)');
 
     await act(async () => {
-      container.querySelector('form')!.requestSubmit();
+      document.querySelector<HTMLFormElement>('[role="dialog"] form')!.requestSubmit();
     });
     await settle();
     expect(text()).toContain('wallet balance is unavailable or may be out of date');
@@ -580,7 +580,7 @@ describe('balance identity across a same-address deployment reset', () => {
     expect(text()).toContain('1.500 ETH (stale)');
 
     await act(async () => {
-      container.querySelector('form')!.requestSubmit();
+      document.querySelector<HTMLFormElement>('[role="dialog"] form')!.requestSubmit();
     });
     await settle();
     expect(text()).toContain('wallet balance is unavailable or may be out of date');

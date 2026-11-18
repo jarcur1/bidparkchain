@@ -55,6 +55,8 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           <Search size={17} className="search-icon" />
           <input
             type="text"
+            id="spot-search"
+            aria-label="Search parking spots"
             className="search-input"
             placeholder="Search by neighborhood, street address, venue, amenities..."
             value={filters.search}
@@ -151,7 +153,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           </div>
 
           {/* Results count indicator */}
-          <div className="filter-count-badge">
+          <div className="filter-count-badge" role="status" aria-live="polite">
             <span>
               {listingsStatus === 'loading'
                 ? 'Loading spots…'

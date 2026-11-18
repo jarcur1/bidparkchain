@@ -15,12 +15,6 @@ const GUARD = path.join(ROOT_DIR, 'tests/support/resource-guard.mjs');
 const HARDHAT_CLI = path.join(ROOT_DIR, 'node_modules/hardhat/dist/src/cli.js');
 const READY_TIMEOUT_MS = 30_000;
 
-const liveGuards = new Set();
-// Synchronous last resort; guards also clean up when this process dies and closes their stdin.
-process.once('exit', () => {
-  for (const guard of liveGuards) guard.kill('SIGTERM');
-});
-
 /** Returns a currently unused loopback TCP port. */
 export async function findFreePort() {
   return await new Promise((resolve, reject) => {
@@ -41,16 +35,13 @@ function startGuard(spec) {
     detached: true,
     stdio: ['pipe', process.env.BIDPARK_TEST_VERBOSE ? 'inherit' : 'ignore', 'inherit'],
   });
-  liveGuards.add(guard);
-  const exited = new Promise((resolve) => guard.once('exit', (code) => {
-    liveGuards.delete(guard);
-    resolve(code);
-  }));
+  const exited = new Promise((resolve) => guard.once('exit', resolve));
   return {
     guard,
     exited,
     async stop() {
-      if (guard.exitCode === null && guard.signalCode === null) guard.kill('SIGTERM');
+      // Closing the pipe lets the guard clean up before it exits. On Windows SIGTERM kills it outright.
+      guard.stdin.end();
       await exited;
     },
   };

@@ -22,6 +22,7 @@ import {
   shortenAddress,
 } from '../utils/formatters';
 import { getBidEligibility, getChainNowSec } from '../utils/eligibility';
+import { Dialog } from './Dialog';
 
 interface DetailModalProps {
   listing: Listing | null;
@@ -50,15 +51,6 @@ export const DetailModal: React.FC<DetailModalProps> = ({
   const [timeRemaining, setTimeRemaining] = useState(() =>
     listing ? getAuctionTimeRemaining(listing.bidEnd) : { isEnded: true, text: '', totalSeconds: 0 }
   );
-
-  useEffect(() => {
-    if (!listing) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [listing, onClose]);
 
   useEffect(() => {
     if (!listing || listing.settled || listing.cancelled) return;
@@ -103,14 +95,11 @@ export const DetailModal: React.FC<DetailModalProps> = ({
   )}`;
 
   return (
-    <div
-      className="modal-backdrop"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="modal-listing-title"
+    <Dialog
+      className="modal-dialog modal-detail-dialog"
+      labelledBy="modal-listing-title"
+      onClose={onClose}
     >
-      <div className="modal-dialog modal-detail-dialog" onClick={(e) => e.stopPropagation()}>
         {/* Modal Header */}
         <div className="modal-detail-header">
           <div className="modal-header-left">
@@ -356,7 +345,6 @@ export const DetailModal: React.FC<DetailModalProps> = ({
             </div>
           </div>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 };
