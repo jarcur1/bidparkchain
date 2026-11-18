@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   Check,
@@ -17,6 +17,7 @@ import {
   COMMON_AMENITIES,
   CURATED_PARKING_PHOTOS,
 } from '../utils/constants';
+import { Dialog } from './Dialog';
 
 interface ParkingWindowOption {
   id: string;
@@ -97,6 +98,7 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
   const [selectedWindowId, setSelectedWindowId] = useState<string>('delay30m-3h');
 
   const [formError, setFormError] = useState<string | null>(null);
+  const titleInputRef = useRef<HTMLInputElement>(null);
 
   // Sync state if pendingRegistration is passed or changes
   useEffect(() => {
@@ -114,16 +116,6 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
       setFormError(null);
     }
   }, [pendingRegistration]);
-
-  // Escape key handler
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !isSubmitting) onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, isSubmitting, onClose]);
 
   if (!isOpen) return null;
 
@@ -238,16 +230,13 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
   };
 
   return (
-    <div
-      className="modal-backdrop"
-      onClick={() => {
-        if (!isSubmitting) onClose();
-      }}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="create-listing-title"
+    <Dialog
+      className="modal-dialog modal-create-dialog"
+      labelledBy="create-listing-title"
+      onClose={onClose}
+      canClose={!isSubmitting}
+      initialFocusRef={titleInputRef}
     >
-      <div className="modal-dialog modal-create-dialog" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="modal-header">
           <div className="modal-header-icon-title">
@@ -319,6 +308,7 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
               </label>
               <input
                 id="spot-title"
+                ref={titleInputRef}
                 type="text"
                 className="form-input"
                 placeholder="e.g. Covered Carport 2 blocks from Moody Center"
@@ -432,28 +422,33 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
 
           {/* Photo Picker */}
           <div className="form-field">
-            <label className="form-label">Space Photograph</label>
-            <div className="photo-picker-grid">
+            <span className="form-label" id="photo-picker-label">Space Photograph</span>
+            <div className="photo-picker-grid" role="group" aria-labelledby="photo-picker-label">
               {CURATED_PARKING_PHOTOS.map((photo, idx) => (
-                <div
+                <button
                   key={idx}
+                  type="button"
                   className={`photo-thumb-option ${imageUrl === photo.url ? 'is-active-photo' : ''}`}
                   onClick={() => setImageUrl(photo.url)}
-                  role="button"
-                  tabIndex={0}
+                  aria-pressed={imageUrl === photo.url}
+                  aria-label={`Use photo: ${photo.title}`}
+                  disabled={isSubmitting}
                 >
-                  <img src={photo.url} alt={photo.title} />
+                  <img src={photo.url} alt="" />
                   {imageUrl === photo.url && (
                     <div className="photo-check-badge">
                       <Check size={12} />
                     </div>
                   )}
-                </div>
+                </button>
               ))}
             </div>
             <div className="custom-photo-row">
-              <span className="photo-custom-label">Or custom image URL:</span>
+              <label htmlFor="spot-image-url" className="photo-custom-label">
+                Or custom image URL:
+              </label>
               <input
+                id="spot-image-url"
                 type="url"
                 className="form-input"
                 placeholder="https://..."
@@ -466,8 +461,8 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
 
           {/* Amenities Multi-Select */}
           <div className="form-field">
-            <label className="form-label">Select Amenities & Spot Features</label>
-            <div className="amenities-checkbox-grid">
+            <span className="form-label" id="amenities-label">Select Amenities & Spot Features</span>
+            <div className="amenities-checkbox-grid" role="group" aria-labelledby="amenities-label">
               {COMMON_AMENITIES.map((amenity) => {
                 const isChecked = selectedAmenities.includes(amenity);
                 return (
@@ -476,6 +471,7 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
                     type="button"
                     className={`amenity-chip-toggle ${isChecked ? 'is-checked' : ''}`}
                     onClick={() => toggleAmenity(amenity)}
+                    aria-pressed={isChecked}
                     disabled={isSubmitting}
                   >
                     <span className="checkbox-box">{isChecked ? '✓' : ''}</span>
@@ -563,6 +559,14 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
             </div>
           )}
 
+          <p className="sr-only" role="status">
+            {isSubmitting
+              ? pendingRegistration
+                ? 'Registering listing metadata'
+                : 'Deploying auction to escrow'
+              : ''}
+          </p>
+
           {/* Submit footer */}
           <div className="modal-actions-footer">
             <button
@@ -600,7 +604,6 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </Dialog>
   );
 };

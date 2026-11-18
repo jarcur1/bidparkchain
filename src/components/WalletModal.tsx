@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import {
   CheckCircle2,
   Copy,
@@ -11,6 +11,7 @@ import {
 import { useWallet } from '../context/WalletContext';
 import { DEMO_ACCOUNTS } from '../utils/constants';
 import { formatEth, shortenAddress } from '../utils/formatters';
+import { Dialog } from './Dialog';
 
 interface WalletModalProps {
   isOpen: boolean;
@@ -28,15 +29,6 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
 
   const [copiedAddr, setCopiedAddr] = useState(false);
 
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
-
   if (!isOpen) return null;
 
   const handleCopy = () => {
@@ -48,14 +40,11 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
   };
 
   return (
-    <div
-      className="modal-backdrop"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="wallet-modal-title"
+    <Dialog
+      className="modal-dialog modal-wallet-dialog"
+      labelledBy="wallet-modal-title"
+      onClose={onClose}
     >
-      <div className="modal-dialog modal-wallet-dialog" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="modal-header">
           <div className="modal-header-icon-title">
@@ -105,13 +94,13 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
                 title="Copy address"
               >
                 <Copy size={13} />
-                <span>{copiedAddr ? 'Copied' : 'Copy'}</span>
+                <span aria-live="polite">{copiedAddr ? 'Copied' : 'Copy'}</span>
               </button>
             )}
           </div>
 
           {wrongChain && (
-            <div className="wallet-wrong-chain-notice">
+            <div className="wallet-wrong-chain-notice" role="alert">
               <ShieldAlert size={15} />
               <span>Connected to wrong chain! Contract requires Hardhat 31337.</span>
               <button
@@ -138,48 +127,39 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
                 walletState.type === 'local' &&
                 walletState.localAccountIndex === acc.index;
               return (
-                <div
+                <button
                   key={acc.index}
+                  type="button"
                   className={`demo-account-item ${isActive ? 'is-active-account' : ''}`}
                   onClick={() => connectLocal(acc.index)}
-                  role="button"
-                  tabIndex={0}
+                  aria-current={isActive ? 'true' : undefined}
                 >
-                  <div className="account-item-left">
-                    <div className="account-avatar">
+                  <span className="account-item-left">
+                    <span className="account-avatar">
                       <User size={15} />
-                    </div>
-                    <div className="account-labels">
-                      <div className="account-title-row">
+                    </span>
+                    <span className="account-labels">
+                      <span className="account-title-row">
                         <span className="account-label-text">{acc.label}</span>
                         <span className="account-role-tag">{acc.role}</span>
-                      </div>
+                      </span>
                       <span className="account-address-sub">
                         {shortenAddress(acc.address, 6)}
                       </span>
-                    </div>
-                  </div>
+                    </span>
+                  </span>
 
-                  <div className="account-item-right">
+                  <span className="account-item-right">
                     {isActive ? (
                       <span className="badge-active-pill">
                         <CheckCircle2 size={13} />
                         <span>Active</span>
                       </span>
                     ) : (
-                      <button
-                        type="button"
-                        className="btn-select-account"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          connectLocal(acc.index);
-                        }}
-                      >
-                        Switch
-                      </button>
+                      <span className="btn-select-account">Switch</span>
                     )}
-                  </div>
-                </div>
+                  </span>
+                </button>
               );
             })}
           </div>
@@ -191,48 +171,39 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
             <span className="section-label">Browser Wallet (MetaMask / Extension)</span>
           </div>
 
-          <div
+          <button
+            type="button"
             className={`demo-account-item ${
               walletState.type === 'injected' ? 'is-active-account' : ''
             }`}
             onClick={connectInjected}
-            role="button"
-            tabIndex={0}
+            aria-current={walletState.type === 'injected' ? 'true' : undefined}
           >
-            <div className="account-item-left">
-              <div className="account-avatar avatar-injected">
+            <span className="account-item-left">
+              <span className="account-avatar avatar-injected">
                 <Wallet size={15} />
-              </div>
-              <div className="account-labels">
+              </span>
+              <span className="account-labels">
                 <span className="account-label-text">Injected Web3 Provider</span>
                 <span className="account-address-sub">
                   {typeof window.ethereum !== 'undefined'
                     ? 'MetaMask or compatible extension detected'
                     : 'No browser extension found'}
                 </span>
-              </div>
-            </div>
+              </span>
+            </span>
 
-            <div className="account-item-right">
+            <span className="account-item-right">
               {walletState.type === 'injected' ? (
                 <span className="badge-active-pill">
                   <CheckCircle2 size={13} />
                   <span>Active</span>
                 </span>
               ) : (
-                <button
-                  type="button"
-                  className="btn-select-account"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    connectInjected();
-                  }}
-                >
-                  Connect
-                </button>
+                <span className="btn-select-account">Connect</span>
               )}
-            </div>
-          </div>
+            </span>
+          </button>
         </div>
 
         {/* Notice */}
@@ -242,7 +213,6 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
             Test keys only. Never deposit real mainnet funds. All transactions execute against local RPC.
           </span>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 };

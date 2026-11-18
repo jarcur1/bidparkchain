@@ -49,6 +49,12 @@ npm run smoke
 
 `build` runs strict TypeScript checking and a Vite production build. `smoke` deploys a separate contract and exercises the live auction, outbid/refund, same-bidder rebid, settlement, payout, cancellation, authorization, and time-boundary paths. It snapshots and restores the local chain, including its clock. **Do not submit app transactions while the smoke script runs**: snapshot restoration also reverts any concurrent transactions.
 
+`npm test` runs the Vitest/jsdom suite in `tests/`, which mounts the real React components and exercises native keyboard controls and the shared dialog (initial focus, Tab trap, focus restoration, inert background including stacked dialogs, topmost-only Escape, and busy close guards).
+
+### Keyboard use
+
+Every flow works without a pointer or the map: Tab to **Connect Wallet** and press Enter, choose an account with Enter/Space, **List a Spot** to open the create form (photos and amenities are toggle buttons that report their pressed state), switch to **Cards**, then use **Details** or **Bid Now** on a card. Dialogs move focus inside, trap Tab, mark everything behind them inert, close only the topmost dialog on Escape (ignored while a transaction is submitting), and return focus to the control that opened them. Animations are disabled under `prefers-reduced-motion`, and the layout reflows without horizontal scrolling at 375px.
+
 ## Components
 
 | Path | Purpose |

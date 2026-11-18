@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   Gavel,
@@ -10,6 +10,7 @@ import { formatEther, parseEther } from 'ethers';
 import { useWallet } from '../context/WalletContext';
 import type { Listing } from '../types';
 import { formatEth } from '../utils/formatters';
+import { Dialog } from './Dialog';
 
 interface BidModalProps {
   listing: Listing | null;
@@ -27,6 +28,7 @@ export const BidModal: React.FC<BidModalProps> = ({
   const { walletState, wrongChain } = useWallet();
   const [bidAmount, setBidAmount] = useState<string>('');
   const [localError, setLocalError] = useState<string | null>(null);
+  const amountInputRef = useRef<HTMLInputElement>(null);
 
   // Determine minimum next bid
   useEffect(() => {
@@ -39,16 +41,6 @@ export const BidModal: React.FC<BidModalProps> = ({
     }
     setLocalError(null);
   }, [listing]);
-
-  // Handle escape key
-  useEffect(() => {
-    if (!listing) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !isSubmitting) onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [listing, onClose, isSubmitting]);
 
   if (!listing) return null;
 
@@ -134,16 +126,13 @@ export const BidModal: React.FC<BidModalProps> = ({
   };
 
   return (
-    <div
-      className="modal-backdrop"
-      onClick={() => {
-        if (!isSubmitting) onClose();
-      }}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="bid-dialog-title"
+    <Dialog
+      className="modal-dialog modal-bid-dialog"
+      labelledBy="bid-dialog-title"
+      onClose={onClose}
+      canClose={!isSubmitting}
+      initialFocusRef={amountInputRef}
     >
-      <div className="modal-dialog modal-bid-dialog" onClick={(e) => e.stopPropagation()}>
         {/* Modal Header */}
         <div className="modal-header">
           <div className="modal-header-icon-title">
@@ -203,7 +192,7 @@ export const BidModal: React.FC<BidModalProps> = ({
                 }}
                 disabled={isSubmitting}
                 required
-                autoFocus
+                ref={amountInputRef}
               />
               <span className="currency-suffix">ETH</span>
             </div>
@@ -241,6 +230,10 @@ export const BidModal: React.FC<BidModalProps> = ({
             </div>
           )}
 
+          <p className="sr-only" role="status">
+            {isSubmitting ? 'Submitting bid to chain' : ''}
+          </p>
+
           {/* Footer actions */}
           <div className="modal-actions-footer">
             <button
@@ -270,7 +263,6 @@ export const BidModal: React.FC<BidModalProps> = ({
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </Dialog>
   );
 };
