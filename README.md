@@ -49,6 +49,8 @@ npm run smoke
 
 `build` runs strict TypeScript checking and a Vite production build. `smoke` deploys a separate contract and exercises the live auction, outbid/refund, same-bidder rebid, settlement, payout, cancellation, authorization, and time-boundary paths. It snapshots and restores the local chain, including its clock. **Do not submit app transactions while the smoke script runs**: snapshot restoration also reverts any concurrent transactions.
 
+Run `node --test tests/seed-recovery.test.mjs` to verify interrupted seed recovery on a disposable chain and temporary database. No running app is needed.
+
 ## Components
 
 | Path | Purpose |
@@ -68,6 +70,8 @@ SQLite metadata and the deployment descriptor live under gitignored `data/`. Met
 The local Hardhat chain is **in memory**. Stopping and restarting it resets auctions, balances, and reservations. A fresh deployment clears metadata from the prior chain session and recreates the seven samples. SQLite persistence supports API restarts while the same chain remains running; it does not make blockchain state persistent.
 
 For separate service terminals, run `npm run chain`, then `npm run deploy`, then `npm run api` and `npm run web`. Re-running deployment against the same active chain reuses the deployment.
+
+If a resumed demo auction can no longer accept its initial bid, deployment reports the skipped bid and finishes seeding the remaining listings without replacing the existing auction. Subsequent runs report the degraded seed status without retrying the skipped bid.
 
 ## Boundaries before real use
 

@@ -19,8 +19,39 @@ import { canonicalizeAuctionId } from '../server/app.mjs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, '..');
-const DATA_DIR = path.resolve(ROOT_DIR, 'data');
+const DATA_DIR = path.resolve(process.env.BIDPARK_DATA_DIR || path.resolve(ROOT_DIR, 'data'));
 const DEPLOYMENT_PATH = path.resolve(DATA_DIR, 'deployment.json');
+
+const UNSENDABLE_BID_ERRORS = {
+  AlreadyCancelled: 'auction was cancelled',
+  AlreadySettled: 'auction was settled',
+  AuctionEnded: 'bidding deadline passed',
+};
+
+async function placeSeedBid(contract, buyerWallet, provider, auctionId, amount) {
+  const block = await provider.getBlock('latest');
+  const auction = await contract.auctions(auctionId, { blockTag: block.number });
+  if (auction.highestBidder !== ethers.ZeroAddress) return;
+  if (auction.cancelled) return UNSENDABLE_BID_ERRORS.AlreadyCancelled;
+  if (auction.settled) return UNSENDABLE_BID_ERRORS.AlreadySettled;
+  if (auction.bidEnd <= BigInt(block.timestamp)) return UNSENDABLE_BID_ERRORS.AuctionEnded;
+
+  try {
+    const tx = await contract.connect(buyerWallet).bid(auctionId, { value: ethers.parseEther(amount) });
+    await tx.wait();
+  } catch (error) {
+    // The auction may close between the eligibility check and transaction execution.
+    // Only skip known contract rejections; surface RPC failures and other unexpected errors.
+    const rpcData = error.info?.error?.data;
+    const data = error.data ?? (typeof rpcData === 'string' ? rpcData : rpcData?.data);
+    const selector = typeof data === 'string' ? data.slice(0, 10) : null;
+    for (const [name, reason] of Object.entries(UNSENDABLE_BID_ERRORS)) {
+      if (selector === contract.interface.getError(name).selector) return reason;
+    }
+    throw error;
+  }
+  console.log(`     Placed initial bid of ${amount} ETH on demo auction #${auctionId}`);
+}
 
 async function main() {
   console.log('[BidPark Deploy] Starting deployment process...');
@@ -47,7 +78,7 @@ async function main() {
   console.log(`[BidPark Deploy] Deployer account (Vendor index 0): ${deployerWallet.address}`);
   console.log(`[BidPark Deploy] Demo buyer account (Buyer index 1): ${buyerWallet.address}`);
 
-  const db = new EscrowDatabase();
+  const db = new EscrowDatabase(path.resolve(DATA_DIR, 'bidpark.db'));
 
   // Compile Solidity contract with Shanghai target
   console.log('[BidPark Deploy] Compiling contracts/ParkingAuctionEscrow.sol (solc, EVM: shanghai)...');
@@ -139,14 +170,14 @@ async function main() {
 
   // Check seed status and resume any unfinished seed auctions or initial bids
   const seedStatusKey = `seed_status_${contractAddress}`;
-  const isSeedDone = db.getMeta(seedStatusKey) === 'completed';
+  const seedStatus = db.getMeta(seedStatusKey);
 
   const currentBlock = await provider.getBlock('latest');
   const baseTimestamp = currentBlock ? currentBlock.timestamp : Math.floor(Date.now() / 1000);
   const seedListings = getSeededListings(baseTimestamp);
 
   // Check if all seed listings are present in SQLite
-  let allPresent = isSeedDone;
+  let allPresent = seedStatus === 'completed' || seedStatus === 'degraded';
   if (allPresent) {
     for (const item of seedListings) {
       const found = db.getListingByMetadataHash(contractAddress, item.metadataHash);
@@ -161,6 +192,7 @@ async function main() {
     console.log('[BidPark Deploy] Seeding or resuming Austin parking listings...');
     const nextOnchainId = await contract.nextAuctionId();
     const totalOnchain = Number(nextOnchainId) - 1;
+    let skippedBids = 0;
 
     for (let i = 0; i < seedListings.length; i++) {
       const item = seedListings[i];
@@ -253,22 +285,18 @@ async function main() {
 
       // Place initial bid if configured and not yet placed
       if (item.initialBidEth) {
-        const onchain = await contract.auctions(auctionId);
-        if (onchain && onchain.highestBidder === ethers.ZeroAddress) {
-          console.log(
-            `     Placing initial bid of ${item.initialBidEth} ETH by demo buyer (${buyerWallet.address.slice(0, 8)}...)`
-          );
-          const buyerContract = contract.connect(buyerWallet);
-          const bidTx = await buyerContract.bid(auctionId, {
-            value: ethers.parseEther(item.initialBidEth),
-          });
-          await bidTx.wait();
+        const reason = await placeSeedBid(contract, buyerWallet, provider, auctionId, item.initialBidEth);
+        if (reason) {
+          skippedBids++;
+          console.warn(`[BidPark Deploy] Skipped initial demo bid for auction #${auctionId}: ${reason}.`);
         }
       }
     }
 
-    db.setMeta(seedStatusKey, 'completed');
-    console.log('[BidPark Deploy] All 7 Austin parking listings seeded and verified.');
+    db.setMeta(seedStatusKey, skippedBids ? 'degraded' : 'completed');
+    console.log(`[BidPark Deploy] ${seedListings.length} demo listings ready; skipped ${skippedBids} initial demo bids.`);
+  } else if (seedStatus === 'degraded') {
+    console.warn('[BidPark Deploy] Seeding previously finished with skipped initial demo bids. Leaving existing auctions unchanged.');
   } else {
     console.log('[BidPark Deploy] Seeding already complete for this contract deployment. Skipping.');
   }
