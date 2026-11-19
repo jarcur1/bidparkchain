@@ -159,6 +159,8 @@ export const AppContent: React.FC<{
   );
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isWalletModalOpen, setIsWalletModalOpen] = useState(false);
+  // The action a user started before connecting a wallet; it resumes once the wallet is ready.
+  const [intent, setIntent] = useState<{ kind: 'bid'; listingId: string; title: string } | { kind: 'create' } | null>(null);
 
   // Pending metadata registration recovery state
   const [pendingRegistration, setPendingRegistration] = useState<{
@@ -205,10 +207,17 @@ export const AppContent: React.FC<{
 
   const walletAddressRef = useRef(walletState.address);
   walletAddressRef.current = walletState.address;
+  const walletReadyRef = useRef(walletState.isReady);
+  walletReadyRef.current = walletState.isReady;
   const chainRef = useRef(chain);
   chainRef.current = chain;
 
   const handleOpenBidModal = useCallback((listing: Listing) => {
+    if (!walletReadyRef.current) {
+      setIntent({ kind: 'bid', listingId: listing.id, title: listing.title });
+      setIsWalletModalOpen(true);
+      return;
+    }
     if (!chainRef.current) {
       addToast('info', 'Bidding unavailable', 'Refresh the marketplace to confirm the current deployment.');
       return;
@@ -224,6 +233,17 @@ export const AppContent: React.FC<{
   const handleOpenDetailModal = useCallback((listing: Listing) => {
     if (chainRef.current) setDetailTarget(makeListingTarget(listing, chainRef.current));
   }, []);
+
+  useEffect(() => {
+    if (!intent || !walletState.isReady) return;
+    setIntent(null);
+    setIsWalletModalOpen(false);
+    if (intent.kind === 'create') setIsCreateOpen(true);
+    else {
+      const listing = listings.find((l) => l.id === intent.listingId);
+      if (listing) handleOpenBidModal(listing);
+    }
+  }, [intent, walletState.isReady, listings, handleOpenBidModal]);
 
   const listingsReqRef = useRef(0);
   const bidReadRef = useRef<{ deployment: string | null; promise: Promise<ListingsReadResult> } | null>(null);
@@ -946,6 +966,11 @@ export const AppContent: React.FC<{
             addToast('info', 'Transaction submitted; finality not established', 'Check the earlier creation in the explorer before creating another auction.', unconfirmedCreationRef.current);
             return;
           }
+          if (!walletState.isReady) {
+            setIntent({ kind: 'create' });
+            setIsWalletModalOpen(true);
+            return;
+          }
           setIsCreateOpen(true);
         }}
         onOpenWalletModal={() => setIsWalletModalOpen(true)}
@@ -1126,7 +1151,8 @@ export const AppContent: React.FC<{
       {/* Wallet Management Modal */}
       <WalletModal
         isOpen={isWalletModalOpen}
-        onClose={() => setIsWalletModalOpen(false)}
+        onClose={() => { setIsWalletModalOpen(false); setIntent(null); }}
+        continueLabel={intent ? (intent.kind === 'create' ? 'list a spot' : `bid on ${intent.title}`) : undefined}
       />
 
       {/* Toast notifications */}
