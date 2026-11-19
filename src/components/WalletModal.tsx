@@ -14,6 +14,7 @@ import { DEMO_ACCOUNTS } from '../utils/constants';
 import { formatBalance, shortenAddress } from '../utils/formatters';
 import { webProfile } from '../utils/networkProfile';
 import { Dialog } from './Dialog';
+import { ProfileEditor } from './ProfileEditor';
 
 interface WalletModalProps {
   isOpen: boolean;
@@ -162,6 +163,7 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
           {session && (
             <p role="status">Signed in as <code>{shortenAddress(session.address, 6)}</code></p>
           )}
+          {session && <ProfileEditor address={session.address} />}
           {signInError && <p role="alert">{signInError}</p>}
           {session ? (
             <button type="button" className="read-status-retry" onClick={() => void signOut()}>
