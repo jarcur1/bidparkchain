@@ -110,10 +110,13 @@ export async function createListingRecord(
 }
 
 export interface AuctionEvent {
-  event: 'AuctionCreated' | 'BidPlaced' | 'AuctionSettled' | 'PayoutClaimed' | 'AuctionCancelled';
+  event: string;
+  auctionId?: string | null;
   account: string | null;
   amount: string | null;
   blockNumber: number;
+  /** Block timestamp (unix seconds); null when the node could not be read for it. */
+  blockTime?: number | null;
   logIndex: number;
   txHash: string;
 }
@@ -133,4 +136,23 @@ export async function fetchAuctionHistory(auctionId: string): Promise<AuctionHis
     throw new ApiError('Invalid response shape from auction history', res.status);
   }
   return data as AuctionHistory;
+}
+
+export interface AccountHistory {
+  chainId: number;
+  contractAddress: string;
+  indexedBlock: number | null;
+  syncError: string | null;
+  events: AuctionEvent[];
+}
+
+/** Indexed events for one wallet's bids and auctions, with the deployment they were read from. */
+export async function fetchAccountHistory(address: string): Promise<AccountHistory> {
+  const res = await fetch(`/api/accounts/${encodeURIComponent(address)}/history`);
+  if (!res.ok) throw new ApiError(await extractErrorMessage(res), res.status);
+  const data: unknown = await res.json();
+  if (!data || typeof data !== 'object' || !('events' in data) || !Array.isArray(data.events)) {
+    throw new ApiError('Invalid response shape from account history', res.status);
+  }
+  return data as AccountHistory;
 }

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { History } from 'lucide-react';
 import type { Listing } from '../types';
 import { fetchAuctionHistory, type AuctionHistory } from '../services/api';
-import { formatEth, shortenAddress } from '../utils/formatters';
+import { formatDateTime, formatEth, shortenAddress } from '../utils/formatters';
 import { LOADING_READ, readFailed, readSucceeded, type ReadState } from '../utils/readState';
 
 const POLL_MS = 5000;
@@ -82,7 +82,9 @@ export const BidHistory: React.FC<{ listing: Listing; currentAddress: string | n
                 {e.account && e.account.toLowerCase() === me ? ' (you)' : ''}
               </span>
               <span>{e.amount !== null && e.event !== 'AuctionCreated' ? `${formatEth(e.amount)} ETH` : ''}</span>
-              <span className="bid-history-block">block {e.blockNumber}</span>
+              <span className="bid-history-block">
+                {e.blockTime ? formatDateTime(e.blockTime, listing.timeZone) : `block ${e.blockNumber}`}
+              </span>
             </li>
           ))}
         </ol>
