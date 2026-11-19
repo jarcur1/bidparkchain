@@ -18,6 +18,7 @@ import {
   cancelAuction,
   claimPayout,
   createAuctionOnChain,
+  fetchBidAuctionIds,
   fetchPendingReturns,
   getContractInstance,
   parseContractError,
@@ -84,13 +85,15 @@ interface RefundIdentity {
 interface RefundState {
   identity: RefundIdentity;
   wei: bigint | null;
+  // Auctions this account bid on; null when the bid history could not be read.
+  bidIds: Set<string> | null;
   read: ReadState;
 }
 
 const EMPTY_LISTINGS: ListingsState = {
   deployment: null, data: [], chain: null, deploymentChanged: false, read: LOADING_READ,
 };
-const UNKNOWN_REFUND = { wei: null, read: LOADING_READ };
+const UNKNOWN_REFUND = { wei: null, bidIds: null, read: LOADING_READ };
 
 const sameRefundIdentity = (a: RefundIdentity, b: RefundIdentity) =>
   a.address === b.address && a.chainId === b.chainId && a.provider === b.provider &&
@@ -293,6 +296,7 @@ export const AppContent: React.FC<{
     refundState && sameRefundIdentity(refundState.identity, refundIdentity) ? refundState : UNKNOWN_REFUND;
   const claimableRefundWei = refund.wei;
   const refundRead = refund.read;
+  const myBidAuctionIds = refund.bidIds;
 
   // Load pending returns from onchain contract
   const loadPendingRefunds = useCallback(async (): Promise<ReadResult> => {
@@ -308,7 +312,10 @@ export const AppContent: React.FC<{
     const fail = (err: unknown): ReadResult => {
       setRefundState((prev) => {
         const known = prev && sameRefundIdentity(prev.identity, identity) ? prev : null;
-        return { identity, wei: known?.wei ?? null, read: readFailed(known?.read ?? LOADING_READ, err) };
+        return {
+          identity, wei: known?.wei ?? null, bidIds: known?.bidIds ?? null,
+          read: readFailed(known?.read ?? LOADING_READ, err),
+        };
       });
       return readFailure(err);
     };
@@ -317,9 +324,16 @@ export const AppContent: React.FC<{
     if (!config?.contractAddress) return fail('Contract configuration is unavailable.');
     try {
       const readContract = getContractInstance(config.contractAddress, config.abi, provider);
-      const wei = await fetchPendingReturns(readContract, identity.address, config.confirmation);
+      // Bid history only explains the refund; failing to read it must not block a withdrawal.
+      const [wei, bidIds] = await Promise.all([
+        fetchPendingReturns(readContract, identity.address, config.confirmation),
+        fetchBidAuctionIds(readContract, identity.address, config.deploymentBlock, config.confirmation).catch((err) => {
+          console.warn('Failed to load bid history:', err);
+          return null;
+        }),
+      ]);
       if (!isCurrent()) return READ_SUPERSEDED;
-      setRefundState({ identity, wei, read: readSucceeded(wei === 0n) });
+      setRefundState({ identity, wei, bidIds, read: readSucceeded(wei === 0n) });
       return READ_OK;
     } catch (err) {
       console.warn('Failed to load pending returns:', err);
@@ -1029,6 +1043,8 @@ export const AppContent: React.FC<{
             listings={listings}
             claimableRefundWei={claimableRefundWei}
             refundRead={refundRead}
+            myBidAuctionIds={myBidAuctionIds}
+            listingsRead={listingsView.read}
             onRetryRefund={() => void retrySource('Refund balance', loadPendingRefunds)}
             onWithdrawRefund={handleWithdrawRefund}
             onSettleListing={handleSettleListing}

@@ -233,7 +233,7 @@ export const BidModal: React.FC<BidModalProps> = ({
           <div className="bid-escrow-explainer">
             <ShieldCheck size={16} className="explainer-icon" />
             <div className="explainer-text">
-              <strong>Solidity Escrow Guarantee:</strong> Your full bid will be held in the smart contract. If outbid by another driver, your ETH is <em>instantly returned to your claimable balance</em> to withdraw anytime.
+              <strong>How escrow works:</strong> This transaction sends the <em>full bid amount</em>, not a top-up, and the contract holds it. If you are outbid, or raise your own bid, the earlier bid becomes a separate refund you withdraw from My Activity. Winning does not grant access to a real parking space.
             </div>
           </div>
 

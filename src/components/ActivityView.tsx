@@ -29,6 +29,8 @@ interface ActivityViewProps {
   listings: Listing[];
   claimableRefundWei: bigint | null;
   refundRead: ReadState;
+  myBidAuctionIds: Set<string> | null;
+  listingsRead: ReadState;
   onRetryRefund: () => void;
   onWithdrawRefund: () => Promise<void>;
   onSettleListing: (listing: Listing) => Promise<void>;
@@ -44,6 +46,8 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
   listings,
   claimableRefundWei,
   refundRead,
+  myBidAuctionIds,
+  listingsRead,
   onRetryRefund,
   onWithdrawRefund,
   onSettleListing,
@@ -96,6 +100,30 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
       !l.settled &&
       !l.cancelled &&
       l.bidEnd > now
+  );
+
+  // Auctions you bid on where someone else now holds the highest bid.
+  const outbidAuctions = myBidAuctionIds
+    ? listings.filter(
+        (l) => myBidAuctionIds.has(l.id) && !l.cancelled && l.highestBidder.toLowerCase() !== addrLower
+      )
+    : [];
+
+  // A failed or first listings read is unknown, never an empty account.
+  const listingsUnknown = listingsRead.status === 'loading' || listingsRead.status === 'failed';
+  const count = (n: number) => (listingsUnknown ? '' : ` (${n})`);
+  const unknownListings = (
+    <div className="activity-empty-box" role="status">
+      <AlertTriangle size={22} />
+      <div>
+        <p className="activity-empty-heading">
+          {listingsRead.status === 'loading' ? 'Loading auction status…' : 'Auction status unavailable'}
+        </p>
+        <p className="activity-empty-text">
+          This is not an empty account: bids, wins and reservations will show once listings can be read.
+        </p>
+      </div>
+    </div>
   );
 
   // 3. Settleable auctions (Bidding ended, not settled yet, anyone can settle)
@@ -172,7 +200,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
               </div>
               <div className="refund-desc-col">
                 <p className="refund-explainer">
-                  You were outbid on an auction. The smart contract automatically credited your full bid amount to your pending returns. Click below to withdraw directly back to your wallet.
+                  You were outbid. Each bid commits its full amount, so your displaced bid was moved here, separate from any bid you still hold. It stays in the contract until you withdraw it to this wallet.
                 </p>
               </div>
               <div className="refund-btn-col">
@@ -203,7 +231,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
             <div>
               <p className="activity-empty-heading">No pending refunds</p>
               <p className="activity-empty-text">
-                When you place a bid and another driver outbids you, 100% of your ETH is immediately credited here for withdrawal.
+                Each bid commits its full amount. If another driver outbids you, that whole amount moves here and you can withdraw it.
               </p>
             </div>
           </div>
@@ -224,7 +252,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
           </div>
 
           <p className="settle-intro-text">
-            Bidding has concluded with your winning bid! Execute on-chain settlement to finalize the smart contract escrow and generate your official reservation pass.
+            Bidding has closed and you hold the highest bid. You are the winner pending settlement: anyone can settle to confirm the result on-chain.
           </p>
 
           <div className="settle-cards-grid">
@@ -241,6 +269,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                   </div>
                   <h4 className="settle-card-title">{listing.title}</h4>
                   <p className="settle-card-sub">{listing.address}</p>
+                  <p className="settle-card-sub">Status: You won — pending settlement</p>
 
                   <div className="settle-card-meta">
                     <div>
@@ -275,12 +304,14 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
           <div className="section-title-wrap">
             <Ticket size={20} className="text-forest-green" />
             <h2 className="activity-section-title">
-              Confirmed Reservations ({confirmedReservations.length})
+              Confirmed Reservations{count(confirmedReservations.length)}
             </h2>
           </div>
         </div>
 
-        {confirmedReservations.length > 0 ? (
+        {listingsUnknown ? (
+          unknownListings
+        ) : confirmedReservations.length > 0 ? (
           <div className="reservations-grid">
             {confirmedReservations.map((listing) => {
               const windowInfo = formatParkingWindow(
@@ -300,6 +331,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                     </div>
                     <span className="pass-id">AUCTION #{listing.id}</span>
                   </div>
+                  <p className="pass-spot-address">Status: You won — confirmed on-chain</p>
 
                   <div className="pass-body">
                     <div className="pass-spot-info">
@@ -328,10 +360,10 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                     <div className="pass-instructions-box">
                       <div className="pass-inst-header">
                         <ShieldCheck size={14} />
-                        <span>Driver Verification Instructions:</span>
+                        <span>Simulated record only</span>
                       </div>
                       <p className="pass-inst-text">
-                        Your reservation is verified on-chain on Hardhat smart contract. If requested by host or attendant, show your connected wallet address: <code>{shortenAddress(currentAddress, 6)}</code>.
+                        The test contract records <code>{shortenAddress(currentAddress, 6)}</code> as the winner. This is not a parking permit and does not grant access to any real space.
                       </p>
                     </div>
 
@@ -364,7 +396,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
             <div>
               <p className="activity-empty-heading">No reserved parking passes yet</p>
               <p className="activity-empty-text">
-                Browse available Austin spots in Discover, place your bid, and when the auction ends, your pass will appear here.
+                Bid on a spot in Discover. If you win and the auction is settled, its record will appear here.
               </p>
             </div>
           </div>
@@ -377,12 +409,14 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
           <div className="section-title-wrap">
             <Gavel size={20} className="text-forest-green" />
             <h2 className="activity-section-title">
-              Active Leading Bids ({activeBids.length})
+              Active Leading Bids{count(activeBids.length)}
             </h2>
           </div>
         </div>
 
-        {activeBids.length > 0 ? (
+        {listingsUnknown ? (
+          unknownListings
+        ) : activeBids.length > 0 ? (
           <div className="active-bids-table-wrap">
             <table className="activity-table">
               <thead>
@@ -390,6 +424,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                   <th>Auction</th>
                   <th>Parking Window</th>
                   <th>Your Lead Bid</th>
+                  <th>Status</th>
                   <th>Bidding Cutoff</th>
                   <th>Action</th>
                 </tr>
@@ -419,6 +454,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                           {formatEth(listing.highestBid)} ETH
                         </span>
                       </td>
+                      <td>You are leading</td>
                       <td>
                         <span className="table-countdown-text">
                           <Clock size={12} />
@@ -447,6 +483,88 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
               <p className="activity-empty-heading">No active leading bids</p>
               <p className="activity-empty-text">
                 You are not currently the highest bidder on any open auctions.
+              </p>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* Outbid: auctions you bid on that someone else now leads */}
+      <section className="activity-section">
+        <div className="activity-section-header">
+          <div className="section-title-wrap">
+            <ArrowDownLeft size={20} className="text-orange" />
+            <h2 className="activity-section-title">
+              Outbid{myBidAuctionIds ? count(outbidAuctions.length) : ''}
+            </h2>
+          </div>
+        </div>
+
+        {listingsUnknown ? (
+          unknownListings
+        ) : !myBidAuctionIds ? (
+          <div className="activity-empty-box" role="status">
+            <AlertTriangle size={22} />
+            <div>
+              <p className="activity-empty-heading">Bid history unavailable</p>
+              <p className="activity-empty-text">
+                Your outbid auctions can't be listed right now. The refund balance above is read separately.
+              </p>
+            </div>
+          </div>
+        ) : outbidAuctions.length > 0 ? (
+          <div className="active-bids-table-wrap">
+            <table className="activity-table">
+              <thead>
+                <tr>
+                  <th>Auction</th>
+                  <th>Highest Bid Now</th>
+                  <th>Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {outbidAuctions.map((listing) => {
+                  const open = !listing.settled && listing.bidEnd > now;
+                  const status = open
+                    ? 'Outbid — bidding still open'
+                    : listing.settled
+                      ? 'Outbid — another bidder won (confirmed)'
+                      : 'Outbid — another bidder won (pending settlement)';
+                  return (
+                    <tr key={listing.id}>
+                      <td>
+                        <div className="table-spot-cell">
+                          <span className="table-spot-title">{listing.title}</span>
+                          <span className="table-spot-sub">Auction #{listing.id}</span>
+                        </div>
+                      </td>
+                      <td>
+                        {formatEth(listing.highestBid)} ETH by <code>{shortenAddress(listing.highestBidder, 4)}</code>
+                      </td>
+                      <td>{status}</td>
+                      <td>
+                        <button
+                          type="button"
+                          className="btn-table-action"
+                          onClick={() => (open ? onOpenBid(listing) : onOpenListingDetail(listing))}
+                        >
+                          {open ? 'Bid Again' : 'View Details'}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="activity-empty-box">
+            <ShieldCheck size={22} className="empty-check-icon" />
+            <div>
+              <p className="activity-empty-heading">Not outbid on any auction</p>
+              <p className="activity-empty-text">
+                Auctions you bid on and then lose the lead on will show here.
               </p>
             </div>
           </div>
@@ -493,9 +611,11 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                       <span className="meta-sub">Winner:</span>
                       <p className="meta-val mono-val">
                         {hasWinner ? shortenAddress(listing.highestBidder, 4) : 'None'}
+                        {hasWinner && listing.highestBidder.toLowerCase() === addrLower && ' (you)'}
                       </p>
                     </div>
                   </div>
+                  {hasWinner && <p className="settle-card-sub">Status: Winner pending settlement</p>}
 
                   <button
                     type="button"
@@ -519,12 +639,14 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
           <div className="section-title-wrap">
             <Warehouse size={20} className="text-forest-green" />
             <h2 className="activity-section-title">
-              My Listed Spaces ({hostedSpots.length})
+              My Listed Spaces{count(hostedSpots.length)}
             </h2>
           </div>
         </div>
 
-        {hostedSpots.length > 0 ? (
+        {listingsUnknown ? (
+          unknownListings
+        ) : hostedSpots.length > 0 ? (
           <div className="hosted-grid">
             {hostedSpots.map((listing) => {
               const hasBids = parseFloat(listing.highestBid) > 0;
