@@ -290,6 +290,8 @@ const MIGRATIONS = [
       );
     `);
   },
+  // Bind proof to the ownership period that was actually reviewed. Older reviews need new proof.
+  (db) => db.exec('ALTER TABLE space_verifications ADD COLUMN ownership_epoch TEXT'),
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
@@ -789,7 +791,7 @@ export class EscrowDatabase {
   /** Every space with a request or a report, newest activity first, with its current state if any. */
   getModerationQueue(contractAddress, { limit = 25, offset = 0 } = {}) {
     return this.db.prepare(`
-      SELECT a.space_id, MAX(a.at) AS last_at, v.host, v.status, v.evidence, v.updated_at
+      SELECT a.space_id, MAX(a.at) AS last_at, v.host, v.status, v.evidence, v.updated_at, v.ownership_epoch
       FROM verification_audit a
       LEFT JOIN space_verifications v
         ON v.chain_id = a.chain_id AND v.contract_address = a.contract_address AND v.space_id = a.space_id
@@ -844,17 +846,18 @@ export class EscrowDatabase {
    * Appends an audit entry and, in the same transaction, moves the space to `status`. `evidence` replaces
    * the stored evidence when given; `null` clears it. A report changes no state (pass no status change).
    */
-  recordVerification(contractAddress, spaceId, { action, status, actor, reason, note = '', host, evidence }) {
+  recordVerification(contractAddress, spaceId, { action, status, actor, reason, note = '', host, evidence, epoch = null }) {
     const contract = contractAddress.toLowerCase();
     const now = Date.now();
     this.#transaction(() => {
       if (action === 'submit') {
         this.db.prepare(`
-          INSERT INTO space_verifications (chain_id, contract_address, space_id, host, status, evidence, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO space_verifications (chain_id, contract_address, space_id, host, status, evidence, updated_at, ownership_epoch)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(chain_id, contract_address, space_id) DO UPDATE SET
-            host = excluded.host, status = excluded.status, evidence = excluded.evidence, updated_at = excluded.updated_at
-        `).run(this.chainId, contract, spaceId, host, status, evidence, now);
+            host = excluded.host, status = excluded.status, evidence = excluded.evidence,
+            updated_at = excluded.updated_at, ownership_epoch = excluded.ownership_epoch
+        `).run(this.chainId, contract, spaceId, host, status, evidence, now, epoch);
       } else if (action !== 'report') {
         this.db.prepare(`
           UPDATE space_verifications SET status = ?, evidence = CASE WHEN ? THEN '' ELSE evidence END, updated_at = ?

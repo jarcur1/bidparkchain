@@ -1018,22 +1018,28 @@ export function createApp(options = {}) {
   /** GET /api/settlement: keeper status, backlog and recent failures (fixed reasons only, no secrets). */
   app.get('/api/settlement', (req, res) => res.json(settlement ? settlement.status() : { enabled: false }));
 
-  /** On-chain owner of a space (the zero address when it does not exist). Throws when it can't be read. */
-  async function readSpaceOwner(spaceId) {
+  /** Current owner and ownership epoch from the same canonical block. */
+  async function readSpaceOwnership(spaceId) {
     const deployment = loadDeployment();
-    if (profile.id === 'sepolia') {
-      const { finalized, iface } = await readFinalizedDeployment(deployment);
-      const [owner] = await readFinalized(deployment, iface, finalized, 'spaceOwner', [spaceId]);
-      await assertCanonicalFinalized(finalized);
-      return owner;
-    }
-    const contract = deployment && isLocalDeployment(deployment) ? getContract(deployment) : null;
-    if (!contract) throw new Error('Smart contract not deployed');
-    return contract.spaceOwner(spaceId);
+    const local = profile.id === 'local' && deployment && isLocalDeployment(deployment);
+    if (profile.id === 'local' && !local) throw new Error('Smart contract not deployed');
+    const { finalized: block, iface } = local
+      ? { finalized: await provider.getBlock('latest'), iface: new ethers.Interface(deployment.abi) }
+      : await readFinalizedDeployment(deployment);
+    if (!block?.hash) throw new Error('Ownership snapshot unavailable');
+    const contract = local ? new ethers.Contract(deployment.contractAddress, iface, provider) : null;
+    const call = async (method) => local
+      ? await contract[method](spaceId, { blockTag: block.number })
+      : (await readFinalized(deployment, iface, block, method, [spaceId]))[0];
+    const [owner, epoch] = await Promise.all([
+      call('spaceOwner'), call('spaceOwnershipEpoch'),
+    ]);
+    await assertCanonicalFinalized(block);
+    return { owner, epoch: epoch.toString() };
   }
 
   mountVerification(app, {
-    db, moderators: settings.moderators, readSpaceOwner,
+    db, moderators: settings.moderators, readSpaceOwnership,
     contractAddress: () => loadDeployment()?.contractAddress ?? null,
   });
 

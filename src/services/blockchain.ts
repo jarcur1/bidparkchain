@@ -370,6 +370,58 @@ export function sendSpaceAction(
   }
 }
 
+export interface SpaceAttestation {
+  spaceId: string;
+  owner: string;
+  epoch: string;
+  identity: string;
+  metadataHash: string;
+}
+
+/** Read the exact space identity being reviewed at the deployment's confirmation level. */
+export async function fetchSpaceAttestation(
+  contract: Contract,
+  spaceId: string,
+  reviewer: string,
+  confirmation: ConfirmationPolicy,
+) {
+  const provider = contract.runner?.provider as BrowserProvider | null;
+  if (!provider) throw new Error('No provider is available.');
+  const finalized = confirmation === 'finalized';
+  const block = await provider.getBlock(finalized ? 'finalized' : 'latest');
+  if (!block?.hash) throw new Error('Verification snapshot is unavailable.');
+  const to = await contract.getAddress();
+  const call = async <T>(method: string, arg: bigint | string): Promise<T> => {
+    if (!finalized) return (await contract[method](arg, { blockTag: block.number })) as T;
+    if (typeof provider.send !== 'function') throw new Error('Finalized verification snapshot is unavailable.');
+    const result = await provider.send('eth_call', [
+      { to, data: contract.interface.encodeFunctionData(method, [arg]) },
+      { blockHash: block.hash, requireCanonical: true },
+    ]);
+    return contract.interface.decodeFunctionResult(method, result)[0] as T;
+  };
+  const id = BigInt(spaceId);
+  const [owner, epoch, identity, metadataHash, canVerify] = await Promise.all([
+    call<string>('spaceOwner', id), call<bigint>('spaceOwnershipEpoch', id),
+    call<string>('spaceIdentity', id), call<string>('spaceVerifiedMetadata', id),
+    call<boolean>('spaceVerifiers', reviewer),
+  ]);
+  if ((await provider.getBlock(block.number))?.hash !== block.hash) {
+    throw new Error('The verification snapshot changed. Check on-chain verification again.');
+  }
+  return { owner, epoch: epoch.toString(), identity, metadataHash, canVerify };
+}
+
+export function sendSpaceAttestation(
+  contract: Contract,
+  decision: SpaceAttestation,
+  confirmation: ConfirmationPolicy,
+  observe: TxObserver,
+): Promise<TransactionReceipt> {
+  const { spaceId, owner, epoch, identity, metadataHash } = decision;
+  return send(contract, 'setSpaceVerification', [BigInt(spaceId), owner, BigInt(epoch), identity, metadataHash], confirmation, observe);
+}
+
 /** Sends one protected-booking transaction (docs/booking-policy.md). */
 export async function sendBookingAction(
   contract: Contract,
@@ -406,6 +458,10 @@ const CONTRACT_ERROR_MESSAGES: Record<string, string> = {
   SpaceWindowTaken: 'This space already has a listing for an overlapping parking window. Pick a window that does not overlap, or cancel the other listing first.',
   SpaceNotVerified: 'This deployment requires an existing verified space. Choose an approved space or ask a verifier to review it.',
   UnverifiedSpaceMetadata: 'This listing does not match the public details reviewed for the space. Ask a verifier to review the changes.',
+  NotSpaceVerifier: 'The connected wallet is not allowed to verify this space on-chain.',
+  StaleSpaceOwnership: 'The space changed owners. Check its current ownership before signing.',
+  InvalidSpaceIdentity: 'The stall key cannot be changed after it is bound to this space.',
+  SpaceIdentityTaken: 'This stall key already belongs to another space. Use that space’s calendar rather than approving a duplicate.',
   NotSpaceOwner: 'Only the owner of this parking space, or a lister it approved, can list it.',
   SpaceWindowUnavailable: 'The space owner blocked part of this parking window. Pick a window outside the blocked dates.',
   InvalidSpaceOwner: 'The new owner must be a valid, non-zero address.',
