@@ -239,3 +239,21 @@ it('runs on a timer in the API, reports status and readiness, and drains on shut
   }
   expect(api.db.db.isOpen).toBe(false);
 });
+
+it('settles a protected booking only before parking starts and leaves an expired one to expire()', async () => {
+  const c = deployment.contract;
+  const now = await chain.latestTimestamp();
+  const settleable = (await c.nextAuctionId()).toString();
+  await (await c.createProtectedAuction(0, ethers.id('protected-a'), parse('0.01'), now + 600, now + 2400, now + 4000)).wait();
+  const expired = (await c.nextAuctionId()).toString();
+  await (await c.createProtectedAuction(0, ethers.id('protected-b'), parse('0.01'), now + 300, now + 2100, now + 4000)).wait();
+  await bid(1, settleable, '0.02');
+  await bid(2, expired, '0.02');
+  await chain.increaseTime(2200);
+  const k = await keeper();
+  await k.run();
+  expect((await onChain(settleable)).settled).toBe(true);
+  expect(k.get(expired)).toBe(null);
+  expect((await onChain(expired)).settled).toBe(false);
+  k.db.close();
+});

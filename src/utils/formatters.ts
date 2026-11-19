@@ -127,9 +127,10 @@ export function getListingStatus(listing: Listing, nowSec: number = getChainNowS
 } {
   const now = nowSec;
 
+  const refunded = listing.booking?.protected && listing.booking.outcome !== 'none' && listing.booking.outcome !== 'host-paid';
   if (listing.cancelled) {
     return {
-      label: 'Cancelled',
+      label: refunded ? 'Winner refunded' : 'Cancelled',
       colorClass: 'status-cancelled',
       isBiddable: false,
       canSettle: false,
@@ -143,6 +144,11 @@ export function getListingStatus(listing: Listing, nowSec: number = getChainNowS
       isBiddable: false,
       canSettle: false,
     };
+  }
+
+  // A protected winner can no longer be settled once parking starts; it can only expire with a refund.
+  if (listing.booking?.protected && parseFloat(listing.highestBid) > 0 && now >= listing.parkingStart) {
+    return { label: 'Expired, refund due', colorClass: 'status-ended', isBiddable: false, canSettle: false };
   }
 
   if (listing.bidEnd <= now) {

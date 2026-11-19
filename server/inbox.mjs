@@ -4,6 +4,7 @@
  * - won: an auction settled with this wallet as the winner
  * - refund: this wallet withdrew its pending refunds
  * - payout: this wallet claimed a host payout
+ * - booking-refund: a protected booking credited this winner's full bid back (cancellation, expiry or dispute)
  * Each entry's id is the triggering event's (block hash, log index), so a reorg that replaces the
  * event replaces the entry. Returned newest first.
  */
@@ -11,7 +12,7 @@ export function deriveInbox(events, address) {
   const me = address.toLowerCase();
   const highest = new Map(); // auction id -> { bidder, amount } of the latest bid
   const items = [];
-  const OWN = { AuctionSettled: 'won', RefundWithdrawn: 'refund', PayoutClaimed: 'payout' };
+  const OWN = { AuctionSettled: 'won', RefundWithdrawn: 'refund', PayoutClaimed: 'payout', BookingRefunded: 'booking-refund' };
   for (const e of events) {
     const account = e.account?.toLowerCase();
     let kind = null;

@@ -89,6 +89,10 @@ export function createSettlementJob({ db, provider, profile, loadDeployment, abi
     }
     // Not due, or nothing to settle (no bids: the host may still cancel).
     if (Number(auction.bidEnd) > head.timestamp || auction.highestBidder === ethers.ZeroAddress) return false;
+    // A protected booking can no longer be settled once parking starts; anyone may expire() it instead,
+    // which refunds the winner. The keeper leaves that to the participants.
+    if (Number(auction.parkingStart) <= head.timestamp && contract.interface.getFunction('bookings') &&
+        (await contract.bookings(id)).isProtected) return false;
 
     let attempts = job?.attempts ?? 0;
     if (job?.status === 'sent' && job.tx_hash) {

@@ -8,6 +8,12 @@ const EVENT_FIELDS = {
   AuctionSettled: ['id', 'winner', 'amount'],
   PayoutClaimed: ['id', 'owner', 'amount'],
   AuctionCancelled: ['id', null, null],
+  // Protected bookings (docs/booking-policy.md).
+  BookingRefunded: ['id', 'winner', 'amount'],
+  LateCancellationRecorded: ['id', 'winner', null],
+  NoShowRecorded: ['id', 'host', null],
+  DisputeOpened: ['id', 'reporter', null],
+  DisputeResolved: ['id', 'resolver', null],
 };
 
 /**

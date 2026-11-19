@@ -41,11 +41,13 @@ import {
   getContractInstance,
   parseContractError,
   placeBid,
+  sendBookingAction,
   settleAuction,
   TransactionOutcomeUnknown,
   withdrawRefund,
 } from './services/blockchain';
-import { Interface, parseEther } from 'ethers';
+import { Interface, id as keccakId, parseEther } from 'ethers';
+import { BOOKING_ACTION_LABELS, type BookingAction } from './utils/booking';
 import type {
   AppTab,
   ChainSnapshot,
@@ -658,7 +660,8 @@ export const AppContent: React.FC<{
     bidEndSec: number,
     parkingStartSec: number,
     parkingEndSec: number,
-    spaceId?: string
+    spaceId?: string,
+    protectedBooking = false
   ) => {
     if (isActionBusy) return;
     if (!config?.contractAddress || !config.abi) {
@@ -697,6 +700,7 @@ export const AppContent: React.FC<{
         config.confirmation,
         created.observe,
         spaceId,
+        protectedBooking,
       );
       if (created.id) patchTransaction(created.id, { auctionId, registered: false });
 
@@ -931,7 +935,9 @@ export const AppContent: React.FC<{
       addToast(
         'success',
         'Payout Claimed!',
-        `Host payout of ${formatEth(listing.highestBid)} ETH released to your wallet.`,
+        listing.booking?.protected
+          ? `Host payout of ${formatEth(listing.highestBid)} ETH credited to your refund balance. Withdraw it from My Activity.`
+          : `Host payout of ${formatEth(listing.highestBid)} ETH released to your wallet.`,
         receipt.hash
       );
 
@@ -943,6 +949,35 @@ export const AppContent: React.FC<{
       }
       const msg = parseContractError(err, config?.abi);
       addToast('error', 'Payout Claim Failed', msg);
+    } finally {
+      setIsActionBusy(false);
+    }
+  };
+
+  // Protected-booking actions (docs/booking-policy.md). Refunds and payouts are credits to withdraw.
+  const handleBookingAction = async (listing: Listing, action: BookingAction) => {
+    if (isActionBusy) return;
+    if (!config?.contractAddress || !config.abi || !walletState.isReady || wrongChain || !signer) {
+      addToast('error', 'Wallet Error', 'Wallet is not connected or connected to wrong network.');
+      return;
+    }
+    const label = BOOKING_ACTION_LABELS[action];
+    // Reports and decisions carry only an opaque reference on-chain, never the evidence itself.
+    const reference = keccakId(`bidpark:${action}:${listing.id}:${walletState.address}:${Date.now()}`);
+    setIsActionBusy(true);
+    try {
+      await preflightWrite(listing);
+      const contract = getContractInstance(config.contractAddress, config.abi, signer);
+      const receipt = await sendBookingAction(contract, listing.id, action, reference, config.confirmation,
+        track('booking', `${label} for auction #${listing.id}`, { auctionId: listing.id }).observe);
+      addToast('success', label, `Confirmed on-chain for auction #${listing.id}.`, receipt.hash);
+      await Promise.all([loadListings(), refreshBalance()]);
+    } catch (err) {
+      if (err instanceof TransactionOutcomeUnknown) {
+        reportUnknown(err);
+        return;
+      }
+      addToast('error', `${label} failed`, parseContractError(err, config?.abi));
     } finally {
       setIsActionBusy(false);
     }
@@ -1274,6 +1309,7 @@ export const AppContent: React.FC<{
         onSettle={handleSettleListing}
         onCancel={handleCancelListing}
         onClaimPayout={handleClaimPayout}
+        onBookingAction={handleBookingAction}
         isActionBusy={isActionBusy}
       />
 
