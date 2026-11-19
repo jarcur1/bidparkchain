@@ -70,6 +70,30 @@ const MIGRATIONS = [
       db.exec('DROP TABLE listings_metadata');
     }
   },
+  // 2: wallet sign-in. Single-use nonces bound to the exact message, origin and chain, and sessions
+  //    stored by the SHA-256 of their token so a database copy cannot be replayed as a cookie.
+  (db) => {
+    db.exec(`
+      CREATE TABLE auth_nonces (
+        nonce TEXT PRIMARY KEY,
+        address TEXT NOT NULL,
+        chain_id INTEGER NOT NULL,
+        origin TEXT NOT NULL,
+        message TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        used INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE sessions (
+        token_hash TEXT PRIMARY KEY,
+        address TEXT NOT NULL,
+        chain_id INTEGER NOT NULL,
+        origin TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        revoked INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+  },
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
@@ -266,6 +290,35 @@ export class EscrowDatabase {
       'SELECT COUNT(*) as cnt FROM listings WHERE chain_id = ? AND contract_address = ?'
     ).get(this.chainId, contractAddress.toLowerCase());
     return row ? Number(row.cnt) : 0;
+  }
+
+  createNonce({ nonce, address, origin, message, expiresAt }) {
+    this.db.prepare(`
+      INSERT INTO auth_nonces (nonce, address, chain_id, origin, message, expires_at) VALUES (?, ?, ?, ?, ?, ?)
+    `).run(nonce, address, this.chainId, origin, message, expiresAt);
+  }
+
+  getNonce(nonce) {
+    return this.db.prepare('SELECT * FROM auth_nonces WHERE nonce = ? AND chain_id = ?').get(nonce, this.chainId) || null;
+  }
+
+  /** Marks a nonce used; true only for the first caller, which is what prevents replay. */
+  consumeNonce(nonce) {
+    return this.db.prepare('UPDATE auth_nonces SET used = 1 WHERE nonce = ? AND used = 0').run(nonce).changes === 1;
+  }
+
+  createSession({ tokenHash, address, origin, createdAt, expiresAt }) {
+    this.db.prepare(`
+      INSERT INTO sessions (token_hash, address, chain_id, origin, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)
+    `).run(tokenHash, address, this.chainId, origin, createdAt, expiresAt);
+  }
+
+  getSession(tokenHash) {
+    return this.db.prepare('SELECT * FROM sessions WHERE token_hash = ? AND chain_id = ?').get(tokenHash, this.chainId) || null;
+  }
+
+  revokeSession(tokenHash) {
+    this.db.prepare('UPDATE sessions SET revoked = 1 WHERE token_hash = ?').run(tokenHash);
   }
 
   close() {
