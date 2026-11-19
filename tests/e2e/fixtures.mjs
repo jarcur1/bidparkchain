@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { test as base, expect } from '@playwright/test';
-import { createScope, findFreePort, runDeployScript } from '../support/owned-env.mjs';
+import { createScope, deployEscrow, findFreePort, runDeployScript, writeDeployment } from '../support/owned-env.mjs';
 
 export const test = base.extend({
   // Seed scenario for this worker's stack; a spec file can pick another with test.use({ scenario }).
@@ -10,14 +10,19 @@ export const test = base.extend({
   isolatedStack: ['', { scope: 'worker', option: true }],
   // Extra API environment for this worker's stack, e.g. { BIDPARK_MODERATORS: '0x...' }.
   apiEnv: [{}, { scope: 'worker', option: true }],
-  stack: [async ({ scenario, isolatedStack: _isolated, apiEnv }, use) => {
+  verifiedInventory: [false, { scope: 'worker', option: true }],
+  stack: [async ({ scenario, isolatedStack: _isolated, apiEnv, verifiedInventory }, use) => {
     const scope = await createScope('e2e');
     let chain;
     try {
       chain = await scope.startChain();
       const dataDir = scope.tempDir('marketplace');
-      const deployment = await runDeployScript({ rpcUrl: chain.rpcUrl, dataDir, env: { BIDPARK_SCENARIO: scenario } });
-      if (deployment.code !== 0) throw new Error(`Seeding failed:\n${deployment.output}`);
+      if (verifiedInventory) {
+        writeDeployment(dataDir, await deployEscrow(chain, true));
+      } else {
+        const deployment = await runDeployScript({ rpcUrl: chain.rpcUrl, dataDir, env: { BIDPARK_SCENARIO: scenario } });
+        if (deployment.code !== 0) throw new Error(`Seeding failed:\n${deployment.output}`);
+      }
       const descriptor = JSON.parse(await readFile(path.join(dataDir, 'deployment.json'), 'utf8'));
       const api = await scope.startApi({ rpcUrl: chain.rpcUrl, dataDir, env: apiEnv });
       const port = await findFreePort();

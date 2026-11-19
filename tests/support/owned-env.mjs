@@ -167,11 +167,12 @@ export async function createScope(name) {
 /**
  * Deploys a fresh escrow contract with account 0 and returns a connected instance.
  * @param {{ provider: ethers.Provider, wallet: (i: number) => ethers.Wallet }} chain
+ * @param {boolean} [verifiedInventory]
  */
-export async function deployEscrow(chain) {
+export async function deployEscrow(chain, verifiedInventory = false) {
   const { abi, bytecode } = escrowArtifact();
   const factory = new ethers.ContractFactory(abi, bytecode, chain.wallet(0));
-  const contract = await factory.deploy();
+  const contract = await factory.deploy(verifiedInventory);
   await contract.waitForDeployment();
   const receipt = await contract.deploymentTransaction().wait();
   return {

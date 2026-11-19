@@ -3,8 +3,7 @@ import { expect } from './fixtures.mjs';
 export async function selectWallet(page, index) {
   const header = page.getByRole('banner');
   const connect = header.getByRole('button', { name: /Connect Wallet/ });
-  if (await connect.count()) await connect.click();
-  else await header.getByTitle('Switch local test account or connect browser wallet').click();
+  await connect.or(header.getByTitle('Switch local test account or connect browser wallet')).click();
   const dialog = page.getByRole('dialog', { name: 'Connect & Switch Wallet' });
   const account = dialog.getByRole('button', { name: new RegExp(`Account #${index} \\(`) });
   await account.click();

@@ -22,6 +22,8 @@ export interface Listing extends SpotMetadata {
   owner: string;
   /** 'verified' only when a moderator approved the current owner's proof of control over the space. */
   verification?: 'verified' | 'unverified';
+  /** The current deployment requires verification and the space or auction lister is not eligible. */
+  inventoryBlocked?: boolean;
   minBid: string;
   highestBid: string;
   highestBidder: string;
