@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { normalizeMetadata } from '../shared/metadata.js';
+import { decryptArrival, encryptArrival } from './arrival-crypto.mjs';
 
 const DEFAULT_DATA_DIR = path.resolve(process.cwd(), 'data');
 const DEFAULT_DB_PATH = path.resolve(DEFAULT_DATA_DIR, 'bidpark.db');
@@ -290,6 +291,11 @@ const MIGRATIONS = [
       );
     `);
   },
+  // 11: marks arrival instructions stored encrypted. Existing rows stay plaintext (0) until the
+  //    server starts with BIDPARK_ARRIVAL_KEY set, which encrypts them in place.
+  (db) => {
+    db.exec('ALTER TABLE arrival_instructions ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0');
+  },
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
@@ -343,6 +349,7 @@ export class EscrowDatabase {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
+    this.arrivalKey = null;
     this.db = new DatabaseSync(dbPath);
     this._migrate();
   }
@@ -774,6 +781,18 @@ export class EscrowDatabase {
     return { counts, recentFailures };
   }
 
+  /** Gauges for the metrics endpoint: jobs by status, total attempts, and when the oldest unconfirmed job last moved. */
+  getSettlementMetrics(contractAddress) {
+    const contract = contractAddress.toLowerCase();
+    const { counts } = this.getSettlementSummary(contract, { failures: 0 });
+    const row = this.db.prepare(`
+      SELECT COALESCE(SUM(attempts), 0) AS attempts,
+        MIN(CASE WHEN status IN ('sent', 'failed') THEN updated_at END) AS oldest
+      FROM settlement_jobs WHERE chain_id = ? AND contract_address = ?
+    `).get(this.chainId, contract);
+    return { counts, attempts: row.attempts, oldestUnconfirmedAt: row.oldest };
+  }
+
   /** A space's current verification state, including its private evidence, or null. */
   getVerification(contractAddress, spaceId) {
     return this.db.prepare('SELECT * FROM space_verifications WHERE chain_id = ? AND contract_address = ? AND space_id = ?')
@@ -868,12 +887,50 @@ export class EscrowDatabase {
     });
   }
 
-  /** Stored arrival instructions for a space or auction, or null. */
-  getArrivalInstructions(contractAddress, scope, targetId) {
-    return this.db.prepare(`
-      SELECT instructions, updated_by, updated_at FROM arrival_instructions
+  _arrivalAad(contract, scope, targetId) {
+    return `${this.chainId}|${contract}|${scope}|${targetId}`;
+  }
+
+  /**
+   * Sets the AES-256-GCM key (32 bytes, or null for none) and encrypts every plaintext row in place.
+   * ponytail: no key rotation; re-save instructions or write a one-off script if the key must change.
+   */
+  setArrivalKey(key) {
+    this.arrivalKey = key;
+    if (!key) return 0;
+    const rows = this.db.prepare('SELECT chain_id, contract_address, scope, target_id, instructions FROM arrival_instructions WHERE encrypted = 0').all();
+    const update = this.db.prepare(`
+      UPDATE arrival_instructions SET instructions = ?, encrypted = 1
       WHERE chain_id = ? AND contract_address = ? AND scope = ? AND target_id = ?
-    `).get(this.chainId, contractAddress.toLowerCase(), scope, targetId) ?? null;
+    `);
+    this.db.exec('BEGIN');
+    try {
+      for (const r of rows) {
+        const aad = `${r.chain_id}|${r.contract_address}|${r.scope}|${r.target_id}`;
+        update.run(encryptArrival(key, r.instructions, aad), r.chain_id, r.contract_address, r.scope, r.target_id);
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+    return rows.length;
+  }
+
+  /** Stored arrival instructions for a space or auction (decrypted), or null. */
+  getArrivalInstructions(contractAddress, scope, targetId) {
+    const contract = contractAddress.toLowerCase();
+    const row = this.db.prepare(`
+      SELECT instructions, encrypted, updated_by, updated_at FROM arrival_instructions
+      WHERE chain_id = ? AND contract_address = ? AND scope = ? AND target_id = ?
+    `).get(this.chainId, contract, scope, targetId);
+    if (!row) return null;
+    if (!row.encrypted) return { instructions: row.instructions, updated_by: row.updated_by, updated_at: row.updated_at };
+    if (!this.arrivalKey) throw new Error('Arrival instructions are encrypted and BIDPARK_ARRIVAL_KEY is not set');
+    return {
+      instructions: decryptArrival(this.arrivalKey, row.instructions, this._arrivalAad(contract, scope, targetId)),
+      updated_by: row.updated_by, updated_at: row.updated_at,
+    };
   }
 
   /** Replaces the instructions; empty text removes them. */
@@ -884,12 +941,14 @@ export class EscrowDatabase {
         .run(this.chainId, contract, scope, targetId);
       return;
     }
+    const stored = this.arrivalKey ? encryptArrival(this.arrivalKey, instructions, this._arrivalAad(contract, scope, targetId)) : instructions;
     this.db.prepare(`
-      INSERT INTO arrival_instructions (chain_id, contract_address, scope, target_id, instructions, updated_by, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO arrival_instructions (chain_id, contract_address, scope, target_id, instructions, encrypted, updated_by, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(chain_id, contract_address, scope, target_id) DO UPDATE SET
-        instructions = excluded.instructions, updated_by = excluded.updated_by, updated_at = excluded.updated_at
-    `).run(this.chainId, contract, scope, targetId, instructions, updatedBy.toLowerCase(), Date.now());
+        instructions = excluded.instructions, encrypted = excluded.encrypted,
+        updated_by = excluded.updated_by, updated_at = excluded.updated_at
+    `).run(this.chainId, contract, scope, targetId, stored, this.arrivalKey ? 1 : 0, updatedBy.toLowerCase(), Date.now());
   }
 
   getCheckIn(contractAddress, auctionId) {
