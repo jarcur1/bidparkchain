@@ -4,13 +4,15 @@ import { test as base, expect } from '@playwright/test';
 import { createScope, findFreePort, runDeployScript } from '../support/owned-env.mjs';
 
 export const test = base.extend({
-  stack: [async ({}, use) => {
+  // Seed scenario for this worker's stack; a spec file can pick another with test.use({ scenario }).
+  scenario: ['austin', { scope: 'worker', option: true }],
+  stack: [async ({ scenario }, use) => {
     const scope = await createScope('e2e');
     let chain;
     try {
       chain = await scope.startChain();
       const dataDir = scope.tempDir('marketplace');
-      const deployment = await runDeployScript({ rpcUrl: chain.rpcUrl, dataDir });
+      const deployment = await runDeployScript({ rpcUrl: chain.rpcUrl, dataDir, env: { BIDPARK_SCENARIO: scenario } });
       if (deployment.code !== 0) throw new Error(`Seeding failed:\n${deployment.output}`);
       const descriptor = JSON.parse(await readFile(path.join(dataDir, 'deployment.json'), 'utf8'));
       const api = await scope.startApi({ rpcUrl: chain.rpcUrl, dataDir });

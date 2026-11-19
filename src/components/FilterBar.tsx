@@ -182,6 +182,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
             type="button"
             className={`view-mode-btn ${viewMode === 'split' ? 'active' : ''}`}
             onClick={() => onViewModeChange('split')}
+            aria-pressed={viewMode === 'split'}
             title="Split map and cards"
           >
             <LayoutGrid size={15} />
@@ -191,6 +192,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
             type="button"
             className={`view-mode-btn ${viewMode === 'cards' ? 'active' : ''}`}
             onClick={() => onViewModeChange('cards')}
+            aria-pressed={viewMode === 'cards'}
             title="Cards view only"
           >
             <Warehouse size={15} />
@@ -200,6 +202,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
             type="button"
             className={`view-mode-btn ${viewMode === 'map' ? 'active' : ''}`}
             onClick={() => onViewModeChange('map')}
+            aria-pressed={viewMode === 'map'}
             title="Map view only"
           >
             <MapIcon size={15} />

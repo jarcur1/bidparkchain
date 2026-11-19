@@ -3,6 +3,7 @@ import { ActivityView } from './components/ActivityView';
 import { BidModal } from './components/BidModal';
 import { CreateListingModal } from './components/CreateListingModal';
 import { DetailModal } from './components/DetailModal';
+import { CampusScenarioBanner } from './components/CampusScenarioBanner';
 import { DisclosuresBanner } from './components/DisclosuresBanner';
 import { FilterBar } from './components/FilterBar';
 import { Footer } from './components/Footer';
@@ -963,6 +964,11 @@ export const AppContent: React.FC<{
       <main className="site-main">
         {currentTab === 'marketplace' && (
           <div className="marketplace-container">
+            <CampusScenarioBanner
+              scenario={config?.seedScenario}
+              listings={listings}
+              listingsStatus={listingsView.read.status}
+            />
             {pendingRegistration && (
               <div className="pending-registration-alert">
                 <div className="pending-alert-content">

@@ -1,5 +1,6 @@
 import { ethers } from 'ethers';
 import { normalizeMetadata } from '../../shared/metadata.js';
+import { CAMPUS_TIER_LABELS } from '../../shared/campus.js';
 
 /**
  * Calculates the canonical keccak256 hash of a SpotMetadata object.
@@ -16,8 +17,8 @@ export function computeMetadataHash(metadata) {
 // reservation window; the only intentional difference is CAMPUS_EXPANSION_REMOVED. Positions are
 // arbitrary points near the default map view, not a real campus, lot, or parking rule.
 const CAMPUS_TIERS = {
-  near: { neighborhood: 'Near campus · 3-5 min walk', minBidEth: '0.03' },
-  far: { neighborhood: 'Farther away · 15-20 min walk', minBidEth: '0.01' },
+  near: { neighborhood: CAMPUS_TIER_LABELS.near, minBidEth: '0.03' },
+  far: { neighborhood: CAMPUS_TIER_LABELS.far, minBidEth: '0.01' },
 };
 const CAMPUS_WINDOW = { bidEndMinutes: 60, parkingStartMinutes: 90, parkingEndMinutes: 330 };
 const CAMPUS_IMAGES = {
