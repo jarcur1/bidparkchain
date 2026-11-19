@@ -14,6 +14,7 @@ import { SpotGrid } from './components/SpotGrid';
 import { Toast } from './components/Toast';
 import { WalletModal } from './components/WalletModal';
 import { useWallet, WalletProvider } from './context/WalletContext';
+import { SessionProvider } from './context/SessionContext';
 import { createListingRecord, fetchConfig, fetchListings, stageListingMetadata } from './services/api';
 import {
   cancelAuction,
@@ -1158,7 +1159,9 @@ export const App: React.FC = () => {
 
   return (
     <WalletProvider config={configState.config}>
-      <AppContent config={configState.config} configRead={configState.read} onRefreshConfig={refreshConfig} />
+      <SessionProvider>
+        <AppContent config={configState.config} configRead={configState.read} onRefreshConfig={refreshConfig} />
+      </SessionProvider>
     </WalletProvider>
   );
 };
