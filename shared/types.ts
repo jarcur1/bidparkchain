@@ -15,6 +15,8 @@ export interface SpotMetadata {
 
 export interface Listing extends SpotMetadata {
   id: string;
+  /** Stable on-chain parking space this auction reserves a window on. */
+  spaceId: string;
   owner: string;
   minBid: string;
   highestBid: string;
