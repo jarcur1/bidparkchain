@@ -255,6 +255,7 @@ export function createApp(options = {}) {
       demoMnemonic: deployment.demoMnemonic,
       demoAccountIndex: deployment.demoAccountIndex ?? 1,
       deploymentBlock: deployment.deploymentBlock ?? 0,
+      seedScenario: deployment.seedScenario ?? 'austin',
     });
   });
 

@@ -41,6 +41,8 @@ export interface Config {
   demoAccountIndex?: number;
   deploymentBlock: number;
   deploymentBlockHash: string;
+  /** Local seed scenario (local profile only). */
+  seedScenario?: string;
 }
 
 /** Identity of the contract deployment a listing snapshot was read from. */

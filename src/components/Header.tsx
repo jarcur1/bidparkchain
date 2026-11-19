@@ -64,7 +64,7 @@ export const Header: React.FC<HeaderProps> = ({
           <span className="brand-titles">
             <span className="brand-logo-row">
               <span className="brand-title">BidPark</span>
-              <span className="brand-badge">Austin MVP</span>
+              <span className="brand-badge">Demo</span>
             </span>
             <span className="brand-tagline">Private parking auctions • Smart contract escrow</span>
           </span>

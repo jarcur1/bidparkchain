@@ -103,7 +103,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
         {/* Modal Header */}
         <div className="modal-detail-header">
           <div className="modal-header-left">
-            <span className="badge-demo-sample">Austin Sample Demo</span>
+            <span className="badge-demo-sample">Demo Listing</span>
             <span className={`badge-kind badge-kind-${listing.kind}`}>
               {listing.kind}
             </span>
