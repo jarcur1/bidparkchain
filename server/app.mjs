@@ -19,6 +19,34 @@ const ALLOWED_ORIGINS = new Set([
   'http://localhost:3001',
 ]);
 
+/**
+ * Settings for a public deployment. Setting BIDPARK_ALLOWED_ORIGINS (exact origins, comma-separated)
+ * turns on hosted mode: only those origins get CORS, cross-origin writes are refused, and writes are
+ * rate-limited per client. Local development keeps its loopback defaults when it is unset.
+ */
+export function publicSettings(options = {}, env = process.env) {
+  const configured = options.allowedOrigins ??
+    (env.BIDPARK_ALLOWED_ORIGINS ? env.BIDPARK_ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean) : null);
+  for (const origin of configured ?? []) {
+    let url;
+    try { url = new URL(origin); } catch { throw new Error(`Invalid allowed origin: ${origin}`); }
+    const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
+    if (url.origin !== origin || (url.protocol !== 'https:' && !(loopback && url.protocol === 'http:'))) {
+      throw new Error(`Allowed origins must be exact https:// origins (or loopback http://): ${origin}`);
+    }
+  }
+  const hosted = Boolean(configured);
+  return {
+    hosted,
+    allowedOrigins: hosted ? new Set(configured) : ALLOWED_ORIGINS,
+    writesPerMinute: options.writesPerMinute ?? Number(env.BIDPARK_WRITES_PER_MINUTE ?? (hosted ? 60 : 0)),
+    trustProxy: options.trustProxy ?? env.BIDPARK_TRUST_PROXY ?? false,
+    rpcTimeoutMs: options.rpcTimeoutMs ?? Number(env.BIDPARK_RPC_TIMEOUT_MS ?? 10_000),
+  };
+}
+
+const MAX_URL_LENGTH = 2048;
+
 const MAX_UINT256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffn;
 
 /**
@@ -98,20 +126,72 @@ export function createApp(options = {}) {
   if (supplied || !options.dbPath) assertProfileDirectory(runtime);
   const db = new EscrowDatabase(options.dbPath ?? runtime.dbPath, { chainId: profile.chainId });
 
-  const provider = new ethers.JsonRpcProvider(rpcUrl, {
+  const settings = publicSettings(options);
+  // Every RPC call is bounded, so a stalled node cannot hold requests open indefinitely.
+  const rpcRequest = new ethers.FetchRequest(rpcUrl);
+  rpcRequest.timeout = settings.rpcTimeoutMs;
+  const provider = new ethers.JsonRpcProvider(rpcRequest, {
     chainId: profile.chainId,
     name: profile.id,
   }, { cacheTimeout: -1 });
 
   const app = express();
+  app.disable('x-powered-by');
+  app.set('query parser', 'simple');
+  // Behind a TLS-terminating reverse proxy, this makes req.protocol/req.ip reflect the real client,
+  // so the session cookie is marked Secure and write limits apply per client.
+  if (settings.trustProxy) app.set('trust proxy', settings.trustProxy);
 
-  // Local JSON body parser with bounded payload size
+  app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'");
+    if (req.originalUrl.length > MAX_URL_LENGTH) {
+      res.status(414).json({ error: 'Request URL is too long' });
+      return;
+    }
+    next();
+  });
+
+  // Hosted mode: browsers always send Origin on writes, so a write from another site is refused.
+  const isWrite = (req) => !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
+  app.use((req, res, next) => {
+    if (settings.hosted && isWrite(req) && req.headers.origin && !settings.allowedOrigins.has(req.headers.origin)) {
+      res.status(403).json({ error: 'Origin not allowed' });
+      return;
+    }
+    next();
+  });
+
+  // ponytail: in-memory fixed-window write limit per client IP; use a shared store if the API is scaled out.
+  const writeWindows = new Map();
+  app.use((req, res, next) => {
+    if (!settings.writesPerMinute || !isWrite(req)) return next();
+    const now = Date.now();
+    const key = req.ip ?? 'unknown';
+    const window = writeWindows.get(key);
+    if (!window || window.resetAt <= now) {
+      if (writeWindows.size > 10_000) writeWindows.clear();
+      writeWindows.set(key, { count: 1, resetAt: now + 60_000 });
+      return next();
+    }
+    if (++window.count > settings.writesPerMinute) {
+      res.setHeader('Retry-After', String(Math.ceil((window.resetAt - now) / 1000)));
+      res.status(429).json({ error: 'Too many requests; try again shortly' });
+      return;
+    }
+    next();
+  });
+
+  // JSON body parser with bounded payload size
   app.use(express.json({ limit: '100kb' }));
 
-  // Strict loopback CORS headers (no wildcards)
+  // Exact-origin CORS headers (no wildcards)
   app.use((req, res, next) => {
     const origin = req.headers.origin;
-    if (origin && ALLOWED_ORIGINS.has(origin)) {
+    if (origin && settings.allowedOrigins.has(origin)) {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -653,7 +733,7 @@ export function createApp(options = {}) {
     const deployment = loadDeployment();
     await check('database', async () => db.db.prepare('SELECT 1').get());
     await check('chain', async () => {
-      if (Number((await provider.getNetwork()).chainId) !== profile.chainId) throw unready('unexpected chain');
+      if (Number(await provider.send('eth_chainId', [])) !== profile.chainId) throw unready('unexpected chain');
     });
     await check('contract', async () => {
       if (!deployment?.contractAddress) throw unready('no deployment configured');
