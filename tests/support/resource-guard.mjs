@@ -34,6 +34,7 @@ if (spec.command) {
     cwd: spec.cwd,
     env: { ...process.env, ...spec.env },
     stdio: ['ignore', 'inherit', 'inherit'],
+    windowsHide: true,
   });
   child.on('error', (error) => {
     console.error(`[resource-guard] ${error.message}`);

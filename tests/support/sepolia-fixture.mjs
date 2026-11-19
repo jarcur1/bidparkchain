@@ -91,7 +91,7 @@ export async function runProfileDeploy(env, args = []) {
     // Never inherit an operator credential or unrelated profile configuration from the host.
     for (const name of Object.keys(childEnv)) if (name === 'RPC_URL' || name.startsWith('BIDPARK_')) delete childEnv[name];
     Object.assign(childEnv, env);
-    const child = spawn(process.execPath, ['scripts/deploy.mjs', ...args], { cwd: ROOT_DIR, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, ['scripts/deploy.mjs', ...args], { cwd: ROOT_DIR, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     let output = '';
     child.stdout.on('data', (chunk) => { output += chunk; });
     child.stderr.on('data', (chunk) => { output += chunk; });

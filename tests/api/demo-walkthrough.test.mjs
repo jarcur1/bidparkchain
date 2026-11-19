@@ -13,6 +13,7 @@ function demoCli(command, { rpcUrl, dataDir, env = {} }) {
       cwd: ROOT_DIR,
       env: { ...process.env, ...env, RPC_URL: rpcUrl, BIDPARK_DATA_DIR: dataDir },
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     let output = '';
     child.stdout.on('data', (chunk) => { output += chunk; });
