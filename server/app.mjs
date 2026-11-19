@@ -7,6 +7,7 @@ import { assertProfileDirectory, resolveRuntimeProfile } from '../scripts/helper
 import { verifyPersistentDeployment } from '../scripts/helpers/persistent-deployment.mjs';
 import { compileEscrowContract } from '../scripts/helpers/compiler.mjs';
 import { getNetworkProfile } from '../shared/network-profiles.mjs';
+import { mountAuth } from './auth.mjs';
 
 let sepoliaArtifact;
 
@@ -256,6 +257,8 @@ export function createApp(options = {}) {
    * GET /api/config
    * Returns runtime chain config, contract address, and ABI.
    */
+  mountAuth(app, db, profile.chainId);
+
   app.get('/api/config', async (req, res) => {
     const deployment = loadDeployment();
     if (profile.id === 'sepolia') {
