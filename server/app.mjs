@@ -626,6 +626,52 @@ export function createApp(options = {}) {
     });
   });
 
+  /** GET /api/health/live: the process is up and answering. Checks no dependencies. */
+  app.get('/api/health/live', (req, res) => res.json({ live: true }));
+
+  /**
+   * GET /api/health/ready: the dependencies a request needs are usable. Each check is 'ok' or a fixed,
+   * redacted reason (never an upstream error, which could contain an RPC URL or token). 503 until all
+   * pass. Index freshness is only checked when a maximum lag is configured.
+   */
+  const maxIndexLag = options.maxIndexLag ?? (process.env.BIDPARK_MAX_INDEX_LAG === undefined
+    ? undefined : Number(process.env.BIDPARK_MAX_INDEX_LAG));
+  app.get('/api/health/ready', async (req, res) => {
+    const checks = {};
+    const unready = (reason) => Object.assign(new Error(reason), { reason });
+    const check = async (name, probe) => {
+      let timer;
+      try {
+        await Promise.race([probe(), new Promise((_, reject) => { timer = setTimeout(() => reject(unready('timed out')), 5000); })]);
+        checks[name] = 'ok';
+      } catch (error) {
+        checks[name] = error?.reason ?? 'failed';
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    const deployment = loadDeployment();
+    await check('database', async () => db.db.prepare('SELECT 1').get());
+    await check('chain', async () => {
+      if (Number((await provider.getNetwork()).chainId) !== profile.chainId) throw unready('unexpected chain');
+    });
+    await check('contract', async () => {
+      if (!deployment?.contractAddress) throw unready('no deployment configured');
+      if ((await provider.getCode(deployment.contractAddress)) === '0x') throw unready('no contract code at the deployment address');
+    });
+    if (maxIndexLag !== undefined) {
+      await check('index', async () => {
+        if (!lastSync || lastSync.lagBlocks === null || lastSync.lagBlocks === undefined) throw unready('not indexed yet');
+        if (lastSync.error) throw unready('last index sync failed');
+        if (lastSync.lagBlocks > maxIndexLag) throw unready(`index is ${lastSync.lagBlocks} blocks behind`);
+      });
+    }
+    const ready = Object.values(checks).every((value) => value === 'ok');
+    res.status(ready ? 200 : 503).json({
+      ready, profile: profile.id, chainId: profile.chainId, contractAddress: deployment?.contractAddress ?? null, checks,
+    });
+  });
+
   // Catch-all 404 for unknown API routes
   app.use('/api', (req, res) => {
     res.status(404).json({ error: `API route ${req.method} ${req.path} not found` });
