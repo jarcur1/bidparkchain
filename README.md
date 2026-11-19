@@ -26,7 +26,8 @@ Ports 5173, 3001, and 8545 must be available. Services bind to loopback; this is
 - Open a spot to inspect its reservation window and auction closing time, then submit a full bid in local ETH. Wait for the transaction confirmation.
 - Use **My activity** to see leading bids and reservations, withdraw refundable outbid amounts, and settle a closed auction. The highest bidder wins; settlement is permissionless.
 - Create a new listing with public metadata and a future auction/reservation window. Creating the on-chain auction and registering its hash-matched metadata are separate operations.
-- If the auction confirms but metadata registration fails, keep the tab open and use **Complete Registration** to retry the same auction without deploying another one. The committed metadata is read-only during recovery. This recovery state is held in the current browser session; reloading the page discards it.
+- If the auction confirms but metadata registration fails, use **Complete Registration** to retry the same auction without deploying another one. The committed metadata is read-only during recovery. Recovery survives a reload. The details were saved to the API before signing, so the listing usually reappears by itself. Otherwise **My Activity → Transactions** offers **Complete registration** with the original metadata.
+- **My Activity → Transactions** keeps every wallet transaction for the connected account and deployment, saved in the browser without keys. It shows the state (waiting for wallet, submitted, confirming, confirmed, rejected, reverted, replaced, cancelled or unknown) and the transaction hash, with an explorer link on Sepolia. Transactions still in flight are re-checked after a reload, and nothing is ever re-sent. Entries from a reset deployment are listed as not resumable.
 - As the owner, cancel an unbid listing or claim its escrow after settlement and the end of the parking window.
 
 An injected Ethereum wallet is also supported on local chain **31337**. If adding it manually, use RPC **http://127.0.0.1:8545**, currency **ETH**. Use a disposable wallet; the built-in local test option is simpler.
@@ -119,7 +120,7 @@ These are operator instructions for an authorized environment, **not authorizati
 
 For explorer verification, export the exact Solidity standard JSON input with `node --input-type=module -e "import {compileEscrowContract} from './scripts/helpers/compiler.mjs'; const {input}=compileEscrowContract(); console.log(JSON.stringify(input));"`. Use `project/contracts/ParkingAuctionEscrow.sol:ParkingAuctionEscrow`, the full compiler version recorded in `deployment.json`, Shanghai EVM, and optimizer 200 runs. The contract has no constructor arguments. Explorer links point to the Sepolia explorer only.
 
-The API pins confirmed listings and registration checks to finalized state; mining alone is not confirmation on Sepolia. If the app reports a submitted transaction whose finality it cannot establish, check its hash in the explorer before retrying. Reload-safe transaction and listing-registration recovery is tracked in [#10](https://github.com/jarcur1/bidparkchain/issues/10). Normal verification uses an owned local Sepolia-chain-ID fixture, not a public RPC or shared contract.
+The API pins confirmed listings and registration checks to finalized state; mining alone is not confirmation on Sepolia. If the app reports a submitted transaction whose finality it cannot establish, check its hash in the explorer before retrying. Normal verification uses an owned local Sepolia-chain-ID fixture, not a public RPC or shared contract.
 
 ## Boundaries before real use
 
