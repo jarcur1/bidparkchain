@@ -1,6 +1,6 @@
 # Class demo presenter script
 
-About five minutes. Everything runs on one laptop with no wallet extension and no internet after `npm ci`. Setup, accounts and the reset are in [class demo scenarios](class-demo-scenarios.md).
+About five minutes. Everything runs on one laptop with no wallet extension and no internet after `npm ci`. Setup, accounts and the reset are in [class demo scenarios](class-demo-scenarios.md). A full rehearsal from a fresh checkout, with known limitations, is recorded in [class demo rehearsal](class-demo-rehearsal.md).
 
 ## Before class
 
