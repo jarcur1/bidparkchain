@@ -296,7 +296,21 @@ const MIGRATIONS = [
   (db) => {
     db.exec('ALTER TABLE arrival_instructions ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0');
   },
-  // 12: bind proof to the ownership period that was actually reviewed. Older reviews need new proof.
+  // 12: inbox dismissals (kept beside read state) and per-wallet inbox preferences: the entry
+  //    categories a wallet has chosen to hide, as a JSON list.
+  (db) => {
+    db.exec(`
+      ALTER TABLE inbox_reads ADD COLUMN dismissed_at INTEGER;
+      CREATE TABLE inbox_preferences (
+        chain_id INTEGER NOT NULL,
+        address TEXT NOT NULL,
+        hidden TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (chain_id, address)
+      );
+    `);
+  },
+  // 13: bind proof to the ownership period that was actually reviewed. Older reviews need new proof.
   (db) => db.exec('ALTER TABLE space_verifications ADD COLUMN ownership_epoch TEXT'),
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
@@ -665,7 +679,8 @@ export class EscrowDatabase {
 
   /**
    * Canonical events that can produce inbox entries for `address` (checksummed, as the indexer stores
-   * it): its own events, plus every bid on auctions it bid on (to see when it was outbid). Chain order.
+   * it): its own events, every bid on auctions it bid on (to see when it was outbid), and every
+   * protected-booking event on auctions it created or won. Chain order.
    */
   getInboxEvents(contractAddress, address) {
     const contract = contractAddress.toLowerCase();
@@ -676,15 +691,50 @@ export class EscrowDatabase {
         account = ? OR (event = 'BidPlaced' AND auction_id IN (
           SELECT auction_id FROM auction_events
           WHERE chain_id = ? AND contract_address = ? AND canonical = 1 AND event = 'BidPlaced' AND account = ?
-        ))
+        )) OR (event IN ('BookingRefunded', 'LateCancellationRecorded', 'NoShowRecorded', 'DisputeOpened', 'DisputeResolved')
+          AND auction_id IN (
+            SELECT auction_id FROM auction_events
+            WHERE chain_id = ? AND contract_address = ? AND canonical = 1 AND account = ?
+              AND event IN ('AuctionCreated', 'AuctionSettled', 'BookingRefunded')
+          ))
       )
       ORDER BY block_number, log_index
-    `).all(this.chainId, contract, address, this.chainId, contract, address);
+    `).all(this.chainId, contract, address, this.chainId, contract, address, this.chainId, contract, address);
   }
 
-  getInboxReads(contractAddress, address) {
-    return new Set(this.db.prepare('SELECT item_id FROM inbox_reads WHERE chain_id = ? AND contract_address = ? AND address = ?')
-      .all(this.chainId, contractAddress.toLowerCase(), address.toLowerCase()).map((row) => row.item_id));
+  /** The entry ids `address` has read and dismissed on this deployment. */
+  getInboxState(contractAddress, address) {
+    const rows = this.db.prepare('SELECT item_id, dismissed_at FROM inbox_reads WHERE chain_id = ? AND contract_address = ? AND address = ?')
+      .all(this.chainId, contractAddress.toLowerCase(), address.toLowerCase());
+    return {
+      read: new Set(rows.map((row) => row.item_id)),
+      dismissed: new Set(rows.filter((row) => row.dismissed_at !== null).map((row) => row.item_id)),
+    };
+  }
+
+  /** Dismisses (and so also reads) entries for one wallet. Idempotent. */
+  dismissInboxItems(contractAddress, address, itemIds) {
+    const upsert = this.db.prepare(`
+      INSERT INTO inbox_reads (chain_id, contract_address, address, item_id, read_at, dismissed_at) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(chain_id, contract_address, address, item_id) DO UPDATE SET dismissed_at = COALESCE(dismissed_at, excluded.dismissed_at)
+    `);
+    this.#transaction(() => {
+      for (const id of itemIds) upsert.run(this.chainId, contractAddress.toLowerCase(), address.toLowerCase(), id, Date.now(), Date.now());
+    });
+  }
+
+  /** The inbox categories `address` hides (empty when it never set any). */
+  getInboxPreferences(address) {
+    const row = this.db.prepare('SELECT hidden FROM inbox_preferences WHERE chain_id = ? AND address = ?')
+      .get(this.chainId, address.toLowerCase());
+    return { hidden: row ? JSON.parse(row.hidden) : [] };
+  }
+
+  setInboxPreferences(address, { hidden }) {
+    this.db.prepare(`
+      INSERT INTO inbox_preferences (chain_id, address, hidden, updated_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(chain_id, address) DO UPDATE SET hidden = excluded.hidden, updated_at = excluded.updated_at
+    `).run(this.chainId, address.toLowerCase(), JSON.stringify(hidden), Date.now());
   }
 
   markInboxRead(contractAddress, address, itemIds) {
@@ -918,6 +968,13 @@ export class EscrowDatabase {
       throw error;
     }
     return rows.length;
+  }
+
+  hasArrivalInstructions(contractAddress, scope, targetId) {
+    return Boolean(this.db.prepare(`
+      SELECT 1 FROM arrival_instructions
+      WHERE chain_id = ? AND contract_address = ? AND scope = ? AND target_id = ?
+    `).get(this.chainId, contractAddress.toLowerCase(), scope, targetId));
   }
 
   /** Stored arrival instructions for a space or auction (decrypted), or null. */
