@@ -9,7 +9,7 @@ import { compileEscrowContract } from '../scripts/helpers/compiler.mjs';
 import { getNetworkProfile } from '../shared/network-profiles.mjs';
 import { mountAuth, readSession } from './auth.mjs';
 import { syncIndex } from './indexer.mjs';
-import { CATEGORY_NAMES, deriveInbox, INBOX_CATEGORIES, INBOX_ID, mergeFeed, reservationEntries } from './inbox.mjs';
+import { CATEGORY_NAMES, deriveInbox, INBOX_CATEGORIES, INBOX_ID, mergeFeed, ownedAuctionIds, payoutReadyEntries, reservationEntries } from './inbox.mjs';
 import { createSettlementJob, settlementSettings } from './settlement.mjs';
 import { PRICE_NOTE, QueryError, encodeCursor, filterAndSort, matchesMetadata, parseSearchQuery } from './search.mjs';
 import { mountDrafts } from './drafts.mjs';
@@ -971,19 +971,34 @@ export function createApp(options = {}) {
    * categories, with read state and the index freshness so the client can say when it may be behind.
    */
   const parkingTimes = new Map();
+  const auctionSpaces = new Map();
   async function inboxFor(session, contractAddress) {
-    const events = db.getInboxEvents(contractAddress, session.address);
+    let events = db.getInboxEvents(contractAddress, session.address);
     const { read, dismissed } = db.getInboxState(contractAddress, session.address);
     const preferences = db.getInboxPreferences(session.address);
+    let pinned;
+    const pinnedOnce = () => (pinned ??= pinnedReader());
+    // A space owner also hears of booking changes on auctions another lister created on its space.
+    const bookingEvents = db.getBookingEvents(contractAddress);
+    const owned = await ownedAuctionIds({ address: session.address, bookingEvents, events, pinnedReader: pinnedOnce, spaces: auctionSpaces });
+    if (owned.length) {
+      const have = new Set(events.map((e) => `${e.block_hash}:${e.log_index}`));
+      events = [...events, ...bookingEvents.filter((e) => owned.includes(e.auction_id) && !have.has(`${e.block_hash}:${e.log_index}`))]
+        .sort((a, b) => a.block_number - b.block_number || a.log_index - b.log_index);
+    }
     await fillBlockTimes(events);
-    const chainItems = deriveInbox(events, session.address).map(({ blockHash, ...item }) => ({
+    const chainItems = deriveInbox(events, session.address, owned).map(({ blockHash, ...item }) => ({
       ...item, amount: item.amount === null ? null : ethers.formatEther(item.amount), at: blockTimes.get(blockHash) ?? null,
     }));
     const reservations = await reservationEntries({
-      db, contractAddress, address: session.address, events, pinnedReader, times: parkingTimes,
+      db, contractAddress, address: session.address, events, pinnedReader: pinnedOnce, times: parkingTimes,
       blockTime: (hash) => blockTimes.get(hash),
     });
-    const items = mergeFeed(chainItems, reservations.items)
+    const payouts = await payoutReadyEntries({
+      contractAddress, address: session.address, events, pinnedReader: pinnedOnce, times: parkingTimes,
+      blockTime: (hash) => blockTimes.get(hash),
+    });
+    const items = mergeFeed(chainItems, [...reservations.items, ...payouts.items])
       .filter((item) => !dismissed.has(item.id) && !preferences.hidden.includes(INBOX_CATEGORIES[item.kind]))
       .map((item) => ({
         ...item,
@@ -1002,7 +1017,7 @@ export function createApp(options = {}) {
         lagBlocks: lastSync?.lagBlocks ?? null,
         lastSyncAt: lastSync?.at ?? null,
         lastSyncError: lastSync?.error ?? null,
-        reservationsError: reservations.error,
+        reservationsError: reservations.error ?? payouts.error,
       },
     };
   }

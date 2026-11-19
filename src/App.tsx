@@ -32,7 +32,7 @@ import { ApiError, createListingRecord, fetchConfig, fetchListings, searchListin
 import type { TxObserver } from './services/blockchain';
 import { patchTransaction, readTransactions, recordTransaction, staleTransactionsFor, transactionsFor, type TxKind, type TxRecord } from './utils/txStore';
 import { TransactionCenter } from './components/TransactionCenter';
-import { Inbox, useInbox } from './components/Inbox';
+import { Inbox, InboxAnnouncer, useInbox } from './components/Inbox';
 import { HostWorkspace, heldWindows, ZoneList } from './components/HostWorkspace';
 import { ResolverQueue, REVIEW_ACTIONS, submitReview } from './components/Disputes';
 import { HostVerificationPanel, ModerationPanel, useVerifications } from './components/Verification';
@@ -1443,6 +1443,7 @@ export const AppContent: React.FC<{
             deployment={config ? { chainId: config.chainId, contractAddress: config.contractAddress, snapshotBlock: calendarSnapshot?.blockNumber, snapshotTime: calendarSnapshot?.blockTimestamp } : null}
           />
         )}
+        {session && <InboxAnnouncer inbox={inbox} timeZoneOf={(auctionId) => listings.find((l) => l.id === auctionId)?.timeZone} />}
         {currentTab === 'activity' && session && (
           <Inbox
             inbox={inbox}
