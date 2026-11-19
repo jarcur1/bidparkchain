@@ -17,6 +17,8 @@ export interface Listing extends SpotMetadata {
   id: string;
   /** Stable on-chain parking space this auction reserves a window on. */
   spaceId: string;
+  /** IANA time zone name of the space's location; empty when its owner has not set one. */
+  timeZone: string;
   owner: string;
   minBid: string;
   highestBid: string;

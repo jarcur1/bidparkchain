@@ -82,9 +82,9 @@ export function canonicalizeAuctionId(raw) {
   }
 }
 
-function listingFromRow(id, onchain, row, spaceId) {
+function listingFromRow(id, onchain, row, [spaceId, timeZone]) {
   return {
-    id, spaceId: spaceId.toString(), owner: onchain.owner,
+    id, spaceId: spaceId.toString(), timeZone, owner: onchain.owner,
     minBid: ethers.formatEther(onchain.minBid),
     highestBid: ethers.formatEther(onchain.highestBid),
     highestBidder: onchain.highestBidder,
@@ -273,6 +273,18 @@ export function createApp(options = {}) {
 
   async function readFinalizedAuction(deployment, iface, finalized, id) {
     return readFinalized(deployment, iface, finalized, 'auctions', [id]);
+  }
+
+  /** [spaceId, IANA time zone] of the space an auction belongs to. */
+  async function readFinalizedSpace(deployment, iface, finalized, id) {
+    const [spaceId] = await readFinalized(deployment, iface, finalized, 'auctionSpace', [id]);
+    const [timeZone] = await readFinalized(deployment, iface, finalized, 'spaceTimeZone', [spaceId]);
+    return [spaceId, timeZone];
+  }
+
+  async function readLocalSpace(contract, id, at = {}) {
+    const spaceId = await contract.auctionSpace(id, at);
+    return [spaceId, await contract.spaceTimeZone(spaceId, at)];
   }
 
   async function readFinalizedNextId(deployment, iface, finalized) {
@@ -467,7 +479,7 @@ export function createApp(options = {}) {
           const { listings, unindexed } = await buildListings(
             deployment.contractAddress,
             (id) => readFinalizedAuction(deployment, iface, finalized, id),
-            async (id) => (await readFinalized(deployment, iface, finalized, 'auctionSpace', [id]))[0],
+            (id) => readFinalizedSpace(deployment, iface, finalized, id),
             await readFinalizedNextId(deployment, iface, finalized),
           );
           const chain = { ...(await readChainSnapshot(deployment, finalized)), blockHash: finalized.hash };
@@ -512,7 +524,7 @@ export function createApp(options = {}) {
         built = await buildListings(
           deployment.contractAddress,
           (id) => contract.auctions(id, at),
-          (id) => contract.auctionSpace(id, at),
+          (id) => readLocalSpace(contract, id, at),
           await contract.nextAuctionId(at),
         );
         // Read the clock after the auction state so the clock is never older than the state it judges.
@@ -685,7 +697,7 @@ export function createApp(options = {}) {
             return;
           }
           const onchain = await readFinalizedAuction(deployment, iface, finalized, canonicalId);
-          const [spaceId] = await readFinalized(deployment, iface, finalized, 'auctionSpace', [canonicalId]);
+          const space = await readFinalizedSpace(deployment, iface, finalized, canonicalId);
           await assertCanonicalFinalized(finalized);
           if (!onchain || onchain.owner === ethers.ZeroAddress) {
             res.status(404).json({ error: `Auction ID ${canonicalId} does not exist onchain` });
@@ -701,7 +713,7 @@ export function createApp(options = {}) {
           db.upsertListing({ auctionId: canonicalId, contractAddress: deployment.contractAddress,
             metadataHash: canonicalHash, ...normalized });
           res.status(existing && !isReconciliation ? 200 : 201).json({
-            listing: listingFromRow(canonicalId, onchain, { ...normalized, amenities: JSON.stringify(normalized.amenities) }, spaceId),
+            listing: listingFromRow(canonicalId, onchain, { ...normalized, amenities: JSON.stringify(normalized.amenities) }, space),
           });
         } catch {
           res.status(503).json({ error: 'Blockchain service unavailable' });
@@ -733,9 +745,9 @@ export function createApp(options = {}) {
       }
 
       // Verify auction onchain using canonical ID
-      let onchain, spaceId;
+      let onchain, space;
       try {
-        [onchain, spaceId] = await Promise.all([contract.auctions(canonicalId), contract.auctionSpace(canonicalId)]);
+        [onchain, space] = await Promise.all([contract.auctions(canonicalId), readLocalSpace(contract, canonicalId)]);
       } catch (err) {
         res.status(503).json({ error: 'Failed to query auction from smart contract' });
         return;
@@ -776,7 +788,7 @@ export function createApp(options = {}) {
 
       const listing = listingFromRow(canonicalId, onchain, {
         ...normalized, amenities: JSON.stringify(normalized.amenities),
-      }, spaceId);
+      }, space);
 
       res.status(existing && !isReconciliation ? 200 : 201).json({ listing });
     } catch (err) {
