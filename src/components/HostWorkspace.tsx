@@ -27,7 +27,6 @@ const EMPTY: DraftFields = {
 };
 
 interface Props {
-  account: string;
   signedIn: boolean;
   spaces: HostSpace[];
   spacesError: string | null;
@@ -40,7 +39,7 @@ interface Props {
 }
 
 export const HostWorkspace: React.FC<Props> = ({
-  account, signedIn, spaces, spacesError, listings, verifications, isActionBusy, onSpaceAction, onPublish, onSignIn,
+  signedIn, spaces, spacesError, listings, verifications, isActionBusy, onSpaceAction, onPublish, onSignIn,
 }) => {
   const [form, setForm] = useState<DraftFields>(EMPTY);
   const [editing, setEditing] = useState<{ id: number | null; name: string; kind: DraftKind }>({ id: null, name: '', kind: 'draft' });
@@ -58,9 +57,8 @@ export const HostWorkspace: React.FC<Props> = ({
     }
   }, []);
   useEffect(() => {
-    setDrafts([]);
     if (signedIn) void reloadDrafts();
-  }, [signedIn, account, reloadDrafts]);
+  }, [signedIn, reloadDrafts]);
   useEffect(() => { setPhotoFailed(false); }, [form.image]);
   useEffect(() => {
     const timer = setInterval(() => setNowSec(getChainNowSec()), 30_000);

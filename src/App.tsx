@@ -1334,11 +1334,11 @@ export const AppContent: React.FC<{
             }}
           />
         )}
-        {currentTab === 'activity' && walletState.address && (
+        {currentTab === 'activity' && hostSpacesKey && (
           <>
             <ZoneList />
             <HostWorkspace
-              account={walletState.address}
+              key={`${hostSpacesKey}|${Boolean(session)}`}
               signedIn={Boolean(session)}
               spaces={hostSpaces}
               spacesError={hostSpacesState.key === hostSpacesKey ? hostSpacesState.error : null}
