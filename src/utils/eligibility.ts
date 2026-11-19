@@ -68,7 +68,7 @@ export function resolveListing(
 // The single bid eligibility rule (mirrors ParkingAuctionEscrow.bid reverts).
 // ---------------------------------------------------------------------------
 
-export type BidBlockReason = 'missing' | 'cancelled' | 'settled' | 'ended' | 'owner';
+export type BidBlockReason = 'missing' | 'cancelled' | 'settled' | 'ended' | 'owner' | 'inventory';
 
 export interface BidEligibility {
   canBid: boolean;
@@ -100,6 +100,7 @@ export function getBidEligibility(
   if (listing.settled) return blocked('settled', 'This auction has been settled.');
   if (nowSec >= listing.bidEnd) return blocked('ended', 'Bidding has closed for this auction.');
   if (isOwnerOf(listing, account)) return blocked('owner', 'Spot owners cannot bid on their own listing.');
+  if (listing.inventoryBlocked) return blocked('inventory', 'Bidding is paused because this space or its lister is no longer eligible.');
   return { canBid: true, reason: null, message: null };
 }
 

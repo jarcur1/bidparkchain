@@ -6,6 +6,7 @@ import { ethers } from 'ethers';
 import { canonicalizeAuctionId, createApp } from '../../server/app.mjs';
 import { validateSpotMetadata } from '../../shared/validation.js';
 import { createScope, deployEscrow, writeDeployment } from '../support/owned-env.mjs';
+import { signInCookie } from '../support/auth.mjs';
 
 const metadata = {
   title: 'Downtown garage', address: '123 Main Street', neighborhood: 'Downtown',
@@ -16,12 +17,13 @@ const hash = (value) => ethers.keccak256(ethers.toUtf8Bytes(JSON.stringify(valid
 
 // Every request uses an ephemeral listener, database, deployment and owned chain.
 describe('listing API with real SQLite and onchain auctions', () => {
-  let scope, chain, deployment, deploymentPath, runtime, server, url, snapshot;
+  let scope, chain, deployment, deploymentPath, runtime, server, url, snapshot, cookie;
   async function request(route, body, options = {}) {
     const response = await fetch(`${url}${route}`, {
       ...options,
       ...(body === undefined ? {} : { method: 'POST', body: JSON.stringify(body) }),
-      headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...options.headers },
+      // Signed in as the deployer, which owns every auction these tests create.
+      headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(cookie ? { Cookie: cookie } : {}), ...options.headers },
     });
     expect(response.headers.get('content-type')).toContain('application/json');
     const json = await response.json();
@@ -49,6 +51,7 @@ describe('listing API with real SQLite and onchain auctions', () => {
     server = runtime.app.listen(0, '127.0.0.1');
     await once(server, 'listening');
     url = `http://127.0.0.1:${server.address().port}`;
+    cookie = await signInCookie(url, chain.wallet(0));
     await createAuction(metadata);
   });
   afterAll(async () => {
@@ -62,11 +65,22 @@ describe('listing API with real SQLite and onchain auctions', () => {
     }
   });
 
+  it('requires a signed-in session, and only the auction owner may register details', async () => {
+    expect((await request('/api/listings', { auctionId: '1', metadata }, { headers: { Cookie: '' } })).status).toBe(401);
+    expect((await request('/api/listings/stage', { metadata }, { headers: { Cookie: '' } })).status).toBe(401);
+    const stranger = await signInCookie(url, chain.wallet(5));
+    const denied = await request('/api/listings', { auctionId: '1', metadata }, { headers: { Cookie: stranger } });
+    expect(denied).toMatchObject({ status: 403, json: { error: "Only the auction's owner can register its details" } });
+    expect(runtime.db.getListing('1', deployment.address)).toBeNull();
+  });
+
   it('recovers delayed registration using canonical normalized metadata and is idempotent', async () => {
     const { json } = await request('/api/listings');
     const { json: config } = await request('/api/config');
     expect(json).toEqual({
       listings: [],
+      // The auction exists on-chain before its metadata is registered: reported, not hidden.
+      unindexed: [expect.objectContaining({ id: '1', metadataHash: hash(metadata), owner: chain.wallet(0).address })],
       chain: expect.objectContaining({
         contractAddress: deployment.address,
         deploymentBlockHash: config.deploymentBlockHash,
@@ -79,10 +93,13 @@ describe('listing API with real SQLite and onchain auctions', () => {
     expect(hash(variant)).toBe(hash(metadata));
     const created = await register('1', variant);
     expect(created.status).toBe(201);
-    expect(created.json.listing).toMatchObject({ id: '1', ...metadata, metadataHash: hash(metadata) });
+    expect(created.json.listing).toMatchObject({ id: '1', spaceId: '1', timeZone: '', ...metadata, metadataHash: hash(metadata) });
     expect((await register(' 01 ')).status).toBe(200);
     expect(runtime.db.countListings(deployment.address)).toBe(1);
     expect((await request('/api/listings')).json.listings).toEqual([created.json.listing]);
+    // The space's time zone is read from the chain with the listing.
+    await (await deployment.contract.setSpaceTimeZone(1, 'America/Chicago')).wait();
+    expect((await request('/api/listings')).json.listings).toEqual([{ ...created.json.listing, timeZone: 'America/Chicago' }]);
   });
 
   it.each([
@@ -197,6 +214,8 @@ describe('listing API with real SQLite and onchain auctions', () => {
     expect((await register()).status).toBe(400);
     const result = await register('1', replacement);
     expect(result.status).toBe(201);
+    // Space state rolled back with the chain: the reused space id has no time zone set.
+    expect(result.json.listing).toMatchObject({ spaceId: '1', timeZone: '' });
     expect((await register('01', replacement)).status).toBe(200);
     expect((await request('/api/listings')).json.listings).toEqual([result.json.listing]);
     expect(runtime.db.getListing('1').title).toBe(replacement.title);

@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  Bell,
   Car,
   ChevronDown,
   Layers,
@@ -25,6 +26,9 @@ interface HeaderProps {
   claimableRefundEth?: string;
   refundStatus: ReadStatus;
   activeBidsCount: number;
+  /** Unread inbox entries; undefined hides the inbox button (not signed in), null means unknown. */
+  inboxUnread?: number | null;
+  onOpenInbox?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -37,6 +41,8 @@ export const Header: React.FC<HeaderProps> = ({
   claimableRefundEth,
   refundStatus,
   activeBidsCount,
+  inboxUnread,
+  onOpenInbox,
 }) => {
   const { walletState, wrongChain, balanceRead } = useWallet();
 
@@ -64,7 +70,7 @@ export const Header: React.FC<HeaderProps> = ({
           <span className="brand-titles">
             <span className="brand-logo-row">
               <span className="brand-title">BidPark</span>
-              <span className="brand-badge">Austin MVP</span>
+              <span className="brand-badge">Demo</span>
             </span>
             <span className="brand-tagline">Private parking auctions • Smart contract escrow</span>
           </span>
@@ -111,6 +117,24 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Wallet & Controls */}
         <div className="header-actions">
+          {inboxUnread !== undefined && (
+            <button
+              type="button"
+              className="btn-icon-subtle inbox-btn"
+              onClick={onOpenInbox}
+              aria-label={inboxUnread === null ? 'Inbox, unread count unavailable' : `Inbox, ${inboxUnread} unread`}
+              title="Inbox"
+            >
+              <Bell size={16} />
+              {inboxUnread !== 0 && (
+                <span className="nav-badge-alert inbox-badge" aria-hidden="true">{inboxUnread ?? '?'}</span>
+              )}
+            </button>
+          )}
+          <span className="sr-only" role="status">
+            {inboxUnread ? `${inboxUnread} unread inbox notification${inboxUnread === 1 ? '' : 's'}` : ''}
+          </span>
+
           {/* Manual refresh button */}
           <button
             type="button"

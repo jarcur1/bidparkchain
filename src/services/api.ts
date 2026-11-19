@@ -1,4 +1,4 @@
-import type { ChainSnapshot, Config, DeploymentIdentity, Listing, ListingsResponse, SpotMetadata } from '../types';
+import type { ChainSnapshot, Config, DeploymentIdentity, Listing, ListingSearchResponse, ListingsResponse, SpotMetadata, UnindexedAuction } from '../types';
 import { webProfile } from '../utils/networkProfile';
 
 export class ApiError extends Error {
@@ -47,11 +47,36 @@ export async function fetchListings(): Promise<ListingsResponse> {
   }
   const data: unknown = await res.json();
   if (!data || typeof data !== 'object' || !('listings' in data) || !Array.isArray(data.listings)) {
-    return { listings: [], chain: null };
+    return { listings: [], unindexed: [], chain: null };
   }
   const chain =
     'chain' in data && data.chain && typeof data.chain === 'object' ? (data.chain as ChainSnapshot) : null;
-  return { listings: data.listings as Listing[], chain };
+  const unindexed = 'unindexed' in data && Array.isArray(data.unindexed) ? (data.unindexed as UnindexedAuction[]) : [];
+  return { listings: data.listings as Listing[], unindexed, chain };
+}
+
+/** One page of GET /api/listings/search for a query built by searchQuery(); a cursor continues it. */
+export async function searchListings(query: string, cursor?: string): Promise<ListingSearchResponse> {
+  const params = new URLSearchParams(query);
+  if (cursor) params.set('cursor', cursor);
+  const res = await fetch(`/api/listings/search?${params}`);
+  if (!res.ok) throw new ApiError(await extractErrorMessage(res), res.status);
+  const data: unknown = await res.json();
+  if (!data || typeof data !== 'object' || !('listings' in data) || !Array.isArray(data.listings) ||
+      !('total' in data) || typeof data.total !== 'number') {
+    throw new ApiError('Invalid response shape from listing search', res.status);
+  }
+  return data as ListingSearchResponse;
+}
+
+/** Saves metadata under its hash before the auction is created, so a lost registration is recoverable. */
+export async function stageListingMetadata(metadata: SpotMetadata, deployment?: DeploymentIdentity): Promise<void> {
+  const res = await fetch('/api/listings/stage', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ metadata, ...(deployment === undefined ? {} : { deployment }) }),
+  });
+  if (!res.ok) throw new ApiError(await extractErrorMessage(res), res.status);
 }
 
 export async function createListingRecord(
@@ -82,4 +107,52 @@ export async function createListingRecord(
   }
 
   throw new ApiError('Invalid response shape from POST /api/listings', res.status);
+}
+
+export interface AuctionEvent {
+  event: string;
+  auctionId?: string | null;
+  account: string | null;
+  amount: string | null;
+  blockNumber: number;
+  /** Block timestamp (unix seconds); null when the node could not be read for it. */
+  blockTime?: number | null;
+  logIndex: number;
+  txHash: string;
+}
+
+export interface AuctionHistory {
+  /** Last indexed block; null when the index has not run yet, so no events does not mean none happened. */
+  indexedBlock: number | null;
+  syncError: string | null;
+  events: AuctionEvent[];
+}
+
+export async function fetchAuctionHistory(auctionId: string): Promise<AuctionHistory> {
+  const res = await fetch(`/api/auctions/${encodeURIComponent(auctionId)}/events`);
+  if (!res.ok) throw new ApiError(await extractErrorMessage(res), res.status);
+  const data: unknown = await res.json();
+  if (!data || typeof data !== 'object' || !('events' in data) || !Array.isArray(data.events)) {
+    throw new ApiError('Invalid response shape from auction history', res.status);
+  }
+  return data as AuctionHistory;
+}
+
+export interface AccountHistory {
+  chainId: number;
+  contractAddress: string;
+  indexedBlock: number | null;
+  syncError: string | null;
+  events: AuctionEvent[];
+}
+
+/** Indexed events for one wallet's bids and auctions, with the deployment they were read from. */
+export async function fetchAccountHistory(address: string): Promise<AccountHistory> {
+  const res = await fetch(`/api/accounts/${encodeURIComponent(address)}/history`);
+  if (!res.ok) throw new ApiError(await extractErrorMessage(res), res.status);
+  const data: unknown = await res.json();
+  if (!data || typeof data !== 'object' || !('events' in data) || !Array.isArray(data.events)) {
+    throw new ApiError('Invalid response shape from account history', res.status);
+  }
+  return data as AccountHistory;
 }

@@ -15,7 +15,15 @@ export interface SpotMetadata {
 
 export interface Listing extends SpotMetadata {
   id: string;
+  /** Stable on-chain parking space this auction reserves a window on. */
+  spaceId: string;
+  /** IANA time zone name of the space's location; empty when its owner has not set one. */
+  timeZone: string;
   owner: string;
+  /** 'verified' only when a moderator approved the current owner's proof of control over the space. */
+  verification?: 'verified' | 'unverified';
+  /** The current deployment requires verification and the space or auction lister is not eligible. */
+  inventoryBlocked?: boolean;
   minBid: string;
   highestBid: string;
   highestBidder: string;
@@ -26,6 +34,18 @@ export interface Listing extends SpotMetadata {
   cancelled: boolean;
   payoutClaimed: boolean;
   metadataHash: string;
+  /** Protected-booking state (docs/booking-policy.md); null on a deployment without it. */
+  booking?: BookingState | null;
+}
+
+export interface BookingState {
+  /** Created with createProtectedAuction; false means the version 1 rules apply. */
+  protected: boolean;
+  outcome: 'none' | 'winner-cancelled' | 'host-cancelled' | 'expired' | 'dispute-upheld' | 'dispute-expired' | 'host-paid';
+  lateCancelled: boolean;
+  noShowRecorded: boolean;
+  /** Wallet that opened the seller-failure report still awaiting a decision, or null. */
+  disputeReporter: string | null;
 }
 
 export interface Config {
@@ -41,6 +61,8 @@ export interface Config {
   demoAccountIndex?: number;
   deploymentBlock: number;
   deploymentBlockHash: string;
+  /** Local seed scenario (local profile only). */
+  seedScenario?: string;
 }
 
 /** Identity of the contract deployment a listing snapshot was read from. */
@@ -54,7 +76,9 @@ export interface DeploymentIdentity {
 
 /** Chain state observed when listings were read. */
 export interface ChainSnapshot extends DeploymentIdentity {
+  /** The one block every contract read of the response used. */
   blockNumber: number;
+  blockHash?: string;
   /** Timestamp of the latest block (unix seconds). */
   blockTimestamp: number;
   /**
@@ -64,7 +88,38 @@ export interface ChainSnapshot extends DeploymentIdentity {
   chainTime: number;
 }
 
+/** An auction that exists on-chain but has no registered metadata on this server. */
+export interface UnindexedAuction {
+  id: string;
+  owner: string;
+  metadataHash: string;
+  highestBid: string;
+  bidEnd: number;
+  settled: boolean;
+  cancelled: boolean;
+}
+
+/** A listing returned by GET /api/listings/search; distanceKm is set when the query has `near`. */
+export interface SearchListing extends Listing {
+  distanceKm?: number;
+}
+
+export interface ListingSearchResponse {
+  listings: SearchListing[];
+  /** Matches across all pages. */
+  total: number;
+  /** Next page of the same query, read at the same block; null on the last page. */
+  nextCursor: string | null;
+  /** The one block every read of this response (and of its cursor pages) used. */
+  chain: (ChainSnapshot & { blockHash: string }) | null;
+  /** Stored listing rows skipped as malformed. */
+  skipped: number;
+  /** Opening and current bids are not final booking prices. */
+  pricing: string;
+}
+
 export interface ListingsResponse {
   listings: Listing[];
+  unindexed: UnindexedAuction[];
   chain: ChainSnapshot | null;
 }

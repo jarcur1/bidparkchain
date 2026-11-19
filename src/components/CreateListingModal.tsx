@@ -18,6 +18,7 @@ import {
   CURATED_PARKING_PHOTOS,
 } from '../utils/constants';
 import { webProfile } from '../utils/networkProfile';
+import { formatDateTime } from '../utils/formatters';
 import { Dialog } from './Dialog';
 
 interface ParkingWindowOption {
@@ -57,6 +58,15 @@ const PARKING_WINDOW_OPTIONS: readonly ParkingWindowOption[] = [
 export const PUBLIC_WARNING =
   'Public: this description is shown to everyone, including in the public API. Do not enter private or access-related information; private instructions are not supported.';
 
+/** A parking space the connected wallet owns, with the windows it still holds on-chain. */
+export interface OwnedSpace {
+  id: string;
+  title: string;
+  held: { start: number; end: number }[];
+  /** True when the wallet may list on the space only as an approved lister. */
+  lister?: boolean;
+}
+
 interface CreateListingModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -65,8 +75,12 @@ interface CreateListingModalProps {
     minBidEth: string,
     bidEndSec: number,
     parkingStartSec: number,
-    parkingEndSec: number
+    parkingEndSec: number,
+    spaceId?: string,
+    protectedBooking?: boolean
   ) => Promise<void>;
+  /** The connected wallet's spaces; listing on one adds a window to its calendar. */
+  spaces?: OwnedSpace[];
   onRetryRegistration?: (auctionId: string, metadata: SpotMetadata) => Promise<void>;
   pendingRegistration: { auctionId: string; metadata: SpotMetadata } | null;
   isSubmitting: boolean;
@@ -79,6 +93,7 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
   onRetryRegistration,
   pendingRegistration,
   isSubmitting,
+  spaces = [],
 }) => {
   const { walletState, wrongChain } = useWallet();
 
@@ -100,6 +115,8 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
   const [minBidEth, setMinBidEth] = useState('0.05');
   const [bidDurationMinutes, setBidDurationMinutes] = useState(60); // 1 hour
   const [selectedWindowId, setSelectedWindowId] = useState<string>('delay30m-3h');
+  const [spaceId, setSpaceId] = useState('');
+  const [protectedBooking, setProtectedBooking] = useState(false);
 
   const [formError, setFormError] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ key: string; metadata: SpotMetadata } | null>(null);
@@ -171,11 +188,12 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
     JSON.stringify(
       pendingRegistration
         ? ['pending', pendingRegistration.auctionId, pendingRegistration.metadata]
-        : [buildMetadata(), minBidEth, bidDurationMinutes, selectedWindowId]
+        : [buildMetadata(), minBidEth, bidDurationMinutes, selectedWindowId, spaceId, protectedBooking]
     );
 
   // A preview is only valid while the inputs it was built from are unchanged.
   const activePreview = preview && preview.key === previewKey() ? preview : null;
+  const canProtect = (PARKING_WINDOW_OPTIONS.find((o) => o.id === selectedWindowId)?.startDelayAfterCutoffMin ?? 0) >= 30;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -262,7 +280,9 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
         minBidEth,
         bidEndSec,
         parkingStartSec,
-        parkingEndSec
+        parkingEndSec,
+        spaceId || undefined,
+        protectedBooking && canProtect
       );
       handleClose();
     } catch (err) {
@@ -531,6 +551,36 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
           {!pendingRegistration && (
             <div className="form-auction-box">
               <h4 className="auction-box-heading">Auction Timing & Escrow Parameters</h4>
+              {spaces.length > 0 && (
+                <div className="form-field">
+                  <label htmlFor="parking-space" className="form-label">
+                    Parking space
+                  </label>
+                  <select
+                    id="parking-space"
+                    className="form-select"
+                    value={spaceId}
+                    onChange={(e) => setSpaceId(e.target.value)}
+                    disabled={isSubmitting}
+                    aria-describedby="parking-space-calendar"
+                  >
+                    <option value="">New space</option>
+                    {spaces.map((space) => (
+                      <option key={space.id} value={space.id}>
+                        Space #{space.id}: {space.title}{space.lister ? ' (approved lister)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p id="parking-space-calendar" className="auction-disclosure-subtext">
+                    {(() => {
+                      const held = spaces.find((space) => space.id === spaceId)?.held ?? [];
+                      if (!spaceId) return 'A new space gets its own calendar.';
+                      if (held.length === 0) return 'No reserved windows on this space.';
+                      return `Reserved: ${held.map((w) => `${formatDateTime(w.start)} to ${formatDateTime(w.end)}`).join('; ')}. The contract rejects an overlapping window.`;
+                    })()}
+                  </p>
+                </div>
+              )}
               <div className="form-grid-3col">
                 <div className="form-field">
                   <label htmlFor="min-bid" className="form-label">
@@ -589,6 +639,20 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
                   </select>
                 </div>
               </div>
+
+              <label className="form-checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={protectedBooking && canProtect}
+                  onChange={(e) => setProtectedBooking(e.target.checked)}
+                  disabled={isSubmitting || !canProtect}
+                />
+                <span>
+                  Protected booking: you can withdraw it before parking starts (the winner is refunded in full),
+                  the winner or you can report a seller failure for a resolver to decide, and your payout opens
+                  24 hours after parking ends. Needs at least 30 minutes between the cutoff and parking start.
+                </span>
+              </label>
 
               <p className="auction-disclosure-subtext">
                 * Note: Smart contract locks all bids. Seller payout will become claimable only after the parking window ends.

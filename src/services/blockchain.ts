@@ -1,5 +1,6 @@
 import {
   Contract,
+  type EventLog,
   Interface,
   JsonRpcProvider,
   type BrowserProvider,
@@ -13,6 +14,7 @@ import {
 } from 'ethers';
 import { normalizeMetadata } from '../../shared/metadata.js';
 import type { SpotMetadata } from '../types';
+import type { BookingAction } from '../utils/booking';
 
 export function computeMetadataHash(metadata: SpotMetadata): string {
   const normalized = normalizeMetadata(metadata);
@@ -132,6 +134,77 @@ export async function fetchPendingReturns(
   return balance;
 }
 
+/** Auction ids this account has ever bid on, from BidPlaced logs at the same confirmation level as listings. */
+export async function fetchBidAuctionIds(
+  contract: Contract,
+  accountAddress: string,
+  fromBlock: number,
+  confirmation: ConfirmationPolicy = 'mined',
+): Promise<Set<string>> {
+  const logs = await contract.queryFilter(
+    contract.filters.BidPlaced(null, accountAddress),
+    fromBlock,
+    confirmation === 'finalized' ? 'finalized' : 'latest',
+  );
+  return new Set(logs.map((log) => String((log as EventLog).args.id)));
+}
+
+/** Lifecycle of one wallet transaction, as shown in the transaction center. */
+export type TxStatus =
+  | 'awaiting-wallet' | 'submitted' | 'confirming' | 'confirmed'
+  | 'rejected' | 'failed' | 'reverted' | 'replaced' | 'cancelled' | 'unknown';
+export interface TxUpdate { status: TxStatus; hash?: string; replacementHash?: string; error?: string }
+export type TxObserver = (update: TxUpdate) => void;
+
+const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+function isUserRejection(error: unknown): boolean {
+  const e = error as { code?: unknown; info?: { error?: { code?: unknown } } } | null;
+  return e?.code === 'ACTION_REJECTED' || e?.code === 4001 || e?.info?.error?.code === 4001;
+}
+
+/** Classifies a failure after the transaction was submitted. */
+export function settledFailure(error: unknown, hash: string): TxUpdate {
+  const e = error as { code?: unknown; reason?: unknown; replacement?: { hash?: string } } | null;
+  if (e?.code === 'TRANSACTION_REPLACED') {
+    return { status: e.reason === 'cancelled' ? 'cancelled' : 'replaced', hash, replacementHash: e.replacement?.hash, error: message(error) };
+  }
+  if (e?.code === 'CALL_EXCEPTION' || /reverted/i.test(message(error))) return { status: 'reverted', hash, error: message(error) };
+  return { status: 'unknown', hash, error: message(error) };
+}
+
+/**
+ * Sends one contract call and reports each step: waiting for the wallet, submitted (with hash),
+ * confirming, then confirmed, reverted, replaced/cancelled, or unknown. A refusal in the wallet is
+ * 'rejected'; any other failure before submission is 'failed' and no transaction exists.
+ */
+async function send(
+  contract: Contract,
+  method: string,
+  args: unknown[],
+  confirmation: ConfirmationPolicy,
+  observe: TxObserver = () => {},
+): Promise<TransactionReceipt> {
+  observe({ status: 'awaiting-wallet' });
+  let tx: { hash: string; wait: () => Promise<TransactionReceipt | null> };
+  try {
+    tx = confirmation === 'finalized' ? await dispatchFinalized(contract, method, args) : await contract[method](...args);
+  } catch (error) {
+    observe({ status: isUserRejection(error) ? 'rejected' : 'failed', error: message(error) });
+    throw error;
+  }
+  observe({ status: 'submitted', hash: tx.hash });
+  observe({ status: 'confirming', hash: tx.hash });
+  try {
+    const receipt = await waitForTransaction(tx, contract, confirmation);
+    observe({ status: 'confirmed', hash: receipt.hash ?? tx.hash });
+    return receipt;
+  } catch (error) {
+    observe(settledFailure(error, tx.hash));
+    throw error;
+  }
+}
+
 export interface CreateAuctionResult {
   receipt: TransactionReceipt;
   auctionId: string;
@@ -145,16 +218,22 @@ export async function createAuctionOnChain(
   parkingStartSec: number,
   parkingEndSec: number,
   confirmation: ConfirmationPolicy = 'mined',
+  observe?: TxObserver,
+  spaceId?: string,
+  protectedBooking = false,
 ): Promise<CreateAuctionResult> {
   const metadataHash = computeMetadataHash(metadata);
   const minBidWei = parseEther(minBidEth);
 
   const args = [metadataHash, minBidWei, BigInt(bidEndSec), BigInt(parkingStartSec), BigInt(parkingEndSec)];
-  const tx = confirmation === 'finalized'
-    ? await dispatchFinalized(contract, 'createAuction', args)
-    : await contract.createAuction(...args);
-
-  const receipt = await waitForTransaction(tx, contract, confirmation);
+  // Without a space id, createAuction registers a new space for this listing.
+  // A protected booking uses spaceId 0 to register a new space, like createAuction.
+  const receipt = protectedBooking
+    ? await send(contract, 'createProtectedAuction', [BigInt(spaceId ?? 0), ...args], confirmation, observe)
+    : spaceId
+    ? await send(contract, 'createSpaceAuction', [BigInt(spaceId), ...args], confirmation, observe)
+    : await send(contract, 'createAuction', args, confirmation, observe);
+  const tx = { hash: receipt.hash };
 
   // Parse logs for AuctionCreated(uint256 indexed id, address indexed owner)
   let auctionId = '';
@@ -189,47 +268,134 @@ export async function placeBid(
   auctionId: string,
   bidAmountEth: string,
   confirmation: ConfirmationPolicy = 'mined',
+  observe?: TxObserver,
 ): Promise<TransactionReceipt> {
-  const valueWei = parseEther(bidAmountEth);
-  const tx = confirmation === 'finalized'
-    ? await dispatchFinalized(contract, 'bid', [BigInt(auctionId), { value: valueWei }])
-    : await contract.bid(BigInt(auctionId), { value: valueWei });
-  return waitForTransaction(tx, contract, confirmation);
+  return send(contract, 'bid', [BigInt(auctionId), { value: parseEther(bidAmountEth) }], confirmation, observe);
 }
 
-export async function withdrawRefund(contract: Contract, confirmation: ConfirmationPolicy = 'mined'): Promise<TransactionReceipt> {
-  const tx = confirmation === 'finalized' ? await dispatchFinalized(contract, 'withdrawRefund', []) : await contract.withdrawRefund();
-  return waitForTransaction(tx, contract, confirmation);
+export async function withdrawRefund(contract: Contract, confirmation: ConfirmationPolicy = 'mined', observe?: TxObserver): Promise<TransactionReceipt> {
+  return send(contract, 'withdrawRefund', [], confirmation, observe);
 }
 
 export async function settleAuction(
   contract: Contract,
   auctionId: string,
   confirmation: ConfirmationPolicy = 'mined',
+  observe?: TxObserver,
 ): Promise<TransactionReceipt> {
-  const tx = confirmation === 'finalized' ? await dispatchFinalized(contract, 'settle', [BigInt(auctionId)]) : await contract.settle(BigInt(auctionId));
-  return waitForTransaction(tx, contract, confirmation);
+  return send(contract, 'settle', [BigInt(auctionId)], confirmation, observe);
 }
 
 export async function cancelAuction(
   contract: Contract,
   auctionId: string,
   confirmation: ConfirmationPolicy = 'mined',
+  observe?: TxObserver,
 ): Promise<TransactionReceipt> {
-  const tx = confirmation === 'finalized' ? await dispatchFinalized(contract, 'cancel', [BigInt(auctionId)]) : await contract.cancel(BigInt(auctionId));
-  return waitForTransaction(tx, contract, confirmation);
+  return send(contract, 'cancel', [BigInt(auctionId)], confirmation, observe);
 }
 
 export async function claimPayout(
   contract: Contract,
   auctionId: string,
   confirmation: ConfirmationPolicy = 'mined',
+  observe?: TxObserver,
 ): Promise<TransactionReceipt> {
-  const tx = confirmation === 'finalized' ? await dispatchFinalized(contract, 'claimPayout', [BigInt(auctionId)]) : await contract.claimPayout(BigInt(auctionId));
-  return waitForTransaction(tx, contract, confirmation);
+  return send(contract, 'claimPayout', [BigInt(auctionId)], confirmation, observe);
+}
+
+export interface BlockedWindow { id: string; start: number; end: number }
+export interface HostSpace {
+  id: string;
+  owner: string;
+  isOwner: boolean;
+  /** True when the wallet may list on the space only because the owner approved it. */
+  isLister: boolean;
+  /** IANA name set on-chain; '' when the owner has not set one. */
+  timeZone: string;
+  /** Blocked windows that have not ended yet. */
+  blocked: BlockedWindow[];
+}
+
+/** Spaces this account owns or is approved to list on, with their time zone and upcoming blocked windows. */
+export async function fetchHostSpaces(
+  contract: Contract,
+  account: string,
+  fromBlock: number,
+  confirmation: ConfirmationPolicy = 'mined',
+): Promise<HostSpace[]> {
+  const toBlock = confirmation === 'finalized' ? 'finalized' : 'latest';
+  const logs = (await Promise.all([
+    contract.queryFilter(contract.filters.SpaceRegistered(null, account), fromBlock, toBlock),
+    contract.queryFilter(contract.filters.SpaceTransferred(null, null, account), fromBlock, toBlock),
+    contract.queryFilter(contract.filters.SpaceListerSet(null, account), fromBlock, toBlock),
+  ])).flat();
+  const ids = [...new Set(logs.map((log) => ((log as EventLog).args.spaceId as bigint).toString()))]
+    .sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
+  const nowSec = Math.floor(Date.now() / 1000);
+  const spaces = await Promise.all(ids.map(async (id): Promise<HostSpace | null> => {
+    const [owner, isLister] = await Promise.all([contract.spaceOwner(id) as Promise<string>, contract.isSpaceLister(id, account) as Promise<boolean>]);
+    const isOwner = owner.toLowerCase() === account.toLowerCase();
+    if (!isOwner && !isLister) return null;
+    const [timeZone, blockIds] = await Promise.all([contract.spaceTimeZone(id) as Promise<string>, contract.spaceBlockedWindows(id) as Promise<bigint[]>]);
+    const blocked = (await Promise.all(blockIds.map(async (blockId) => {
+      const w = await contract.blockedWindows(blockId);
+      return { id: blockId.toString(), start: Number(w.start), end: Number(w.end) };
+    }))).filter((w) => w.end > nowSec);
+    return { id, owner, isOwner, isLister: !isOwner && isLister, timeZone, blocked };
+  }));
+  return spaces.filter((space): space is HostSpace => space !== null);
+}
+
+export type SpaceAction =
+  | { kind: 'lister'; spaceId: string; lister: string; allowed: boolean }
+  | { kind: 'transfer'; spaceId: string; newOwner: string }
+  | { kind: 'timeZone'; spaceId: string; timeZone: string }
+  | { kind: 'block'; spaceId: string; start: number; end: number }
+  | { kind: 'unblock'; blockId: string };
+
+/** Sends one space-control transaction (owner only; the contract enforces it). */
+export function sendSpaceAction(
+  contract: Contract,
+  action: SpaceAction,
+  confirmation: ConfirmationPolicy = 'mined',
+  observe?: TxObserver,
+): Promise<TransactionReceipt> {
+  switch (action.kind) {
+    case 'lister': return send(contract, 'setSpaceLister', [BigInt(action.spaceId), action.lister, action.allowed], confirmation, observe);
+    case 'transfer': return send(contract, 'transferSpace', [BigInt(action.spaceId), action.newOwner], confirmation, observe);
+    case 'timeZone': return send(contract, 'setSpaceTimeZone', [BigInt(action.spaceId), action.timeZone], confirmation, observe);
+    case 'block': return send(contract, 'blockSpaceWindow', [BigInt(action.spaceId), BigInt(action.start), BigInt(action.end)], confirmation, observe);
+    case 'unblock': return send(contract, 'unblockSpaceWindow', [BigInt(action.blockId)], confirmation, observe);
+  }
+}
+
+/** Sends one protected-booking transaction (docs/booking-policy.md). */
+export async function sendBookingAction(
+  contract: Contract,
+  auctionId: string,
+  action: BookingAction,
+  reference: string,
+  confirmation: ConfirmationPolicy = 'mined',
+  observe?: TxObserver,
+): Promise<TransactionReceipt> {
+  const id = BigInt(auctionId);
+  if (action === 'reportSellerFailure') return send(contract, action, [id, reference], confirmation, observe);
+  if (action === 'upholdDispute' || action === 'denyDispute') {
+    return send(contract, 'resolveDispute', [id, action === 'upholdDispute', reference], confirmation, observe);
+  }
+  return send(contract, action, [id], confirmation, observe);
 }
 
 const CONTRACT_ERROR_MESSAGES: Record<string, string> = {
+  TooEarly: 'That action is not open yet for this booking. Check its deadlines.',
+  TooLate: 'The deadline for that action has passed on-chain.',
+  NotResolver: 'Only a resolver the operator authorized can decide seller-failure reports.',
+  ResolverIsParty: 'A resolver cannot decide a report on a booking they are part of.',
+  BookingFinalized: 'This booking already has a final outcome.',
+  DisputeOpen: 'A seller-failure report is open: the payout is held until it is decided or expires.',
+  NotWinner: 'Only the winning bidder (or, for a report, the host) can do that.',
+  AlreadyRecorded: 'That was already recorded for this booking.',
   BidTooLow: 'Another bid reached or passed your amount first. Your input was kept; raise it above the new highest bid.',
   AuctionEnded: 'Bidding closed on-chain before your bid was mined.',
   AlreadySettled: 'This auction was already settled.',
@@ -237,16 +403,38 @@ const CONTRACT_ERROR_MESSAGES: Record<string, string> = {
   AuctionCancelledError: 'This auction was cancelled.',
   AuctionNotFound: 'This auction does not exist on the connected deployment.',
   OwnerCannotBid: 'Spot owners cannot bid on their own listing.',
+  SpaceWindowTaken: 'This space already has a listing for an overlapping parking window. Pick a window that does not overlap, or cancel the other listing first.',
+  SpaceNotVerified: 'This deployment requires an existing verified space. Choose an approved space or ask a verifier to review it.',
+  UnverifiedSpaceMetadata: 'This listing does not match the public details reviewed for the space. Ask a verifier to review the changes.',
+  NotSpaceOwner: 'Only the owner of this parking space, or a lister it approved, can list it.',
+  SpaceWindowUnavailable: 'The space owner blocked part of this parking window. Pick a window outside the blocked dates.',
+  InvalidSpaceOwner: 'The new owner must be a valid, non-zero address.',
+  InvalidTimeZone: 'That time zone name is not accepted on-chain (letters, digits, / _ + - up to 64 characters).',
+  BlockedWindowNotFound: 'That blocked window no longer exists.',
+  InvalidTimeWindow: 'The end must be after the start, and the window must not already be over.',
+  SpaceCalendarFull: 'This space already has the most upcoming windows it can hold. Wait for some to end or cancel unsold ones first.',
 };
 
-export function parseContractError(err: unknown): string {
+/** Decodes raw revert data with the escrow ABI: ethers leaves gas-estimation reverts undecoded. */
+function decodeRevert(errorObj: Record<string, unknown>, abi?: InterfaceAbi): { name: string } | null {
+  const info = errorObj.info as { error?: { data?: unknown } } | undefined;
+  const data = [errorObj.data, info?.error?.data].find((value): value is string => typeof value === 'string' && value.startsWith('0x'));
+  if (!abi || !data) return null;
+  try {
+    return new Interface(abi).parseError(data);
+  } catch {
+    return null;
+  }
+}
+
+export function parseContractError(err: unknown, abi?: InterfaceAbi): string {
   if (!err) return 'Unknown error occurred';
 
   if (typeof err === 'object') {
     const errorObj = err as Record<string, unknown>;
 
     // Decoded custom errors from the escrow contract ABI
-    const revert = errorObj.revert;
+    const revert = errorObj.revert ?? decodeRevert(errorObj, abi);
     if (revert && typeof revert === 'object') {
       const known = CONTRACT_ERROR_MESSAGES[(revert as Record<string, unknown>).name as string];
       if (known) return known;

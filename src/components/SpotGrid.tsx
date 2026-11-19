@@ -16,6 +16,13 @@ interface SpotGridProps {
   onOpenDetail: (listing: Listing) => void;
   onSettle: (listing: Listing) => void;
   onResetFilters: () => void;
+  /** Descriptions of the active filters, named in the no-results state. */
+  activeFilters?: string[];
+  /** Straight-line distance (km) from the chosen destination, by listing id. */
+  distances?: Map<string, number>;
+  destinationLabel?: string | null;
+  /** Matches beyond the loaded page, and how to load the next page. */
+  more?: { remaining: number; loading: boolean; onLoad: () => void } | null;
 }
 
 export const SpotGrid: React.FC<SpotGridProps> = ({
@@ -30,6 +37,10 @@ export const SpotGrid: React.FC<SpotGridProps> = ({
   onOpenDetail,
   onSettle,
   onResetFilters,
+  activeFilters = [],
+  distances,
+  destinationLabel = null,
+  more = null,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -104,7 +115,9 @@ export const SpotGrid: React.FC<SpotGridProps> = ({
         </div>
         <h3 className="empty-title">No matching parking auctions found</h3>
         <p className="empty-desc">
-          Try expanding your search query, adjusting your kind filter, or clearing the status filter.
+          {activeFilters.length
+            ? `None of the ${status === 'stale' ? 'last known' : 'loaded'} listings match: ${activeFilters.join('; ')}. Widen or remove a filter.`
+            : 'Try expanding your search query, adjusting your kind filter, or clearing the status filter.'}
         </p>
         <button type="button" className="btn-empty-reset" onClick={onResetFilters}>
           Reset all filters
@@ -126,8 +139,18 @@ export const SpotGrid: React.FC<SpotGridProps> = ({
           onOpenBid={onOpenBid}
           onOpenDetail={onOpenDetail}
           onSettle={onSettle}
+          distance={
+            destinationLabel && distances?.has(listing.id)
+              ? { km: distances.get(listing.id)!, from: destinationLabel }
+              : undefined
+          }
         />
       ))}
+      {more && more.remaining > 0 && (
+        <button type="button" className="btn-empty-reset" onClick={more.onLoad} disabled={more.loading}>
+          {more.loading ? 'Loading…' : `Show ${more.remaining} more`}
+        </button>
+      )}
     </div>
   );
 };

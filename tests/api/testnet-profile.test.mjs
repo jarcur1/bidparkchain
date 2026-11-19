@@ -7,6 +7,7 @@ import { createApp } from '../../server/app.mjs';
 import { resolveRuntimeProfile } from '../../scripts/helpers/runtime-profile.mjs';
 import { validateSpotMetadata } from '../../shared/validation.js';
 import { createSepoliaFixture, runProfileDeploy } from '../support/sepolia-fixture.mjs';
+import { signInCookie } from '../support/auth.mjs';
 
 const metadata = {
   title: 'Downtown garage', address: '123 Main Street', neighborhood: 'Downtown',
@@ -31,9 +32,11 @@ async function stopApi() {
   appRuntime?.provider.destroy();
   appRuntime = undefined;
 }
+// Session of the fixture wallet, which owns the auctions it creates; sessions survive API restarts.
+let cookie = '';
 async function request(route, body) {
   const response = await fetch(`${url}${route}`, body === undefined ? {} : {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body),
   });
   return { status: response.status, json: await response.json() };
 }
@@ -68,6 +71,10 @@ it('persists a verified deployment and finalized listings across CLI and API res
   expect(descriptorText).not.toMatch(/demoMnemonic|test test test test/);
   const contract = new ethers.Contract(descriptor.contractAddress, descriptor.abi, fixture.wallet);
   expect(await contract.nextAuctionId()).toBe(1n);
+  expect(await contract.verifiedInventoryRequired()).toBe(false);
+  const noDowngrade = await runProfileDeploy(env, ['--create', '--verified-inventory']);
+  expect(noDowngrade.code).not.toBe(0);
+  expect(fs.readFileSync(descriptorAt(dataDir), 'utf8')).toBe(descriptorText);
   const before = await fixture.provider.getBlockNumber();
   const reused = await runProfileDeploy(env);
   expect(reused.code, reused.output).toBe(0);
@@ -82,6 +89,7 @@ it('persists a verified deployment and finalized listings across CLI and API res
     deploymentBlock: config.json.deploymentBlock,
     deploymentBlockHash: config.json.deploymentBlockHash,
   };
+  cookie = await signInCookie(url, fixture.wallet);
   expect((await request('/api/listings', { auctionId: '1', metadata, deployment: { ...deployment, chainId: 31337 } })).status).toBe(409);
   expect(config.status).toBe(200);
   expect(config.json).toMatchObject({ profile: 'sepolia', chainId: 11155111, confirmation: 'finalized', contractAddress: descriptor.contractAddress });
@@ -242,4 +250,42 @@ it('imports a finalized owned deployment by transaction hash and then reuses it 
   await startApi(target);
   expect((await request('/api/config')).status).toBe(503);
   await stopApi();
+}, 180_000);
+
+it('reports suspension at the same finalized block in marketplace and active search', async () => {
+  const dataDir = fixture.scope.tempDir();
+  const env = fixture.env(dataDir);
+  const created = await runProfileDeploy({ ...env, BIDPARK_SEPOLIA_DEPLOYER_KEY: fixture.key }, ['--create', '--verified-inventory']);
+  expect(created.code, created.output).toBe(0);
+  const descriptor = JSON.parse(fs.readFileSync(descriptorAt(dataDir), 'utf8'));
+  expect(descriptor.verifiedInventoryRequired).toBe(true);
+  const contract = new ethers.Contract(descriptor.contractAddress, descriptor.abi, fixture.wallet);
+  const seller = await fixture.provider.getSigner(1);
+  const sellerAddress = await seller.getAddress();
+  const stall = ethers.id('fixture-opaque-stall');
+  const hash = ethers.keccak256(ethers.toUtf8Bytes(JSON.stringify(validateSpotMetadata(metadata).normalized)));
+
+  await (await contract.setSpaceVerifier(fixture.wallet.address, true)).wait();
+  await (await contract.connect(seller).registerSpace()).wait();
+  await (await contract.setSpaceVerification(1, sellerAddress, 0, stall, hash)).wait();
+  const now = (await fixture.provider.getBlock('latest')).timestamp;
+  const listing = await (await contract.connect(seller).createSpaceAuction(1, hash, 1, now + 3600, now + 7200, now + 10800)).wait();
+  fixture.setFinalized(listing.blockNumber);
+  await startApi(env);
+  try {
+    cookie = await signInCookie(url, seller);
+    const registered = await request('/api/listings', { auctionId: '1', metadata, deployment: descriptor });
+    expect(registered.status, JSON.stringify(registered.json)).toBe(201);
+    expect(registered.json.listing).toMatchObject({ inventoryBlocked: false, verification: 'verified' });
+    await (await contract.setSpaceVerification(1, sellerAddress, 0, ethers.ZeroHash, ethers.ZeroHash)).wait();
+    expect((await request('/api/listings/search?status=active')).json.total).toBe(1);
+
+    fixture.setFinalized(null);
+    expect((await request('/api/listings')).json.listings[0]).toMatchObject({ inventoryBlocked: true, verification: 'unverified' });
+    expect((await request('/api/listings/search?status=active')).json.total).toBe(0);
+    expect((await request('/api/listings/search')).json.listings[0]).toMatchObject({ inventoryBlocked: true });
+  } finally {
+    fixture.setFinalized(null);
+    await stopApi();
+  }
 }, 180_000);

@@ -113,5 +113,41 @@ describe('wallet identity and network regressions', () => {
     local.error = true; await render(); await click(document.querySelectorAll('.demo-accounts-list button')[1]);
     await until(() => expect(state().error).toBe('Local RPC unavailable'));
     expect(state().isReady).toBe(false); expect(query('.wallet-btn').textContent).toContain('Connect Wallet'); expect(query('.active-address-text').textContent).toBe('Not connected');
+    expect(query('[role="alert"].wallet-connection-error').textContent).toBe('Local RPC unavailable');
+    expect(document.querySelector('.badge-active-pill')).toBeNull();
+  });
+
+  it('shows connecting, then ready, and marks the account active only once it is ready', async () => {
+    const slow = deferred<string>(); injected.slow = slow;
+    await render(); expect(query('.wallet-connection-status').textContent).toBe('Not connected');
+    await click(query('.avatar-injected').closest('button')!);
+    await until(() => expect(query('.wallet-connection-status').textContent).toBe('Connecting…'));
+    injected.slow = null; await act(async () => { slow.resolve(`0x${parseEther('11').toString(16)}`); });
+    await until(() => expect(query('.wallet-connection-status').textContent).toBe('Connected and ready'));
+  });
+
+  it('disconnects by forgetting the selection, without claiming to revoke extension access', async () => {
+    await connect();
+    expect(localStorage.getItem('bidpark_wallet_type')).toBe('injected');
+    const disconnectButton = Array.from(document.querySelectorAll('button')).find((button) => button.textContent === 'Disconnect')!;
+    expect(disconnectButton.parentElement!.textContent).toContain('does not revoke this site\'s access in your wallet extension');
+    await click(disconnectButton);
+    expect(state()).toMatchObject({ address: null, isReady: false, isConnecting: false, error: null });
+    expect(localStorage.getItem('bidpark_wallet_type')).toBeNull();
+    expect(query('.wallet-connection-status').textContent).toBe('Not connected');
+    // A later account change in the extension does not silently reconnect.
+    await act(async () => { injected.accounts = [b]; injected.emit('accountsChanged', [b]); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(state().address).toBeNull();
+  });
+
+  it('explains a rejected connection request and a missing extension', async () => {
+    injected.request.mockImplementationOnce(async () => { throw Object.assign(new Error('User rejected the request.'), { code: 4001 }); });
+    await render(); await click(query('.avatar-injected').closest('button')!);
+    await until(() => expect(query('.wallet-connection-error').textContent).toBe('The connection request was rejected in your wallet. Choose a wallet again to retry.'));
+
+    Object.defineProperty(window, 'ethereum', { configurable: true, value: undefined });
+    await click(query('.avatar-injected').closest('button')!);
+    await until(() => expect(query('.wallet-connection-error').textContent).toContain('No browser wallet found.'));
   });
 });

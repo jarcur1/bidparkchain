@@ -9,26 +9,32 @@ import {
   X,
 } from 'lucide-react';
 import { useWallet } from '../context/WalletContext';
+import { useSession } from '../context/SessionContext';
 import { DEMO_ACCOUNTS } from '../utils/constants';
 import { formatBalance, shortenAddress } from '../utils/formatters';
 import { webProfile } from '../utils/networkProfile';
 import { Dialog } from './Dialog';
+import { ProfileEditor } from './ProfileEditor';
 
 interface WalletModalProps {
   isOpen: boolean;
   onClose: () => void;
+  /** The action waiting on a connected wallet, e.g. "list a spot". */
+  continueLabel?: string;
 }
 
-export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => {
+export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose, continueLabel }) => {
   const {
     walletState,
     connectLocal,
     connectInjected,
     switchInjectedChain,
+    disconnect,
     wrongChain,
     balanceRead,
   } = useWallet();
 
+  const { session, isSigningIn, error: signInError, signIn, signOut } = useSession();
   const [copiedAddr, setCopiedAddr] = useState(false);
 
   if (!isOpen) return null;
@@ -72,6 +78,12 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
           </button>
         </div>
 
+        {continueLabel && (
+          <p className="wallet-continue-note" role="status">
+            Connect a wallet to {continueLabel}. You'll go straight back to it once the wallet is ready.
+          </p>
+        )}
+
         {/* Current active account card */}
         <div className="wallet-active-card">
           <div className="active-card-top">
@@ -101,6 +113,34 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
             )}
           </div>
 
+          <p className={walletState.error ? 'wallet-connection-error' : 'wallet-connection-status'} role={walletState.error ? 'alert' : 'status'}>
+            {walletState.isConnecting
+              ? 'Connecting…'
+              : walletState.error
+                ? walletState.error
+                : walletState.isReady
+                  ? 'Connected and ready'
+                  : wrongChain
+                    ? 'Connected to the wrong network'
+                    : 'Not connected'}
+          </p>
+
+          {(walletState.address || walletState.error) && (
+            <div className="wallet-disconnect-row">
+              <button
+                type="button"
+                className="read-status-retry"
+                onClick={() => { void signOut(); disconnect(); }}
+              >
+                Disconnect
+              </button>
+              <span className="section-note">
+                Forgets this wallet in BidPark and signs you out. It does not revoke this site's access in your wallet
+                extension; do that in the extension's settings.
+              </span>
+            </div>
+          )}
+
           {wrongChain && (
             <div className="wallet-wrong-chain-notice" role="alert">
               <ShieldAlert size={15} />
@@ -116,6 +156,42 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
           )}
         </div>
 
+        {/* App sign-in (EIP-4361): proves wallet control only */}
+        <div className="wallet-section" role="group" aria-labelledby="wallet-signin-title">
+          <div className="section-title-row">
+            <span id="wallet-signin-title" className="section-label">App sign-in</span>
+            <span className="section-note">
+              {session ? `Signed in until ${new Date(session.expiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'Not signed in'}
+            </span>
+          </div>
+          <p className="section-note">
+            Signing a message proves you control this wallet address. It moves no funds and does not verify that you
+            control any parking space.
+          </p>
+          {session && (
+            <p role="status">Signed in as <code>{shortenAddress(session.address, 6)}</code></p>
+          )}
+          {session && <ProfileEditor address={session.address} />}
+          {signInError && <p role="alert">{signInError}</p>}
+          {session ? (
+            <button type="button" className="read-status-retry" onClick={() => void signOut()}>
+              Sign out
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="read-status-retry"
+              onClick={() => void signIn()}
+              disabled={!walletState.isReady || isSigningIn}
+            >
+              {isSigningIn ? 'Waiting for signature…' : 'Sign in with this wallet'}
+            </button>
+          )}
+          {!session && !walletState.isReady && (
+            <p className="section-note">Connect a wallet on {webProfile.networkName} first.</p>
+          )}
+        </div>
+
         {/* Option 1: Local Test Wallets (Zero setup) */}
         {import.meta.env.VITE_BIDPARK_PROFILE !== 'sepolia' && (
         <div className="wallet-section">
@@ -126,9 +202,11 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
 
           <div className="demo-accounts-list">
             {DEMO_ACCOUNTS.map((acc) => {
+              // Only an account that finished connecting is marked active.
               const isActive =
                 walletState.type === 'local' &&
-                walletState.localAccountIndex === acc.index;
+                walletState.localAccountIndex === acc.index &&
+                walletState.isReady;
               return (
                 <button
                   key={acc.index}

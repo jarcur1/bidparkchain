@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Calendar,
+  CalendarPlus,
   CheckCircle2,
   Clock,
   Copy,
@@ -15,6 +16,7 @@ import {
 } from 'lucide-react';
 import type { Listing } from '../types';
 import {
+  formatDateTime,
   formatEth,
   formatParkingWindow,
   getAuctionTimeRemaining,
@@ -22,32 +24,45 @@ import {
   shortenAddress,
 } from '../utils/formatters';
 import { getBidEligibility, getChainNowSec } from '../utils/eligibility';
+import { BOOKING_ACTION_LABELS, bookingView, canClaimPayout, type BookingAction } from '../utils/booking';
+import { downloadReservationIcs } from '../utils/calendar';
+import { BidHistory } from './BidHistory';
 import { Dialog } from './Dialog';
+import { ReportSpace } from './ReportSpace';
+import { DisputeRecord, MIN_REVIEW_TEXT, REVIEW_ACTIONS } from './Disputes';
 
 interface DetailModalProps {
   listing: Listing | null;
   contractAddress?: string;
+  chainId?: number;
   currentAddress: string | null;
   onClose: () => void;
   onOpenBid: (listing: Listing) => void;
   onSettle: (listing: Listing) => void;
   onCancel: (listing: Listing) => void;
   onClaimPayout: (listing: Listing) => void;
+  onBookingAction?: (listing: Listing, action: BookingAction, text?: string) => void;
   isActionBusy: boolean;
+  /** Whether the viewer has an API session; reporting needs one. */
+  signedIn?: boolean;
 }
 
 export const DetailModal: React.FC<DetailModalProps> = ({
   listing,
   contractAddress,
+  chainId,
   currentAddress,
   onClose,
   onOpenBid,
   onSettle,
   onCancel,
   onClaimPayout,
+  onBookingAction,
   isActionBusy,
+  signedIn = false,
 }) => {
   const [copiedHash, setCopiedHash] = useState(false);
+  const [reviewText, setReviewText] = useState('');
   const [timeRemaining, setTimeRemaining] = useState(() =>
     listing ? getAuctionTimeRemaining(listing.bidEnd) : { isEnded: true, text: '', totalSeconds: 0 }
   );
@@ -63,7 +78,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
   if (!listing) return null;
 
   const status = getListingStatus(listing);
-  const parkingWindow = formatParkingWindow(listing.parkingStart, listing.parkingEnd);
+  const parkingWindow = formatParkingWindow(listing.parkingStart, listing.parkingEnd, listing.timeZone);
   const now = getChainNowSec();
   const canBid = getBidEligibility(listing, currentAddress, now).canBid;
 
@@ -80,8 +95,10 @@ export const DetailModal: React.FC<DetailModalProps> = ({
   const currentPriceEth = hasBids ? listing.highestBid : listing.minBid;
 
   const canOwnerCancel = isOwner && !hasBids && !listing.settled && !listing.cancelled;
-  const canOwnerClaimPayout =
-    isOwner && listing.settled && hasBids && !listing.payoutClaimed && now >= listing.parkingEnd;
+  const canOwnerClaimPayout = isOwner && canClaimPayout(listing, now);
+  const booking = bookingView(listing, currentAddress, now);
+  const needsText = booking?.actions.some((a) => REVIEW_ACTIONS.includes(a)) ?? false;
+  const textOk = reviewText.trim().length >= MIN_REVIEW_TEXT && signedIn;
   const handleCopyHash = () => {
     if (listing.metadataHash) {
       navigator.clipboard.writeText(listing.metadataHash);
@@ -103,7 +120,8 @@ export const DetailModal: React.FC<DetailModalProps> = ({
         {/* Modal Header */}
         <div className="modal-detail-header">
           <div className="modal-header-left">
-            <span className="badge-demo-sample">Austin Sample Demo</span>
+            <span className="badge-demo-sample">Demo Listing</span>
+            {listing.verification === 'verified' && <span className="badge-verified">Verified space</span>}
             <span className={`badge-kind badge-kind-${listing.kind}`}>
               {listing.kind}
             </span>
@@ -189,10 +207,30 @@ export const DetailModal: React.FC<DetailModalProps> = ({
               </div>
             </div>
 
+            {isLeading && listing.settled && !listing.cancelled && contractAddress && chainId !== undefined && (
+              <button
+                type="button"
+                className="btn-pass-details"
+                onClick={() => downloadReservationIcs(listing, { chainId, contractAddress })}
+              >
+                <CalendarPlus size={14} />
+                <span>Add to calendar (.ics)</span>
+              </button>
+            )}
+
             {/* Description */}
             <div className="modal-section">
               <h4 className="section-label">Public Space Description</h4>
               <p className="modal-description-text">{listing.description}</p>
+            </div>
+
+            <div className="modal-section" data-testid="verification-meaning">
+              <h4 className="section-label">Host Verification</h4>
+              <p className="modal-description-text">
+                {listing.verification === 'verified'
+                  ? 'Verified: a BidPark moderator reviewed proof that this host controls space #' + listing.spaceId + '. It is not a guarantee about the space itself.'
+                  : 'Not verified: BidPark has not confirmed that this host controls space #' + listing.spaceId + '.'}
+              </p>
             </div>
 
             {/* Amenities */}
@@ -208,6 +246,8 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                 </div>
               </div>
             )}
+
+            <BidHistory listing={listing} currentAddress={currentAddress} />
 
             {/* Onchain Escrow Telemetry */}
             <div className="detail-info-card telemetry-card">
@@ -273,7 +313,9 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                 </div>
                 <div className="bid-box-cutoff">
                   <Clock size={13} />
-                  <span>Cutoff: {timeRemaining.text}</span>
+                  <span>
+                    Cutoff: {formatDateTime(listing.bidEnd)} ({timeRemaining.text})
+                  </span>
                 </div>
               </div>
 
@@ -333,6 +375,38 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                   <div className="payout-claimed-pill">
                     <ShieldCheck size={14} />
                     <span>Host Payout Claimed</span>
+                  </div>
+                )}
+
+                {!isOwner && <ReportSpace spaceId={listing.spaceId} signedIn={signedIn} />}
+                {booking && (
+                  <div className="booking-protection" data-testid="booking-protection">
+                    <p className="owner-notice">{booking.status}</p>
+                    {needsText && (
+                      <label className="owner-notice">
+                        {booking.actions.includes('reportSellerFailure') ? 'Evidence (text or links)' : 'Decision reason'}
+                        <textarea
+                          aria-label="Review text"
+                          maxLength={2000}
+                          rows={3}
+                          placeholder={signedIn ? 'Stored off-chain, readable only by the winner, host and resolvers. At least 10 characters.' : 'Sign in to submit a review record.'}
+                          value={reviewText}
+                          onChange={(e) => setReviewText(e.target.value)}
+                        />
+                      </label>
+                    )}
+                    {booking.actions.map((action) => (
+                      <button
+                        key={action}
+                        type="button"
+                        className="btn-modal-settle"
+                        disabled={isActionBusy || !onBookingAction || (REVIEW_ACTIONS.includes(action) && !textOk)}
+                        onClick={() => onBookingAction?.(listing, action, REVIEW_ACTIONS.includes(action) ? reviewText.trim() : undefined)}
+                      >
+                        <span>{BOOKING_ACTION_LABELS[action]}</span>
+                      </button>
+                    ))}
+                    {signedIn && booking && listing.booking?.disputeReporter && <DisputeRecord auctionId={listing.id} refreshKey={listing.booking.disputeReporter} />}
                   </div>
                 )}
 

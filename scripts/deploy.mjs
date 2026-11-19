@@ -14,7 +14,7 @@ import {
   HARDHAT_CHAIN_ID,
   HARDHAT_MNEMONIC,
 } from './helpers/chain.mjs';
-import { getSeededListings } from './helpers/seed-data.mjs';
+import { getSeededListings, resolveSeedScenario } from './helpers/seed-data.mjs';
 import { EscrowDatabase } from '../server/db.mjs';
 import { canonicalizeAuctionId } from '../server/app.mjs';
 
@@ -69,6 +69,7 @@ async function main() {
     return;
   }
   if (process.argv.length > 2) throw new Error('Deployment options are only available for Sepolia.');
+  const scenario = resolveSeedScenario();
   if (process.env.BIDPARK_DATA_DIR !== undefined) {
     if (fs.existsSync(`${DEPLOYMENT_PATH}.pending`) || fs.existsSync(`${DEPLOYMENT_PATH}.lock`)) {
       throw new Error('Refusing local deployment in a directory with a pending persistent deployment.');
@@ -85,7 +86,7 @@ async function main() {
       }
     }
   }
-  console.log('[BidPark Deploy] Starting deployment process...');
+  console.log(`[BidPark Deploy] Starting deployment process (seed scenario: ${scenario})...`);
 
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -113,7 +114,7 @@ async function main() {
 
   // Compile Solidity contract with Shanghai target
   console.log('[BidPark Deploy] Compiling contracts/ParkingAuctionEscrow.sol (solc, EVM: shanghai)...');
-  const { abi, bytecode } = compileEscrowContract();
+  const { abi, bytecode, runtimeBytecode } = compileEscrowContract();
 
   // Check for existing valid deployment (idempotence)
   let existingDeployment = null;
@@ -130,11 +131,18 @@ async function main() {
   let deploymentTxHash = null;
   let isFreshDeploy = false;
 
-  if (
+  const previousScenario = existingDeployment?.seedScenario ?? 'austin';
+  if (existingDeployment?.contractAddress && previousScenario !== scenario) {
+    // A new contract gives the scenario its own listings; scenarios never share a deployment.
+    console.log(`[BidPark Deploy] Seed scenario changed from ${previousScenario} to ${scenario}. Re-deploying.`);
+    isFreshDeploy = true;
+  } else if (
     existingDeployment &&
     existingDeployment.contractAddress &&
     existingDeployment.deploymentTxHash &&
-    (await hasDeployedCode(existingDeployment.contractAddress, provider))
+    (await hasDeployedCode(existingDeployment.contractAddress, provider)) &&
+    // A contract built from older source keeps its old ABI and storage; never reuse it with the new one.
+    (await provider.getCode(existingDeployment.contractAddress)).toLowerCase() === runtimeBytecode.toLowerCase()
   ) {
     // Verify that the deployment transaction exists in the current node instance
     const deployedTx = await provider.getTransaction(existingDeployment.deploymentTxHash);
@@ -156,7 +164,7 @@ async function main() {
   if (isFreshDeploy) {
     console.log('[BidPark Deploy] Deploying new ParkingAuctionEscrow instance...');
     const factory = new ethers.ContractFactory(abi, bytecode, deployerWallet);
-    const contract = await factory.deploy();
+    const contract = await factory.deploy(false);
     await contract.waitForDeployment();
     contractAddress = await contract.getAddress();
     const receipt = await contract.deploymentTransaction()?.wait();
@@ -167,8 +175,9 @@ async function main() {
       `[BidPark Deploy] ParkingAuctionEscrow deployed at: ${contractAddress} (block ${deploymentBlock}, tx: ${deploymentTxHash})`
     );
 
-    // On fresh deploy, clear all prior listing records for this local DB to purge stale same-address data
-    const cleared = db.clearAllListings();
+    // Explicit local demo reset: a fresh local chain may reuse the same contract address, so drop its
+    // old listings. Deployment history is kept; persistent profiles never reach this code.
+    const cleared = db.resetLocalDemo();
     if (cleared > 0) {
       console.log(`[BidPark Deploy] Cleared ${cleared} prior listing records to seed clean database.`);
     }
@@ -192,6 +201,7 @@ async function main() {
     demoMnemonic: HARDHAT_MNEMONIC,
     demoAccountIndex: 1,
     deploymentBlock,
+    seedScenario: scenario,
   };
 
   fs.writeFileSync(DEPLOYMENT_PATH, JSON.stringify(deploymentConfig, null, 2), 'utf8');
@@ -205,7 +215,7 @@ async function main() {
 
   const currentBlock = await provider.getBlock('latest');
   const baseTimestamp = currentBlock ? currentBlock.timestamp : Math.floor(Date.now() / 1000);
-  const seedListings = getSeededListings(baseTimestamp);
+  const seedListings = getSeededListings(baseTimestamp, scenario);
 
   // Check if all seed listings are present in SQLite
   let allPresent = seedStatus === 'completed' || seedStatus === 'degraded';
@@ -220,7 +230,7 @@ async function main() {
   }
 
   if (isFreshDeploy || !allPresent) {
-    console.log('[BidPark Deploy] Seeding or resuming Austin parking listings...');
+    console.log(`[BidPark Deploy] Seeding or resuming ${scenario} demo listings...`);
     const nextOnchainId = await contract.nextAuctionId();
     const totalOnchain = Number(nextOnchainId) - 1;
     let skippedBids = 0;

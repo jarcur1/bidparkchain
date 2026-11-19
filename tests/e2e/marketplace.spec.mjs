@@ -1,41 +1,6 @@
 import { Contract, parseEther } from 'ethers';
 import { test, expect } from './fixtures.mjs';
-
-async function selectWallet(page, index) {
-  const header = page.getByRole('banner');
-  const connect = header.getByRole('button', { name: /Connect Wallet/ });
-  if (await connect.count()) await connect.click();
-  else await header.getByTitle('Switch local test account or connect browser wallet').click();
-  const dialog = page.getByRole('dialog', { name: 'Connect & Switch Wallet' });
-  const account = dialog.getByRole('button', { name: new RegExp(`Account #${index} \\(`) });
-  await account.click();
-  await expect(account.getByText('Active', { exact: true })).toBeVisible();
-  await dialog.getByRole('button', { name: 'Close dialog' }).click();
-  await expect(header.getByRole('button', { name: new RegExp(`Account #${index} \\(`) })).toBeVisible();
-}
-
-async function bid(page, title, amount) {
-  await page.getByRole('button', { name: 'Discover Spots', exact: true }).click();
-  const card = page.getByRole('article', { name: `Listing: ${title}`, exact: true });
-  await card.getByRole('button', { name: 'Bid Now' }).click();
-  const dialog = page.getByRole('dialog').filter({ has: page.getByLabel('Your New Bid Amount (ETH)') });
-  await dialog.getByLabel('Your New Bid Amount (ETH)').fill(amount);
-  await dialog.getByRole('button', { name: `Deposit ${amount} ETH`, exact: true }).click();
-  await expect(dialog).toBeHidden();
-  await expect(card.getByText('Highest Bid', { exact: true })).toBeVisible();
-  await expect(card.locator('.bid-amount')).toHaveText(Number(amount).toFixed(3));
-}
-
-async function advancePast(page, chain, timestamp) {
-  const latest = await chain.provider.send('eth_getBlockByNumber', ['latest', false]);
-  const seconds = Number(timestamp) + 1 - Number(BigInt(latest.timestamp));
-  if (seconds > 0) await chain.increaseTime(seconds);
-  const block = await chain.provider.send('eth_getBlockByNumber', ['latest', false]);
-  // The UI gates settlement/payout using Date.now(), so keep its clock aligned
-  // with our explicitly advanced chain without waiting for real deadlines.
-  await page.clock.setFixedTime(new Date(Number(BigInt(block.timestamp)) * 1000));
-  await page.getByRole('button', { name: 'Refresh data' }).click();
-}
+import { advancePast, bid, selectWallet } from './helpers.mjs';
 
 test('host lists, drivers bid and refund, winner reserves, host receives payout', async ({ page, stack }) => {
   const { chain, descriptor } = stack;
@@ -82,6 +47,9 @@ test('host lists, drivers bid and refund, winner reserves, host receives payout'
   await selectWallet(page, 2);
   await page.getByRole('button', { name: /My Activity/ }).click();
   await expect(page.getByText('Available to Withdraw:', { exact: true })).toBeVisible();
+  const outbidRow = page.getByRole('row').filter({ hasText: title });
+  await expect(outbidRow.getByText('Outbid — bidding still open', { exact: true })).toBeVisible();
+  await expect(outbidRow.getByRole('button', { name: 'Bid Again', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Withdraw 0.060 ETH', exact: true })).toBeVisible();
   expect(await escrow.pendingReturns(chain.wallet(2).address)).toBe(parseEther('0.06'));
   await page.getByRole('button', { name: 'Withdraw 0.060 ETH', exact: true }).click();
@@ -91,14 +59,18 @@ test('host lists, drivers bid and refund, winner reserves, host receives payout'
   await selectWallet(page, 1);
   await advancePast(page, chain, auction.bidEnd);
   await expect(page.getByRole('heading', { name: /Won Auctions — Settle to Confirm Reservation/ })).toBeVisible();
+  await expect(page.getByText('Status: You won — pending settlement', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Settle Auction & Claim Pass', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Confirmed Reservations (1)', exact: true })).toBeVisible();
+  await expect(page.getByText('Status: You won — confirmed on-chain', { exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: title, exact: true })).toBeVisible();
   await expect(page.getByText('BidPark Escrow Pass', { exact: true })).toBeVisible();
   auction = await escrow.auctions(auctionId);
   expect(auction.settled).toBe(true);
   expect(auction.highestBidder).toBe(chain.wallet(1).address);
   expect(auction.payoutClaimed).toBe(false);
+  await selectWallet(page, 2);
+  await expect(page.getByRole('row').filter({ hasText: title }).getByText('Outbid — another bidder won (confirmed)', { exact: true })).toBeVisible();
 
   await advancePast(page, chain, auction.parkingEnd);
   await selectWallet(page, 0);

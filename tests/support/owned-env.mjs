@@ -144,13 +144,13 @@ export async function createScope(name) {
     },
 
     /** Starts the marketplace API (server/index.mjs) against a chain and data directory. */
-    async startApi({ rpcUrl, dataDir }) {
+    async startApi({ rpcUrl, dataDir, env = {} }) {
       const port = await findFreePort();
       const url = `http://127.0.0.1:${port}`;
       const service = await scope.startService({
         label: `API :${port}`,
         args: ['server/index.mjs'],
-        env: { PORT: String(port), RPC_URL: rpcUrl, BIDPARK_DATA_DIR: dataDir },
+        env: { PORT: String(port), RPC_URL: rpcUrl, BIDPARK_DATA_DIR: dataDir, ...env },
         ready: async () => (await fetch(`${url}/api/does-not-exist`, { signal: AbortSignal.timeout(1000) })).status === 404,
       });
       return { ...service, port, url };
@@ -167,11 +167,12 @@ export async function createScope(name) {
 /**
  * Deploys a fresh escrow contract with account 0 and returns a connected instance.
  * @param {{ provider: ethers.Provider, wallet: (i: number) => ethers.Wallet }} chain
+ * @param {boolean} [verifiedInventory]
  */
-export async function deployEscrow(chain) {
+export async function deployEscrow(chain, verifiedInventory = false) {
   const { abi, bytecode } = escrowArtifact();
   const factory = new ethers.ContractFactory(abi, bytecode, chain.wallet(0));
-  const contract = await factory.deploy();
+  const contract = await factory.deploy(verifiedInventory);
   await contract.waitForDeployment();
   const receipt = await contract.deploymentTransaction().wait();
   return {
@@ -205,11 +206,11 @@ export function writeDeployment(dataDir, deployment) {
  * Runs scripts/deploy.mjs (compile, deploy, seed) against an owned chain and data directory.
  * @returns {Promise<{ code: number, output: string }>}
  */
-export async function runDeployScript({ rpcUrl, dataDir }) {
+export async function runDeployScript({ rpcUrl, dataDir, env = {} }) {
   return await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ['scripts/deploy.mjs'], {
       cwd: ROOT_DIR,
-      env: { ...process.env, RPC_URL: rpcUrl, BIDPARK_DATA_DIR: dataDir },
+      env: { ...process.env, ...env, RPC_URL: rpcUrl, BIDPARK_DATA_DIR: dataDir },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';

@@ -11,12 +11,14 @@ import {
 } from 'lucide-react';
 import type { Listing } from '../types';
 import {
+  formatDateTime,
   formatEth,
   formatParkingWindow,
   getAuctionTimeRemaining,
   getListingStatus,
 } from '../utils/formatters';
 import { getBidEligibility, isOwnerOf } from '../utils/eligibility';
+import { formatDistance } from '../utils/discovery';
 
 interface SpotCardProps {
   listing: Listing;
@@ -26,6 +28,8 @@ interface SpotCardProps {
   onOpenBid: (listing: Listing) => void;
   onOpenDetail: (listing: Listing) => void;
   onSettle?: (listing: Listing) => void;
+  /** Straight-line distance from the driver's destination. */
+  distance?: { km: number; from: string };
 }
 
 export const SpotCard: React.FC<SpotCardProps> = ({
@@ -36,6 +40,7 @@ export const SpotCard: React.FC<SpotCardProps> = ({
   onOpenBid,
   onOpenDetail,
   onSettle,
+  distance,
 }) => {
   const [timeRemaining, setTimeRemaining] = useState(() =>
     getAuctionTimeRemaining(listing.bidEnd)
@@ -54,7 +59,7 @@ export const SpotCard: React.FC<SpotCardProps> = ({
     return () => clearInterval(timer);
   }, [listing.bidEnd, listing.settled, listing.cancelled]);
 
-  const parkingWindow = formatParkingWindow(listing.parkingStart, listing.parkingEnd);
+  const parkingWindow = formatParkingWindow(listing.parkingStart, listing.parkingEnd, listing.timeZone);
   const status = getListingStatus(listing);
 
   const isLeading =
@@ -90,7 +95,8 @@ export const SpotCard: React.FC<SpotCardProps> = ({
 
         {/* Demo and Kind badges */}
         <div className="card-top-left-badges">
-          <span className="badge-demo-sample">Austin Demo</span>
+          <span className="badge-demo-sample">Demo Listing</span>
+          {listing.verification === 'verified' && <span className="badge-verified">Verified space</span>}
           <span className={`badge-kind badge-kind-${listing.kind}`}>
             {listing.kind.charAt(0).toUpperCase() + listing.kind.slice(1)}
           </span>
@@ -141,6 +147,11 @@ export const SpotCard: React.FC<SpotCardProps> = ({
           </button>
         </h3>
         <p className="card-address">{listing.address}</p>
+        {distance && (
+          <p className="card-distance">
+            {formatDistance(distance.km)} straight-line from {distance.from}
+          </p>
+        )}
 
         {/* Parking reservation window info */}
         <div className="card-parking-window">
@@ -195,6 +206,7 @@ export const SpotCard: React.FC<SpotCardProps> = ({
             >
               {timeRemaining.text}
             </span>
+            <span className="countdown-at">{formatDateTime(listing.bidEnd)}</span>
           </div>
         </div>
 

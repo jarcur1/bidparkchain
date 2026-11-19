@@ -1,10 +1,22 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityView } from './components/ActivityView';
 import { BidModal } from './components/BidModal';
-import { CreateListingModal } from './components/CreateListingModal';
+import { CreateListingModal, type OwnedSpace } from './components/CreateListingModal';
 import { DetailModal } from './components/DetailModal';
+import { CampusScenarioBanner } from './components/CampusScenarioBanner';
 import { DisclosuresBanner } from './components/DisclosuresBanner';
 import { FilterBar } from './components/FilterBar';
+import {
+  DEFAULT_FILTERS,
+  amenityOptions,
+  describeFilters,
+  destinationOptions,
+  discoverListings,
+  filtersFromSearch,
+  filtersToSearch,
+  resolveDestination,
+  searchQuery,
+} from './utils/discovery';
 import { Footer } from './components/Footer';
 import { Header } from './components/Header';
 import { ReadStatusBanner, type ReadSource } from './components/ReadStatusBanner';
@@ -13,20 +25,35 @@ import { SpotGrid } from './components/SpotGrid';
 import { Toast } from './components/Toast';
 import { WalletModal } from './components/WalletModal';
 import { useWallet, WalletProvider } from './context/WalletContext';
-import { createListingRecord, fetchConfig, fetchListings } from './services/api';
+import { SessionProvider, useSession } from './context/SessionContext';
+import { ApiError, createListingRecord, fetchConfig, fetchListings, searchListings, stageListingMetadata } from './services/api';
+import type { TxObserver } from './services/blockchain';
+import { patchTransaction, readTransactions, recordTransaction, staleTransactionsFor, transactionsFor, type TxKind, type TxRecord } from './utils/txStore';
+import { TransactionCenter } from './components/TransactionCenter';
+import { Inbox, useInbox } from './components/Inbox';
+import { HostWorkspace, heldWindows, ZoneList } from './components/HostWorkspace';
+import { ResolverQueue, REVIEW_ACTIONS, submitReview } from './components/Disputes';
+import { HostVerificationPanel, ModerationPanel, useVerifications } from './components/Verification';
 import {
   cancelAuction,
   claimPayout,
   createAuctionOnChain,
+  fetchBidAuctionIds,
+  fetchHostSpaces,
+  sendSpaceAction,
+  type HostSpace,
+  type SpaceAction,
   fetchPendingReturns,
   getContractInstance,
   parseContractError,
   placeBid,
+  sendBookingAction,
   settleAuction,
   TransactionOutcomeUnknown,
   withdrawRefund,
 } from './services/blockchain';
-import { parseEther } from 'ethers';
+import { Interface, parseEther } from 'ethers';
+import { BOOKING_ACTION_LABELS, type BookingAction } from './utils/booking';
 import type {
   AppTab,
   ChainSnapshot,
@@ -35,8 +62,10 @@ import type {
   FilterState,
   Listing,
   ListingsResponse,
+  SearchListing,
   SpotMetadata,
   ToastMessage,
+  UnindexedAuction,
 } from './types';
 import {
   deploymentKey,
@@ -67,6 +96,7 @@ import {
 interface ListingsState {
   deployment: string | null;
   data: Listing[];
+  unindexed: UnindexedAuction[];
   chain: ChainSnapshot | null;
   deploymentChanged: boolean;
   read: ReadState;
@@ -84,13 +114,15 @@ interface RefundIdentity {
 interface RefundState {
   identity: RefundIdentity;
   wei: bigint | null;
+  // Auctions this account bid on; null when the bid history could not be read.
+  bidIds: Set<string> | null;
   read: ReadState;
 }
 
 const EMPTY_LISTINGS: ListingsState = {
-  deployment: null, data: [], chain: null, deploymentChanged: false, read: LOADING_READ,
+  deployment: null, data: [], unindexed: [], chain: null, deploymentChanged: false, read: LOADING_READ,
 };
-const UNKNOWN_REFUND = { wei: null, read: LOADING_READ };
+const UNKNOWN_REFUND = { wei: null, bidIds: null, read: LOADING_READ };
 
 const sameRefundIdentity = (a: RefundIdentity, b: RefundIdentity) =>
   a.address === b.address && a.chainId === b.chainId && a.provider === b.provider &&
@@ -110,6 +142,12 @@ export const AppContent: React.FC<{
   onRefreshConfig: () => Promise<ReadResult>;
 }> = ({ config, configRead, onRefreshConfig }) => {
   const { walletState, signer, isCurrentSigner, provider, wrongChain, refreshBalance, balanceRead } = useWallet();
+  const { session, signIn: signInSession } = useSession();
+  // Listing details are an off-chain write, so the API requires a wallet sign-in for them.
+  const ensureSignedIn = async () => {
+    if (session || await signInSession()) return;
+    throw new Error('Sign in with your wallet to save listing details. Signing in proves wallet control only and moves no funds.');
+  };
 
   // Primary state
   const [listingsState, setListingsState] = useState<ListingsState>(EMPTY_LISTINGS);
@@ -125,10 +163,12 @@ export const AppContent: React.FC<{
   const listingsView =
     configDeployment === null || listingsState.deployment === configDeployment ? listingsState : EMPTY_LISTINGS;
   const listings = listingsView.data;
+  const inbox = useInbox(session?.address ?? null);
+  const verification = useVerifications(session?.address ?? null);
   const chain = listingsView.deploymentChanged ? null : listingsView.chain;
 
   // Navigation & View
-  const [currentTab, setCurrentTab] = useState<AppTab>('marketplace');
+  const [currentTab, setCurrentTab] = useState<AppTab>(() => (new URLSearchParams(window.location.search).get('tab') === 'activity' ? 'activity' : 'marketplace'));
   const [viewMode, setViewMode] = useState<'split' | 'cards' | 'map'>('split');
   const [selectedListingId, setSelectedListingId] = useState<string | null>(null);
 
@@ -146,6 +186,8 @@ export const AppContent: React.FC<{
   );
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isWalletModalOpen, setIsWalletModalOpen] = useState(false);
+  // The action a user started before connecting a wallet; it resumes once the wallet is ready.
+  const [intent, setIntent] = useState<{ kind: 'bid'; listingId: string; title: string } | { kind: 'create' } | null>(null);
 
   // Pending metadata registration recovery state
   const [pendingRegistration, setPendingRegistration] = useState<{
@@ -164,14 +206,83 @@ export const AppContent: React.FC<{
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   // Search & Filter State
-  const [filters, setFilters] = useState<FilterState>({
-    search: '',
-    kind: 'all',
-    status: 'all',
-    minPrice: '',
-    maxPrice: '',
-    sortBy: 'ending-soon',
-  });
+  const [filters, setFilters] = useState<FilterState>(() => filtersFromSearch(window.location.search));
+  // Keep the URL in step with the filters so a reload or shared link restores them.
+  useEffect(() => {
+    const search = filtersToSearch(filters, window.location.search);
+    if (search !== window.location.search) {
+      window.history.replaceState(window.history.state, '', `${window.location.pathname}${search}${window.location.hash}`);
+    }
+  }, [filters]);
+
+  // Every wallet transaction is recorded in the persisted transaction center, scoped to this
+  // account and deployment, so a reload never loses a submitted transaction or committed metadata.
+  const [txVersion, setTxVersion] = useState(0);
+  const sessionTxIds = useRef(new Set<string>());
+  const txScope = walletState.address && config && configDeployment
+    ? { account: walletState.address, chainId: config.chainId, contract: config.contractAddress, deployment: configDeployment }
+    : null;
+  const track = (kind: TxKind, label: string, extra: Partial<TxRecord> = {}): { id: string | null; observe?: TxObserver } => {
+    if (!txScope) return { id: null };
+    const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    sessionTxIds.current.add(id);
+    recordTransaction({ id, kind, label, status: 'awaiting-wallet', scope: txScope, ...extra });
+    setTxVersion((v) => v + 1);
+    return { id, observe: (update) => { patchTransaction(id, update); setTxVersion((v) => v + 1); } };
+  };
+  const txRecords = txScope ? transactionsFor(txScope) : [];
+  const staleTxCount = txScope ? staleTransactionsFor(txScope).length : 0;
+  void txVersion; // re-read the store whenever a transaction changes
+
+  // After a reload or reconnect, re-check transactions that were still in flight and pick up listings
+  // the API already recovered from staged metadata. This only reads the chain; nothing is re-sent.
+  useEffect(() => {
+    if (!txScope || !provider || !config) return;
+    let live = true;
+    const iface = new Interface(config.abi);
+    (async () => {
+      for (const r of transactionsFor(txScope)) {
+        if (!live) return;
+        if (r.status === 'awaiting-wallet' && !sessionTxIds.current.has(r.id)) {
+          patchTransaction(r.id, { status: 'unknown', error: 'The page reloaded before the wallet answered. Check your wallet activity.' });
+        } else if ((r.status === 'submitted' || r.status === 'confirming') && r.hash && !sessionTxIds.current.has(r.id)) {
+          const receipt = await provider.getTransactionReceipt(r.hash).catch(() => null);
+          if (receipt && config.confirmation === 'finalized') {
+            const finalized = await provider.getBlock('finalized').catch(() => null);
+            if (!finalized || receipt.blockNumber > finalized.number) continue;
+          }
+          if (receipt) {
+            let auctionId = r.auctionId;
+            for (const log of r.kind === 'create' && !auctionId ? receipt.logs : []) {
+              try {
+                const parsed = iface.parseLog(log);
+                if (parsed?.name === 'AuctionCreated') auctionId = parsed.args[0].toString();
+              } catch { /* another contract's log */ }
+            }
+            patchTransaction(r.id, {
+              status: receipt.status === 1 ? 'confirmed' : 'reverted',
+              ...(r.kind === 'create' && auctionId ? { auctionId, registered: false } : {}),
+            });
+          } else if (!(await provider.getTransaction(r.hash).catch(() => null))) {
+            patchTransaction(r.id, { status: 'unknown', error: 'The network no longer knows this transaction; it may have been replaced or dropped.' });
+          }
+        }
+        const current = readTransactions().find((x) => x.id === r.id);
+        if (current?.kind === 'create' && current.auctionId && !current.registered && listings.some((l) => l.id === current.auctionId)) {
+          patchTransaction(r.id, { registered: true });
+        }
+      }
+      if (live) setTxVersion((v) => v + 1);
+    })();
+    return () => { live = false; };
+  }, [txScope?.account, txScope?.deployment, provider, config, listings]);
+
+  const markRegistered = (auctionId: string) => {
+    for (const r of readTransactions()) {
+      if (r.kind === 'create' && r.auctionId === auctionId && !r.registered) patchTransaction(r.id, { registered: true });
+    }
+    setTxVersion((v) => v + 1);
+  };
 
   const addToast = useCallback(
     (type: 'success' | 'error' | 'info', title: string, message?: string, txHash?: string) => {
@@ -192,10 +303,17 @@ export const AppContent: React.FC<{
 
   const walletAddressRef = useRef(walletState.address);
   walletAddressRef.current = walletState.address;
+  const walletReadyRef = useRef(walletState.isReady);
+  walletReadyRef.current = walletState.isReady;
   const chainRef = useRef(chain);
   chainRef.current = chain;
 
   const handleOpenBidModal = useCallback((listing: Listing) => {
+    if (!walletReadyRef.current) {
+      setIntent({ kind: 'bid', listingId: listing.id, title: listing.title });
+      setIsWalletModalOpen(true);
+      return;
+    }
     if (!chainRef.current) {
       addToast('info', 'Bidding unavailable', 'Refresh the marketplace to confirm the current deployment.');
       return;
@@ -211,6 +329,17 @@ export const AppContent: React.FC<{
   const handleOpenDetailModal = useCallback((listing: Listing) => {
     if (chainRef.current) setDetailTarget(makeListingTarget(listing, chainRef.current));
   }, []);
+
+  useEffect(() => {
+    if (!intent || !walletState.isReady) return;
+    setIntent(null);
+    setIsWalletModalOpen(false);
+    if (intent.kind === 'create') setIsCreateOpen(true);
+    else {
+      const listing = listings.find((l) => l.id === intent.listingId);
+      if (listing) handleOpenBidModal(listing);
+    }
+  }, [intent, walletState.isReady, listings, handleOpenBidModal]);
 
   const listingsReqRef = useRef(0);
   const bidReadRef = useRef<{ deployment: string | null; promise: Promise<ListingsReadResult> } | null>(null);
@@ -253,6 +382,7 @@ export const AppContent: React.FC<{
       setListingsState({
         deployment: observedDeployment,
         data: snapshot.listings,
+        unindexed: snapshot.unindexed ?? [],
         chain: snapshot.chain,
         deploymentChanged: false,
         read: readSucceeded(snapshot.listings.length === 0),
@@ -293,6 +423,7 @@ export const AppContent: React.FC<{
     refundState && sameRefundIdentity(refundState.identity, refundIdentity) ? refundState : UNKNOWN_REFUND;
   const claimableRefundWei = refund.wei;
   const refundRead = refund.read;
+  const myBidAuctionIds = refund.bidIds;
 
   // Load pending returns from onchain contract
   const loadPendingRefunds = useCallback(async (): Promise<ReadResult> => {
@@ -308,7 +439,10 @@ export const AppContent: React.FC<{
     const fail = (err: unknown): ReadResult => {
       setRefundState((prev) => {
         const known = prev && sameRefundIdentity(prev.identity, identity) ? prev : null;
-        return { identity, wei: known?.wei ?? null, read: readFailed(known?.read ?? LOADING_READ, err) };
+        return {
+          identity, wei: known?.wei ?? null, bidIds: known?.bidIds ?? null,
+          read: readFailed(known?.read ?? LOADING_READ, err),
+        };
       });
       return readFailure(err);
     };
@@ -317,9 +451,16 @@ export const AppContent: React.FC<{
     if (!config?.contractAddress) return fail('Contract configuration is unavailable.');
     try {
       const readContract = getContractInstance(config.contractAddress, config.abi, provider);
-      const wei = await fetchPendingReturns(readContract, identity.address, config.confirmation);
+      // Bid history only explains the refund; failing to read it must not block a withdrawal.
+      const [wei, bidIds] = await Promise.all([
+        fetchPendingReturns(readContract, identity.address, config.confirmation),
+        fetchBidAuctionIds(readContract, identity.address, config.deploymentBlock, config.confirmation).catch((err) => {
+          console.warn('Failed to load bid history:', err);
+          return null;
+        }),
+      ]);
       if (!isCurrent()) return READ_SUPERSEDED;
-      setRefundState({ identity, wei, read: readSucceeded(wei === 0n) });
+      setRefundState({ identity, wei, bidIds, read: readSucceeded(wei === 0n) });
       return READ_OK;
     } catch (err) {
       console.warn('Failed to load pending returns:', err);
@@ -490,7 +631,8 @@ export const AppContent: React.FC<{
       }
 
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
-      const receipt = await placeBid(contract, listing.id, amountEth, config.confirmation);
+      const receipt = await placeBid(contract, listing.id, amountEth, config.confirmation,
+        track('bid', `Bid ${amountEth} ETH on auction #${listing.id}`, { auctionId: listing.id }).observe);
 
       addToast(
         'success',
@@ -507,7 +649,7 @@ export const AppContent: React.FC<{
         throw new Error('Transaction submitted; finality not established. Check the explorer before bidding again.');
       }
       if (err instanceof BidPreflightError) throw err;
-      const msg = parseContractError(err);
+      const msg = parseContractError(err, config?.abi);
       addToast('error', 'Bid Submission Failed', msg);
       // The chain may have moved (competing bid, cutoff); refresh so the open dialog shows current state.
       void loadListings();
@@ -523,7 +665,9 @@ export const AppContent: React.FC<{
     minBidEth: string,
     bidEndSec: number,
     parkingStartSec: number,
-    parkingEndSec: number
+    parkingEndSec: number,
+    spaceId?: string,
+    protectedBooking = false
   ) => {
     if (isActionBusy) return;
     if (!config?.contractAddress || !config.abi) {
@@ -546,7 +690,12 @@ export const AppContent: React.FC<{
     setIsActionBusy(true);
     try {
       await preflightWrite();
+      await ensureSignedIn();
+      // Save the exact metadata before signing: if registration is lost after the transaction,
+      // the server can still match the new auction's hash to these details.
+      await stageListingMetadata(metadata, webProfile.id === 'sepolia' ? expectedDeployment : undefined);
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
+      const created = track('create', `List "${metadata.title}"`, { metadata });
       const { receipt, auctionId } = await createAuctionOnChain(
         contract,
         metadata,
@@ -554,8 +703,12 @@ export const AppContent: React.FC<{
         bidEndSec,
         parkingStartSec,
         parkingEndSec,
-        config.confirmation
+        config.confirmation,
+        created.observe,
+        spaceId,
+        protectedBooking,
       );
+      if (created.id) patchTransaction(created.id, { auctionId, registered: false });
 
       // Register metadata on backend with retry retention
       try {
@@ -567,6 +720,7 @@ export const AppContent: React.FC<{
         } else {
           await createListingRecord(auctionId, metadata);
         }
+        markRegistered(auctionId);
         setPendingRegistration(null);
       } catch (postErr) {
         setPendingRegistration({ auctionId, metadata, deployment: expectedDeployment, txHash: receipt.hash });
@@ -595,9 +749,30 @@ export const AppContent: React.FC<{
         reportUnknown(err);
         throw new Error('Transaction submitted; finality not established. Check the explorer before creating another auction.');
       }
-      const msg = parseContractError(err);
+      const msg = parseContractError(err, config?.abi);
       addToast('error', 'Listing Notice', msg);
       throw new Error(msg);
+    } finally {
+      setIsActionBusy(false);
+    }
+  };
+
+  // Registers a confirmed listing from the transaction center using its stored, immutable metadata.
+  // No second createAuction is ever sent; only the off-chain details are registered.
+  const handleResumeRegistration = async (record: TxRecord) => {
+    if (isActionBusy || !config || !record.auctionId || !record.metadata || record.scope.deployment !== configDeployment) return;
+    setIsActionBusy(true);
+    try {
+      await ensureSignedIn();
+      await createListingRecord(record.auctionId, record.metadata, webProfile.id === 'sepolia' ? {
+        chainId: config.chainId, contractAddress: config.contractAddress,
+        deploymentBlock: config.deploymentBlock, deploymentBlockHash: config.deploymentBlockHash,
+      } : undefined);
+      markRegistered(record.auctionId);
+      addToast('success', 'Registration Confirmed', `Auction #${record.auctionId} metadata registered successfully.`);
+      await loadListings();
+    } catch (err) {
+      addToast('error', 'Registration failed', err instanceof Error ? err.message : String(err));
     } finally {
       setIsActionBusy(false);
     }
@@ -612,6 +787,7 @@ export const AppContent: React.FC<{
     }
     setIsActionBusy(true);
     try {
+      await ensureSignedIn();
       if (webProfile.id === 'sepolia') {
         await createListingRecord(auctionId, metadata, pendingRegistration.deployment);
       } else {
@@ -622,6 +798,7 @@ export const AppContent: React.FC<{
         'Registration Confirmed',
         `Auction #${auctionId} metadata registered successfully.`
       );
+      markRegistered(auctionId);
       setPendingRegistration(null);
       await loadListings();
       setSelectedListingId(auctionId);
@@ -653,7 +830,7 @@ export const AppContent: React.FC<{
     try {
       await preflightWrite();
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
-      const receipt = await withdrawRefund(contract, config.confirmation);
+      const receipt = await withdrawRefund(contract, config.confirmation, track('withdraw', 'Withdraw refund').observe);
 
       addToast(
         'success',
@@ -668,7 +845,7 @@ export const AppContent: React.FC<{
         reportUnknown(err);
         return;
       }
-      const msg = parseContractError(err);
+      const msg = parseContractError(err, config?.abi);
       addToast('error', 'Refund Withdrawal Failed', msg);
     } finally {
       setIsActionBusy(false);
@@ -687,7 +864,8 @@ export const AppContent: React.FC<{
     try {
       await preflightWrite(listing);
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
-      const receipt = await settleAuction(contract, listing.id, config.confirmation);
+      const receipt = await settleAuction(contract, listing.id, config.confirmation,
+        track('settle', `Settle auction #${listing.id}`, { auctionId: listing.id }).observe);
 
       addToast(
         'success',
@@ -702,7 +880,7 @@ export const AppContent: React.FC<{
         reportUnknown(err);
         return;
       }
-      const msg = parseContractError(err);
+      const msg = parseContractError(err, config?.abi);
       addToast('error', 'Settlement Failed', msg);
     } finally {
       setIsActionBusy(false);
@@ -721,7 +899,8 @@ export const AppContent: React.FC<{
     try {
       await preflightWrite(listing);
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
-      const receipt = await cancelAuction(contract, listing.id, config.confirmation);
+      const receipt = await cancelAuction(contract, listing.id, config.confirmation,
+        track('cancel', `Cancel auction #${listing.id}`, { auctionId: listing.id }).observe);
 
       addToast(
         'success',
@@ -737,7 +916,7 @@ export const AppContent: React.FC<{
         reportUnknown(err);
         return;
       }
-      const msg = parseContractError(err);
+      const msg = parseContractError(err, config?.abi);
       addToast('error', 'Cancellation Failed', msg);
     } finally {
       setIsActionBusy(false);
@@ -756,12 +935,15 @@ export const AppContent: React.FC<{
     try {
       await preflightWrite(listing);
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
-      const receipt = await claimPayout(contract, listing.id, config.confirmation);
+      const receipt = await claimPayout(contract, listing.id, config.confirmation,
+        track('claim', `Claim payout for auction #${listing.id}`, { auctionId: listing.id }).observe);
 
       addToast(
         'success',
         'Payout Claimed!',
-        `Host payout of ${formatEth(listing.highestBid)} ETH released to your wallet.`,
+        listing.booking?.protected
+          ? `Host payout of ${formatEth(listing.highestBid)} ETH credited to your refund balance. Withdraw it from My Activity.`
+          : `Host payout of ${formatEth(listing.highestBid)} ETH released to your wallet.`,
         receipt.hash
       );
 
@@ -771,89 +953,100 @@ export const AppContent: React.FC<{
         reportUnknown(err);
         return;
       }
-      const msg = parseContractError(err);
+      const msg = parseContractError(err, config?.abi);
       addToast('error', 'Payout Claim Failed', msg);
     } finally {
       setIsActionBusy(false);
     }
   };
 
+  const ZERO_REFERENCE = '0x' + '0'.repeat(64);
+  // Protected-booking actions (docs/booking-policy.md). Refunds and payouts are credits to withdraw.
+  const handleBookingAction = async (listing: Listing, action: BookingAction, text = '') => {
+    if (isActionBusy) return;
+    if (!config?.contractAddress || !config.abi || !walletState.isReady || wrongChain || !signer) {
+      addToast('error', 'Wallet Error', 'Wallet is not connected or connected to wrong network.');
+      return;
+    }
+    const label = BOOKING_ACTION_LABELS[action];
+    setIsActionBusy(true);
+    try {
+      await preflightWrite(listing);
+      // Reports and decisions carry only an opaque reference on-chain: the evidence or reason is stored
+      // server-side, readable by the parties and resolvers only.
+      const reference = REVIEW_ACTIONS.includes(action) ? await submitReview(listing.id, action, text) : ZERO_REFERENCE;
+      const contract = getContractInstance(config.contractAddress, config.abi, signer);
+      const receipt = await sendBookingAction(contract, listing.id, action, reference, config.confirmation,
+        track('booking', `${label} for auction #${listing.id}`, { auctionId: listing.id }).observe);
+      addToast('success', label, `Confirmed on-chain for auction #${listing.id}.`, receipt.hash);
+      await Promise.all([loadListings(), refreshBalance()]);
+    } catch (err) {
+      if (err instanceof TransactionOutcomeUnknown) {
+        reportUnknown(err);
+        return;
+      }
+      addToast('error', `${label} failed`, parseContractError(err, config?.abi));
+    } finally {
+      setIsActionBusy(false);
+    }
+  };
+
   // Filter & Sort Logic
-  const filteredListings = useMemo(() => {
-    const now = getChainNowSec();
-    const searchLower = filters.search.trim().toLowerCase();
+  const destinationChoices = useMemo(() => destinationOptions(listings), [listings]);
+  const destination = resolveDestination(filters.destination, destinationChoices);
+  const { listings: filteredListings, distances } = useMemo(
+    () => discoverListings(listings, filters, getChainNowSec(), destination),
+    [listings, filters, destination]
+  );
 
-    return listings
-      .filter((item) => {
-        // Search text
-        if (searchLower) {
-          const matchTitle = item.title.toLowerCase().includes(searchLower);
-          const matchAddr = item.address.toLowerCase().includes(searchLower);
-          const matchNeigh = item.neighborhood.toLowerCase().includes(searchLower);
-          const matchDesc = item.description.toLowerCase().includes(searchLower);
-          const matchAmenity = item.amenities?.some((a) =>
-            a.toLowerCase().includes(searchLower)
-          );
-          if (!matchTitle && !matchAddr && !matchNeigh && !matchDesc && !matchAmenity) {
-            return false;
-          }
-        }
-
-        // Kind filter
-        if (filters.kind !== 'all' && item.kind !== filters.kind) {
-          return false;
-        }
-
-        // Status filter
-        if (filters.status !== 'all') {
-          if (filters.status === 'active') {
-            if (item.bidEnd <= now || item.settled || item.cancelled) return false;
-          } else if (filters.status === 'ending-soon') {
-            if (item.bidEnd <= now || item.bidEnd - now >= 1800 || item.settled || item.cancelled) {
-              return false;
-            }
-          } else if (filters.status === 'ended') {
-            if (item.bidEnd > now || item.settled || item.cancelled) return false;
-          } else if (filters.status === 'settled') {
-            if (!item.settled) return false;
-          }
-        }
-
-        // Price filter
-        const priceNum =
-          parseFloat(item.highestBid) > 0
-            ? parseFloat(item.highestBid)
-            : parseFloat(item.minBid);
-        if (filters.minPrice && priceNum < parseFloat(filters.minPrice)) return false;
-        if (filters.maxPrice && priceNum > parseFloat(filters.maxPrice)) return false;
-
-        return true;
-      })
-      .sort((a, b) => {
-        const priceA = parseFloat(a.highestBid) > 0 ? parseFloat(a.highestBid) : parseFloat(a.minBid);
-        const priceB = parseFloat(b.highestBid) > 0 ? parseFloat(b.highestBid) : parseFloat(b.minBid);
-
-        switch (filters.sortBy) {
-          case 'ending-soon': {
-            const aEnded = a.bidEnd <= now || a.settled;
-            const bEnded = b.bidEnd <= now || b.settled;
-            if (aEnded && !bEnded) return 1;
-            if (!aEnded && bEnded) return -1;
-            return a.bidEnd - b.bidEnd;
-          }
-          case 'starts-soon':
-            return a.parkingStart - b.parkingStart;
-          case 'price-asc':
-            return priceA - priceB;
-          case 'price-desc':
-            return priceB - priceA;
-          case 'newest':
-            return parseInt(b.id, 10) - parseInt(a.id, 10);
-          default:
-            return 0;
-        }
-      });
-  }, [listings, filters]);
+  // The server answers the same filters with bounded, block-pinned pages. Until its answer for the
+  // current query and deployment arrives (or if it fails), the loaded snapshot is filtered locally.
+  const searchKey = searchQuery(filters, destination);
+  const [serverSearch, setServerSearch] = useState<{
+    key: string; deployment: string | null; listings: SearchListing[]; total: number; nextCursor: string | null; loadingMore: boolean;
+  } | null>(null);
+  const [searchNonce, setSearchNonce] = useState(0);
+  const snapshotBlock = listingsView.chain?.blockNumber;
+  const listingsDeployment = listingsView.deployment;
+  useEffect(() => {
+    if (snapshotBlock === undefined) return;
+    let live = true;
+    const timer = setTimeout(() => {
+      searchListings(searchKey)
+        .then((r) => {
+          if (!live) return;
+          const deployment = r.chain ? deploymentKey(r.chain) : null;
+          setServerSearch(deployment === listingsDeployment
+            ? { key: searchKey, deployment, listings: r.listings, total: r.total, nextCursor: r.nextCursor, loadingMore: false }
+            : null);
+        })
+        .catch(() => { if (live) setServerSearch(null); });
+    }, 150);
+    return () => { live = false; clearTimeout(timer); };
+  }, [searchKey, snapshotBlock, listingsDeployment, searchNonce]);
+  const serverResult = serverSearch?.key === searchKey && serverSearch.deployment === listingsDeployment ? serverSearch : null;
+  const shownListings: Listing[] = serverResult ? serverResult.listings : filteredListings;
+  const shownDistances = useMemo(
+    () => serverResult
+      ? new Map(serverResult.listings.flatMap((l) => (l.distanceKm === undefined ? [] : [[l.id, l.distanceKm] as const])))
+      : distances,
+    [serverResult, distances]
+  );
+  const loadMoreResults = useCallback(async () => {
+    const current = serverSearch;
+    if (!current?.nextCursor || current.loadingMore) return;
+    setServerSearch({ ...current, loadingMore: true });
+    try {
+      const page = await searchListings(current.key, current.nextCursor);
+      setServerSearch((s) => s?.key === current.key && s.nextCursor === current.nextCursor
+        ? { ...s, listings: [...s.listings, ...page.listings], nextCursor: page.nextCursor, loadingMore: false }
+        : s);
+    } catch (err) {
+      // A cursor whose block was replaced starts the search again from the first page.
+      if (err instanceof ApiError && err.status === 409) setSearchNonce((n) => n + 1);
+      setServerSearch((s) => (s === null ? s : { ...s, loadingMore: false }));
+    }
+  }, [serverSearch]);
 
   // Compute active bids count for badge
   const activeBidsCount = useMemo(() => {
@@ -869,6 +1062,72 @@ export const AppContent: React.FC<{
         l.bidEnd > now
     ).length;
   }, [listings, walletState.address]);
+
+  // Spaces this wallet owns or may list on, read from the chain, reloaded after each space action.
+  const [spacesNonce, setSpacesNonce] = useState(0);
+  const [hostSpacesState, setHostSpacesState] = useState<{ key: string; spaces: HostSpace[]; error: string | null }>({ key: '', spaces: [], error: null });
+  const hostSpacesKey = walletState.address && configDeployment && walletState.isReady ? `${walletState.address}|${configDeployment}` : '';
+  useEffect(() => {
+    if (!hostSpacesKey || !provider || !config?.contractAddress) return;
+    let live = true;
+    const contract = getContractInstance(config.contractAddress, config.abi, provider);
+    fetchHostSpaces(contract, walletState.address as string, config.deploymentBlock, config.confirmation).then(
+      (spaces) => { if (live) setHostSpacesState({ key: hostSpacesKey, spaces, error: null }); },
+      (err) => { if (live) setHostSpacesState({ key: hostSpacesKey, spaces: [], error: err instanceof Error ? err.message : String(err) }); },
+    );
+    return () => { live = false; };
+  }, [hostSpacesKey, spacesNonce, provider, config]);
+  const hostSpaces = hostSpacesState.key === hostSpacesKey ? hostSpacesState.spaces : [];
+
+  // The wallet's spaces and the windows each still holds, mirroring the contract's holdsWindow rule.
+  const ownedSpaces = useMemo<OwnedSpace[]>(() => {
+    if (!walletState.address) return [];
+    const now = getChainNowSec();
+    const addr = walletState.address.toLowerCase();
+    const spaces = new Map<string, OwnedSpace>();
+    for (const l of listings) {
+      if (l.owner.toLowerCase() === addr && !spaces.has(l.spaceId)) spaces.set(l.spaceId, { id: l.spaceId, title: l.title, held: [] });
+    }
+    for (const h of hostSpaces) {
+      if (!spaces.has(h.id)) {
+        const latest = listings.find((l) => l.spaceId === h.id);
+        spaces.set(h.id, { id: h.id, title: latest?.title ?? 'No listings yet', held: [], lister: h.isLister });
+      }
+    }
+    for (const space of spaces.values()) {
+      space.title = listings.find((l) => l.spaceId === space.id)?.title ?? space.title;
+      space.held = heldWindows(listings, space.id, now);
+    }
+    return [...spaces.values()].sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+  }, [listings, hostSpaces, walletState.address]);
+
+  // Space-control transactions (listers, transfer, time zone, blocked dates): sign, then re-read the chain.
+  const handleSpaceAction = async (action: SpaceAction, label: string): Promise<boolean> => {
+    if (isActionBusy) return false;
+    if (!config?.contractAddress || !config.abi || !walletState.isReady || wrongChain || !signer) {
+      addToast('error', 'Wallet Error', 'Wallet is not connected or connected to wrong network.');
+      return false;
+    }
+    setIsActionBusy(true);
+    try {
+      await preflightWrite();
+      const contract = getContractInstance(config.contractAddress, config.abi, signer);
+      const receipt = await sendSpaceAction(contract, action, config.confirmation, track('space', label).observe);
+      addToast('success', 'Space updated', label, receipt.hash);
+      setSpacesNonce((n) => n + 1);
+      await loadListings();
+      return true;
+    } catch (err) {
+      if (err instanceof TransactionOutcomeUnknown) {
+        reportUnknown(err);
+        return false;
+      }
+      addToast('error', 'Space action failed', parseContractError(err, config?.abi));
+      return false;
+    } finally {
+      setIsActionBusy(false);
+    }
+  };
 
   const readSources: ReadSource[] = [
     {
@@ -916,6 +1175,11 @@ export const AppContent: React.FC<{
             addToast('info', 'Transaction submitted; finality not established', 'Check the earlier creation in the explorer before creating another auction.', unconfirmedCreationRef.current);
             return;
           }
+          if (!walletState.isReady) {
+            setIntent({ kind: 'create' });
+            setIsWalletModalOpen(true);
+            return;
+          }
           setIsCreateOpen(true);
         }}
         onOpenWalletModal={() => setIsWalletModalOpen(true)}
@@ -924,6 +1188,11 @@ export const AppContent: React.FC<{
         claimableRefundEth={claimableRefundWei === null ? undefined : formatEth(claimableRefundWei)}
         refundStatus={refundRead.status}
         activeBidsCount={activeBidsCount}
+        inboxUnread={session ? (inbox.data && !inbox.error ? inbox.data.unread : null) : undefined}
+        onOpenInbox={() => {
+          setCurrentTab('activity');
+          requestAnimationFrame(() => document.getElementById('inbox-title')?.scrollIntoView({ block: 'start' }));
+        }}
       />
 
       <ReadStatusBanner sources={readSources} isRetrying={isRefreshing} />
@@ -949,6 +1218,20 @@ export const AppContent: React.FC<{
       <main className="site-main">
         {currentTab === 'marketplace' && (
           <div className="marketplace-container">
+            {listingsView.unindexed.length > 0 && (
+              <div className="pending-registration-alert unindexed-alert" role="status">
+                <div className="pending-alert-content">
+                  {listingsView.unindexed.length === 1 ? 'One on-chain auction has' : `${listingsView.unindexed.length} on-chain auctions have`} no
+                  registered details yet (auction {listingsView.unindexed.map((a) => `#${a.id}`).join(', ')}). They exist and can
+                  hold bids, but can't be shown here until their seller completes registration.
+                </div>
+              </div>
+            )}
+            <CampusScenarioBanner
+              scenario={config?.seedScenario}
+              listings={listings}
+              listingsStatus={listingsView.read.status}
+            />
             {pendingRegistration && (
               <div className="pending-registration-alert">
                 <div className="pending-alert-content">
@@ -969,8 +1252,11 @@ export const AppContent: React.FC<{
             <FilterBar
               filters={filters}
               onFilterChange={setFilters}
+              destinationChoices={destinationChoices}
+              destination={destination}
+              amenityChoices={amenityOptions(listings, filters.amenities)}
               totalSpots={listings.length}
-              filteredCount={filteredListings.length}
+              filteredCount={serverResult ? serverResult.total : filteredListings.length}
               listingsStatus={listingsView.read.status}
               viewMode={viewMode}
               onViewModeChange={setViewMode}
@@ -982,7 +1268,7 @@ export const AppContent: React.FC<{
               {(viewMode === 'split' || viewMode === 'cards') && (
                 <div className="layout-cards-column">
                   <SpotGrid
-                    listings={filteredListings}
+                    listings={shownListings}
                     status={listingsView.read.status}
                     error={listingsView.read.error}
                     onRetry={() => void retrySource('Listings', loadListings)}
@@ -992,16 +1278,15 @@ export const AppContent: React.FC<{
                     onOpenBid={handleOpenBidModal}
                     onOpenDetail={handleOpenDetailModal}
                     onSettle={handleSettleListing}
-                    onResetFilters={() =>
-                      setFilters({
-                        search: '',
-                        kind: 'all',
-                        status: 'all',
-                        minPrice: '',
-                        maxPrice: '',
-                        sortBy: 'ending-soon',
-                      })
-                    }
+                    onResetFilters={() => setFilters(DEFAULT_FILTERS)}
+                    activeFilters={describeFilters(filters, destination)}
+                    distances={shownDistances}
+                    destinationLabel={destination?.label ?? null}
+                    more={serverResult && {
+                      remaining: serverResult.total - serverResult.listings.length,
+                      loading: serverResult.loadingMore,
+                      onLoad: () => void loadMoreResults(),
+                    }}
                   />
                 </div>
               )}
@@ -1010,7 +1295,7 @@ export const AppContent: React.FC<{
               {(viewMode === 'split' || viewMode === 'map') && (
                 <div className="layout-map-column">
                   <ParkingMap
-                    listings={filteredListings}
+                    listings={shownListings}
                     currentAddress={walletState.address}
                     selectedListingId={selectedListingId}
                     onSelectListing={handleSelectListing}
@@ -1029,6 +1314,8 @@ export const AppContent: React.FC<{
             listings={listings}
             claimableRefundWei={claimableRefundWei}
             refundRead={refundRead}
+            myBidAuctionIds={myBidAuctionIds}
+            listingsRead={listingsView.read}
             onRetryRefund={() => void retrySource('Refund balance', loadPendingRefunds)}
             onWithdrawRefund={handleWithdrawRefund}
             onSettleListing={handleSettleListing}
@@ -1036,6 +1323,60 @@ export const AppContent: React.FC<{
             onClaimPayoutListing={handleClaimPayout}
             onOpenListingDetail={handleOpenDetailModal}
             onOpenBid={handleOpenBidModal}
+            onConnectWallet={() => setIsWalletModalOpen(true)}
+            isActionBusy={isActionBusy}
+            deployment={config ? { chainId: config.chainId, contractAddress: config.contractAddress } : null}
+          />
+        )}
+        {currentTab === 'activity' && session && (
+          <Inbox
+            inbox={inbox}
+            onOpenListing={(auctionId) => {
+              const listing = listings.find((l) => l.id === auctionId);
+              if (listing) handleOpenDetailModal(listing);
+              else addToast('info', 'Listing not available', `Auction #${auctionId} is not in the current listings.`);
+            }}
+          />
+        )}
+        {currentTab === 'activity' && hostSpacesKey && (
+          <>
+            <ZoneList />
+            <HostWorkspace
+              key={`${hostSpacesKey}|${Boolean(session)}`}
+              signedIn={Boolean(session)}
+              spaces={hostSpaces}
+              spacesError={hostSpacesState.key === hostSpacesKey ? hostSpacesState.error : null}
+              listings={listings}
+              verifications={verification.verifications}
+              isActionBusy={isActionBusy}
+              onSpaceAction={handleSpaceAction}
+              onPublish={handleCreateListing}
+              onSignIn={() => void signInSession()}
+            />
+          </>
+        )}
+        {currentTab === 'activity' && session && (
+          <HostVerificationPanel spaces={ownedSpaces.filter((space) => !space.lister)} state={verification} />
+        )}
+        {currentTab === 'activity' && session && verification.moderator && <ModerationPanel />}
+        {currentTab === 'activity' && session && (
+          <ResolverQueue
+            refreshKey={listingsView.chain?.blockNumber}
+            nowSec={getChainNowSec()}
+            busy={isActionBusy}
+            onAct={async (auctionId, action, text) => {
+              const listing = listings.find((l) => l.id === auctionId);
+              if (listing) await handleBookingAction(listing, action, text);
+              else addToast('info', 'Listing not available', `Auction #${auctionId} is not in the current listings.`);
+            }}
+          />
+        )}
+        {currentTab === 'activity' && txScope && (
+          <TransactionCenter
+            records={txRecords}
+            staleCount={staleTxCount}
+            explorerUrl={config?.explorerUrl}
+            onCompleteRegistration={(record) => void handleResumeRegistration(record)}
             isActionBusy={isActionBusy}
           />
         )}
@@ -1048,12 +1389,15 @@ export const AppContent: React.FC<{
       <DetailModal
         listing={detailListing}
         contractAddress={config?.contractAddress}
+        chainId={config?.chainId}
         currentAddress={walletState.address}
+        signedIn={Boolean(session)}
         onClose={() => setDetailTarget(null)}
         onOpenBid={handleOpenBidModal}
         onSettle={handleSettleListing}
         onCancel={handleCancelListing}
         onClaimPayout={handleClaimPayout}
+        onBookingAction={handleBookingAction}
         isActionBusy={isActionBusy}
       />
 
@@ -1074,12 +1418,14 @@ export const AppContent: React.FC<{
         onRetryRegistration={handleRetryRegistration}
         pendingRegistration={pendingRegistration}
         isSubmitting={isActionBusy}
+        spaces={ownedSpaces}
       />
 
       {/* Wallet Management Modal */}
       <WalletModal
         isOpen={isWalletModalOpen}
-        onClose={() => setIsWalletModalOpen(false)}
+        onClose={() => { setIsWalletModalOpen(false); setIntent(null); }}
+        continueLabel={intent ? (intent.kind === 'create' ? 'list a spot' : `bid on ${intent.title}`) : undefined}
       />
 
       {/* Toast notifications */}
@@ -1121,7 +1467,9 @@ export const App: React.FC = () => {
 
   return (
     <WalletProvider config={configState.config}>
-      <AppContent config={configState.config} configRead={configState.read} onRefreshConfig={refreshConfig} />
+      <SessionProvider>
+        <AppContent config={configState.config} configRead={configState.read} onRefreshConfig={refreshConfig} />
+      </SessionProvider>
     </WalletProvider>
   );
 };

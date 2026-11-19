@@ -4,3 +4,6 @@ export function validateSpotMetadata(input: unknown): {
   error?: string;
   normalized?: SpotMetadata;
 };
+
+/** True for an https URL or a safe local path starting with a single slash. */
+export function isValidImageUrl(url: string): boolean;
