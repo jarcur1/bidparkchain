@@ -11,7 +11,11 @@ import {
 } from 'lucide-react';
 import { useWallet } from '../context/WalletContext';
 import type { SpotMetadata } from '../types';
-import { validateSpotMetadata } from '../../shared/validation.js';
+import { isValidImageUrl, validateSpotMetadata } from '../../shared/validation.js';
+import { useSession } from '../context/SessionContext';
+import { deleteDraft, listDrafts, saveDraft } from '../services/workspace';
+import { getChainNowSec } from '../utils/eligibility';
+import { epochToZoned, findConflicts, isValidZone, parseSchedule } from '../utils/schedule';
 import {
   AUSTIN_PRESET_LOCATIONS,
   COMMON_AMENITIES,
@@ -20,40 +24,6 @@ import {
 import { webProfile } from '../utils/networkProfile';
 import { formatDateTime } from '../utils/formatters';
 import { Dialog } from './Dialog';
-
-interface ParkingWindowOption {
-  id: string;
-  label: string;
-  startDelayAfterCutoffMin: number;
-  durationMin: number;
-}
-
-const PARKING_WINDOW_OPTIONS: readonly ParkingWindowOption[] = [
-  {
-    id: 'immediate-2h',
-    label: 'Starts at cutoff (2 hours reserved)',
-    startDelayAfterCutoffMin: 0,
-    durationMin: 120,
-  },
-  {
-    id: 'delay30m-3h',
-    label: 'Starts +30m after cutoff (3.5 hours reserved)',
-    startDelayAfterCutoffMin: 30,
-    durationMin: 210,
-  },
-  {
-    id: 'delay1h-5h',
-    label: 'Starts +1h after cutoff (5 hours reserved)',
-    startDelayAfterCutoffMin: 60,
-    durationMin: 300,
-  },
-  {
-    id: 'delay2h-6h',
-    label: 'Starts +2h after cutoff (6 hours reserved)',
-    startDelayAfterCutoffMin: 120,
-    durationMin: 360,
-  },
-] as const;
 
 export const PUBLIC_WARNING =
   'Public: this description is shown to everyone, including in the public API. Do not enter private or access-related information; private instructions are not supported.';
@@ -65,7 +35,28 @@ export interface OwnedSpace {
   held: { start: number; end: number }[];
   /** True when the wallet may list on the space only as an approved lister. */
   lister?: boolean;
+  /** IANA zone set on-chain; empty or missing until the owner sets one. */
+  timeZone?: string;
+  /** Upcoming blocked windows. */
+  blocked?: { start: number; end: number }[];
 }
+
+const browserZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
+/** The one autosaved draft per wallet, kept under this name. */
+export const AUTOSAVE_NAME = 'Autosaved listing';
+const AUTOSAVE_DELAY_MS = 1500;
+
+/** Default schedule: bidding closes in an hour, parking runs three hours starting 30 minutes later. */
+function defaultSchedule(zone: string) {
+  const now = getChainNowSec();
+  return {
+    cutoff: epochToZoned(now + 3600, zone),
+    start: epochToZoned(now + 3600 + 1800, zone),
+    end: epochToZoned(now + 3600 + 1800 + 3 * 3600, zone),
+  };
+}
+
+type SaveState = 'idle' | 'unsaved' | 'saving' | 'saved' | 'error';
 
 interface CreateListingModalProps {
   isOpen: boolean;
@@ -113,8 +104,9 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
 
   // Auction parameters
   const [minBidEth, setMinBidEth] = useState('0.05');
-  const [bidDurationMinutes, setBidDurationMinutes] = useState(60); // 1 hour
-  const [selectedWindowId, setSelectedWindowId] = useState<string>('delay30m-3h');
+  const [cutoff, setCutoff] = useState('');
+  const [parkStart, setParkStart] = useState('');
+  const [parkEnd, setParkEnd] = useState('');
   const [spaceId, setSpaceId] = useState('');
   const [protectedBooking, setProtectedBooking] = useState(false);
 
@@ -139,6 +131,97 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
       setFormError(null);
     }
   }, [pendingRegistration]);
+
+  // The space's own zone once it exists on-chain; the browser's zone for a new space.
+  const space = spaces.find((sp) => sp.id === spaceId) ?? null;
+  const zoneIsSet = Boolean(space?.timeZone && isValidZone(space.timeZone));
+  const zone = zoneIsSet ? (space?.timeZone as string) : browserZone();
+
+  // Fill the schedule with defaults when the form opens (and again after a listing is made).
+  useEffect(() => {
+    if (isOpen && !pendingRegistration && !cutoff && !parkStart && !parkEnd) {
+      const d = defaultSchedule(zone);
+      setCutoff(d.cutoff);
+      setParkStart(d.start);
+      setParkEnd(d.end);
+    }
+  }, [isOpen, pendingRegistration, cutoff, parkStart, parkEnd, zone]);
+
+  const [nowSec, setNowSec] = useState(() => getChainNowSec());
+  useEffect(() => {
+    if (!isOpen) return;
+    setNowSec(getChainNowSec());
+    const timer = setInterval(() => setNowSec(getChainNowSec()), 30_000);
+    return () => clearInterval(timer);
+  }, [isOpen]);
+
+  const parsed = parseSchedule({ cutoff, start: parkStart, end: parkEnd }, zone, nowSec);
+  const conflicts = parsed.schedule && space
+    ? findConflicts({ start: parsed.schedule.start, end: parsed.schedule.end }, space.held, space.blocked ?? [])
+    : [];
+  const canProtect = Boolean(parsed.schedule && parsed.schedule.start - parsed.schedule.bidEnd >= 30 * 60);
+
+  // Autosave: one private draft per signed-in wallet, saved shortly after the last change.
+  const { session } = useSession();
+  const sessionAddress = session?.address ?? null;
+  const [saveState, setSaveState] = useState<SaveState>('idle');
+  const autosaveId = useRef<number | null>(null);
+  const lastSaved = useRef('');
+  const restoredFor = useRef<string | null>(null);
+  const fieldsJson = JSON.stringify({
+    title, address, neighborhood, description, spotKind: kind, latitude, longitude, minBidEth, spaceId,
+    cutoff, start: parkStart, end: parkEnd, amenities: selectedAmenities,
+    ...(isValidImageUrl(imageUrl.trim()) ? { image: imageUrl.trim() } : {}),
+  });
+  const hasContent = Boolean(title.trim() || address.trim() || description.trim());
+
+  // After sign-in, bring back the saved draft unless the form already has text.
+  useEffect(() => {
+    if (!isOpen || pendingRegistration || !sessionAddress || restoredFor.current === sessionAddress) return;
+    restoredFor.current = sessionAddress;
+    autosaveId.current = null;
+    let live = true;
+    listDrafts().then((drafts) => {
+      const d = drafts.find((x) => x.name === AUTOSAVE_NAME && x.kind === 'draft');
+      if (!live || !d) return;
+      autosaveId.current = d.id;
+      if (title.trim() || address.trim() || description.trim()) return;
+      if (d.title !== undefined) setTitle(d.title);
+      if (d.address !== undefined) setAddress(d.address);
+      if (d.neighborhood !== undefined) setNeighborhood(d.neighborhood);
+      if (d.description !== undefined) setDescription(d.description);
+      if (d.spotKind) setKind(d.spotKind);
+      if (d.latitude !== undefined) setLatitude(d.latitude);
+      if (d.longitude !== undefined) setLongitude(d.longitude);
+      if (d.image) setImageUrl(d.image);
+      if (d.minBidEth) setMinBidEth(d.minBidEth);
+      if (d.amenities) setSelectedAmenities(d.amenities);
+      if (d.spaceId !== undefined) setSpaceId(spaces.some((sp) => sp.id === d.spaceId) ? d.spaceId : '');
+      // Saved dates that have passed are replaced by fresh defaults.
+      const saved = parseSchedule({ cutoff: d.cutoff ?? '', start: d.start ?? '', end: d.end ?? '' }, zone, getChainNowSec());
+      if (saved.schedule) { setCutoff(d.cutoff as string); setParkStart(d.start as string); setParkEnd(d.end as string); }
+      setSaveState('saved');
+    }, () => {});
+    return () => { live = false; };
+  }, [isOpen, pendingRegistration, sessionAddress]);
+
+  useEffect(() => {
+    if (!sessionAddress) restoredFor.current = null;
+  }, [sessionAddress]);
+
+  useEffect(() => {
+    if (!sessionAddress || pendingRegistration || !hasContent || fieldsJson === lastSaved.current) return;
+    setSaveState('unsaved');
+    const timer = setTimeout(() => {
+      setSaveState('saving');
+      saveDraft(autosaveId.current, 'draft', AUTOSAVE_NAME, JSON.parse(fieldsJson)).then((id) => {
+        autosaveId.current = id;
+        lastSaved.current = fieldsJson;
+        setSaveState('saved');
+      }, () => setSaveState('error'));
+    }, AUTOSAVE_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [fieldsJson, sessionAddress, pendingRegistration, hasContent]);
 
   useLayoutEffect(() => {
     if (isOpen && preview) previewHeadingRef.current?.focus();
@@ -188,12 +271,11 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
     JSON.stringify(
       pendingRegistration
         ? ['pending', pendingRegistration.auctionId, pendingRegistration.metadata]
-        : [buildMetadata(), minBidEth, bidDurationMinutes, selectedWindowId, spaceId, protectedBooking]
+        : [buildMetadata(), minBidEth, cutoff, parkStart, parkEnd, zone, spaceId, protectedBooking]
     );
 
   // A preview is only valid while the inputs it was built from are unchanged.
   const activePreview = preview && preview.key === previewKey() ? preview : null;
-  const canProtect = (PARKING_WINDOW_OPTIONS.find((o) => o.id === selectedWindowId)?.startDelayAfterCutoffMin ?? 0) >= 30;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -232,6 +314,14 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
         setFormError('Please provide a valid minimum bid in ETH.');
         return;
       }
+      if (!parsed.schedule) {
+        setFormError(parsed.error);
+        return;
+      }
+      if (conflicts.length > 0) {
+        setFormError('The window overlaps a held or blocked window on this space. Choose other times or another space.');
+        return;
+      }
     }
 
     setPreview({ key: previewKey(), metadata: validation.normalized });
@@ -254,25 +344,8 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
       return;
     }
 
-    // Coherent window calculation: start delay and duration bound together
-    const windowOption =
-      PARKING_WINDOW_OPTIONS.find((o) => o.id === selectedWindowId) ||
-      PARKING_WINDOW_OPTIONS[1];
-
-    const nowSec = Math.floor(Date.now() / 1000);
-    const bidEndSec = nowSec + bidDurationMinutes * 60;
-    const parkingStartSec = bidEndSec + windowOption.startDelayAfterCutoffMin * 60;
-    const parkingEndSec = parkingStartSec + windowOption.durationMin * 60;
-
-    if (parkingStartSec < bidEndSec) {
-      setFormError('Parking start time must be after or at bidding cutoff.');
-      return;
-    }
-
-    if (parkingEndSec <= parkingStartSec) {
-      setFormError('Parking end time must be after parking start time.');
-      return;
-    }
+    if (!parsed.schedule || conflicts.length > 0) return;
+    const { bidEnd: bidEndSec, start: parkingStartSec, end: parkingEndSec } = parsed.schedule;
 
     try {
       await onSubmitCreate(
@@ -284,6 +357,12 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
         spaceId || undefined,
         protectedBooking && canProtect
       );
+      // The listing is made: drop the autosaved draft and start the next one from fresh defaults.
+      if (autosaveId.current !== null) void deleteDraft(autosaveId.current).catch(() => {});
+      autosaveId.current = null;
+      lastSaved.current = '';
+      setSaveState('idle');
+      setCutoff(''); setParkStart(''); setParkEnd('');
       handleClose();
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Failed to create auction');
@@ -600,45 +679,37 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
                     <span className="currency-suffix">ETH</span>
                   </div>
                 </div>
+              </div>
 
+              <p className="auction-disclosure-subtext" data-testid="schedule-zone">
+                Times are in {zone}{zoneIsSet ? ' (this space’s time zone)' : space ? ' (no time zone set on this space yet; showing your browser’s zone)' : ' (your browser’s zone; set one on the space after it exists)'}.
+              </p>
+              <div className="form-grid-3col">
                 <div className="form-field">
-                  <label htmlFor="bid-duration" className="form-label">
-                    Bidding Cutoff
-                  </label>
-                  <select
-                    id="bid-duration"
-                    className="form-select"
-                    value={bidDurationMinutes}
-                    onChange={(e) => setBidDurationMinutes(parseInt(e.target.value, 10))}
-                    disabled={isSubmitting}
-                  >
-                    <option value={15}>15 minutes from now</option>
-                    <option value={30}>30 minutes from now</option>
-                    <option value={60}>1 hour from now</option>
-                    <option value={120}>2 hours from now</option>
-                    <option value={240}>4 hours from now</option>
-                  </select>
+                  <label htmlFor="bid-cutoff" className="form-label">Bidding Cutoff</label>
+                  <input id="bid-cutoff" type="datetime-local" className="form-input" value={cutoff}
+                    onChange={(e) => setCutoff(e.target.value)} disabled={isSubmitting} />
                 </div>
-
                 <div className="form-field">
-                  <label htmlFor="parking-duration" className="form-label">
-                    Parking Window
-                  </label>
-                  <select
-                    id="parking-duration"
-                    className="form-select"
-                    value={selectedWindowId}
-                    onChange={(e) => setSelectedWindowId(e.target.value)}
-                    disabled={isSubmitting}
-                  >
-                    {PARKING_WINDOW_OPTIONS.map((opt) => (
-                      <option key={opt.id} value={opt.id}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
+                  <label htmlFor="parking-start" className="form-label">Parking Starts</label>
+                  <input id="parking-start" type="datetime-local" className="form-input" value={parkStart}
+                    onChange={(e) => setParkStart(e.target.value)} disabled={isSubmitting} />
+                </div>
+                <div className="form-field">
+                  <label htmlFor="parking-end" className="form-label">Parking Ends</label>
+                  <input id="parking-end" type="datetime-local" className="form-input" value={parkEnd}
+                    onChange={(e) => setParkEnd(e.target.value)} disabled={isSubmitting} />
                 </div>
               </div>
+              {conflicts.length > 0 && (
+                <p role="alert" className="workspace-conflicts" data-testid="schedule-conflicts">
+                  Overlaps a held or blocked window on this space: {conflicts.map((c) => `${c.kind} ${formatDateTime(c.start)} to ${formatDateTime(c.end)}`).join('; ')}.
+                </p>
+              )}
+              {parsed.error && (cutoff || parkStart || parkEnd) && <p role="alert" className="workspace-conflicts" data-testid="schedule-error">{parsed.error}</p>}
+              {parsed.schedule && space && conflicts.length === 0 && (
+                <p role="status" data-testid="schedule-clear">No conflicts with held or blocked windows. The contract checks again when you sign.</p>
+              )}
 
               <label className="form-checkbox-row">
                 <input
@@ -725,6 +796,16 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
                 : 'Deploying auction to escrow'
               : ''}
           </p>
+
+          {!pendingRegistration && (
+            <p className="auction-disclosure-subtext" role="status" data-testid="autosave-status">
+              {!sessionAddress ? 'Sign in to save this listing as a draft automatically.'
+                : saveState === 'saving' ? 'Saving draft…'
+                  : saveState === 'saved' ? 'Draft saved.'
+                    : saveState === 'error' ? 'Not saved: the draft could not be saved. Your changes are still in this form.'
+                      : saveState === 'unsaved' ? 'Unsaved changes' : 'Drafts save automatically.'}
+            </p>
+          )}
 
           {/* Submit footer */}
           <div className="modal-actions-footer">
