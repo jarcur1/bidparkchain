@@ -104,9 +104,10 @@ export function bookingFromChain(booking) {
   };
 }
 
-function listingFromRow(id, onchain, row, [spaceId, timeZone, booking], verification) {
+function listingFromRow(id, onchain, row, { inventory, booking }, verification) {
   return {
-    id, spaceId: spaceId.toString(), timeZone, owner: onchain.owner, verification,
+    id, spaceId: inventory.spaceId.toString(), timeZone: inventory.timeZone, owner: onchain.owner, verification,
+    inventoryBlocked: !inventory.canAcceptBids,
     booking: bookingFromChain(booking),
     minBid: ethers.formatEther(onchain.minBid),
     highestBid: ethers.formatEther(onchain.highestBid),
@@ -298,18 +299,18 @@ export function createApp(options = {}) {
     return readFinalized(deployment, iface, finalized, 'auctions', [id]);
   }
 
-  /** [spaceId, IANA time zone] of the space an auction belongs to. */
-  async function readFinalizedSpace(deployment, iface, finalized, id) {
-    const [spaceId] = await readFinalized(deployment, iface, finalized, 'auctionSpace', [id]);
-    const [timeZone] = await readFinalized(deployment, iface, finalized, 'spaceTimeZone', [spaceId]);
-    const booking = iface.getFunction('bookings') ? await readFinalized(deployment, iface, finalized, 'bookings', [id]) : null;
-    return [spaceId, timeZone, booking];
+  async function readSpace(call, id) {
+    const inventory = await call('auctionInventory', [id]);
+    const booking = await call('bookings', [id]);
+    return { inventory, booking };
   }
 
-  async function readLocalSpace(contract, id, at = {}) {
-    const spaceId = await contract.auctionSpace(id, at);
-    const booking = contract.interface.getFunction('bookings') ? await contract.bookings(id, at) : null;
-    return [spaceId, await contract.spaceTimeZone(spaceId, at), booking];
+  function readFinalizedSpace(deployment, iface, finalized, id) {
+    return readSpace((method, args) => readFinalized(deployment, iface, finalized, method, args), id);
+  }
+
+  function readLocalSpace(contract, id, at = {}) {
+    return readSpace((method, args) => contract[method](...args, at), id);
   }
 
   async function readFinalizedNextId(deployment, iface, finalized) {
@@ -325,9 +326,12 @@ export function createApp(options = {}) {
    * metadata is either recovered from metadata staged under its hash or reported as unindexed,
    * so an auction never silently disappears. RPC errors propagate to the caller.
    */
-  /** [[spaceId, timeZone], public verification] for a listing: only the verification status is ever exposed. */
-  const withBadge = (contractAddress, onchain, space) =>
-    [space, publicVerification(db.getVerification(contractAddress, space[0].toString()), onchain.owner)];
+  function withBadge(contractAddress, space) {
+    const { spaceId, owner, required, verified } = space.inventory;
+    const badge = required ? (verified ? 'verified' : 'unverified')
+      : publicVerification(db.getVerification(contractAddress, spaceId.toString()), owner);
+    return [space, badge];
+  }
 
   /**
    * One page of the auction id range: ids from `from` up, at most `limit` of them. `nextCursor` is the first
@@ -351,13 +355,13 @@ export function createApp(options = {}) {
       const row = rows.get(id);
       // A stored hash that no longer matches (e.g. after a chain rollback reused the id) is not shown.
       if (row && row.metadata_hash.toLowerCase() === onchain.metadataHash.toLowerCase()) {
-        listings.push(listingFromRow(id, onchain, row, ...withBadge(contractAddress, onchain, await readSpace(id))));
+        listings.push(listingFromRow(id, onchain, row, ...withBadge(contractAddress, await readSpace(id))));
         continue;
       }
       const staged = db.getStagedMetadata(contractAddress, onchain.metadataHash);
       if (staged) {
         db.upsertListing({ ...staged, auctionId: id, contractAddress, metadataHash: onchain.metadataHash });
-        listings.push(listingFromRow(id, onchain, { ...staged, amenities: JSON.stringify(staged.amenities) }, ...withBadge(contractAddress, onchain, await readSpace(id))));
+        listings.push(listingFromRow(id, onchain, { ...staged, amenities: JSON.stringify(staged.amenities) }, ...withBadge(contractAddress, await readSpace(id))));
       } else {
         unindexed.push({
           id, owner: onchain.owner, metadataHash: onchain.metadataHash,
@@ -656,10 +660,8 @@ export function createApp(options = {}) {
         const read = await Promise.all(candidates.slice(i, i + 16).map(async ({ id, row, meta }) => {
           const onchain = await call('auctions', [id]);
           if (onchain.owner === ethers.ZeroAddress || row.metadata_hash.toLowerCase() !== onchain.metadataHash.toLowerCase()) return null;
-          const [spaceId] = await call('auctionSpace', [id]);
-          const [timeZone] = await call('spaceTimeZone', [spaceId]);
-          const booking = iface.getFunction('bookings') ? await call('bookings', [id]) : null;
-          return listingFromRow(id, onchain, { ...meta, amenities: JSON.stringify(meta.amenities) }, ...withBadge(deployment.contractAddress, onchain, [spaceId, timeZone, booking]));
+          return listingFromRow(id, onchain, { ...meta, amenities: JSON.stringify(meta.amenities) },
+            ...withBadge(deployment.contractAddress, await readSpace(call, id)));
         }));
         listings.push(...read.filter(Boolean));
       }
@@ -766,7 +768,7 @@ export function createApp(options = {}) {
           db.upsertListing({ auctionId: canonicalId, contractAddress: deployment.contractAddress,
             metadataHash: canonicalHash, ...normalized });
           res.status(existing && !isReconciliation ? 200 : 201).json({
-            listing: listingFromRow(canonicalId, onchain, { ...normalized, amenities: JSON.stringify(normalized.amenities) }, ...withBadge(deployment.contractAddress, onchain, space)),
+            listing: listingFromRow(canonicalId, onchain, { ...normalized, amenities: JSON.stringify(normalized.amenities) }, ...withBadge(deployment.contractAddress, space)),
           });
         } catch {
           res.status(503).json({ error: 'Blockchain service unavailable' });
@@ -841,7 +843,7 @@ export function createApp(options = {}) {
 
       const listing = listingFromRow(canonicalId, onchain, {
         ...normalized, amenities: JSON.stringify(normalized.amenities),
-      }, ...withBadge(deployment.contractAddress, onchain, space));
+      }, ...withBadge(deployment.contractAddress, space));
 
       res.status(existing && !isReconciliation ? 200 : 201).json({ listing });
     } catch (err) {

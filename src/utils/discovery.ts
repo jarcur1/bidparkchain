@@ -159,8 +159,8 @@ export function discoverListings(
       if (!haystack.some((t) => t.toLowerCase().includes(searchLower))) return false;
     }
     if (f.kind !== 'all' && item.kind !== f.kind) return false;
-    if (f.status === 'active' && (item.bidEnd <= now || item.settled || item.cancelled)) return false;
-    if (f.status === 'ending-soon' && (item.bidEnd <= now || item.bidEnd - now >= 1800 || item.settled || item.cancelled)) return false;
+    if (f.status === 'active' && (item.inventoryBlocked || item.bidEnd <= now || item.settled || item.cancelled)) return false;
+    if (f.status === 'ending-soon' && (item.inventoryBlocked || item.bidEnd <= now || item.bidEnd - now >= 1800 || item.settled || item.cancelled)) return false;
     if (f.status === 'ended' && (item.bidEnd > now || item.settled || item.cancelled)) return false;
     if (f.status === 'settled' && !item.settled) return false;
     // The parking window must cover the whole requested visit.
