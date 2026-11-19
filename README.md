@@ -43,6 +43,13 @@ An injected Ethereum wallet is also supported on local chain **31337**. If addin
 - Seller payout is available only after settlement and `parkingEnd`, and can be claimed once.
 - There is **no automatic refund or dispute process for an inaccessible space**. Time-locked escrow does not prove physical access or delivery.
 
+### Parking spaces and calendars
+
+- Every auction belongs to one on-chain parking space with a stable `spaceId` and an owner wallet. `createAuction` registers a new space for a one-off listing; `registerSpace` creates an empty one.
+- `createSpaceAuction(spaceId, ...)` lists another window on an existing space. Only the space owner can call it, and the contract rejects it (`SpaceWindowTaken`) if `[parkingStart, parkingEnd)` overlaps a window the space still holds. Windows that only touch (one ends exactly when the next starts) are allowed. The check runs inside the transaction, so it also covers direct contract calls and two listings mined in the same block.
+- A window is held while its auction is not cancelled and either has a bid or is still open for bidding (`holdsWindow`). Cancelling, or bidding closing with no bids, releases it. A winning bid keeps it held for good.
+- `spaceAuctions(spaceId)` returns every auction on the space, oldest first. The contract cannot tell when two space ids describe the same physical spot; that belongs to host verification ([#13](https://github.com/jarcur1/bidparkchain/issues/13)).
+
 ## Verify
 
 Tests do not need `npm run dev` and never touch its chain, API, web server, or `data/`. Suites that need services start their own on free loopback ports with temporary data and clean them up.
@@ -119,6 +126,8 @@ These are operator instructions for an authorized environment, **not authorizati
 - `npm run api` serves the verified deployment using the same directory. `npm run build` with the Sepolia profile produces browser-wallet-only assets with no local `/rpc` proxy. Serve the built assets and route same-origin `/api` to the matching API; the development server is not hosted infrastructure.
 
 For explorer verification, export the exact Solidity standard JSON input with `node --input-type=module -e "import {compileEscrowContract} from './scripts/helpers/compiler.mjs'; const {input}=compileEscrowContract(); console.log(JSON.stringify(input));"`. Use `project/contracts/ParkingAuctionEscrow.sol:ParkingAuctionEscrow`, the full compiler version recorded in `deployment.json`, Shanghai EVM, and optimizer 200 runs. The contract has no constructor arguments. Explorer links point to the Sepolia explorer only.
+
+**Contract change:** the space inventory added for [#12](https://github.com/jarcur1/bidparkchain/issues/12) changes the escrow bytecode. The deploy tool verifies the recorded bytecode, so a Sepolia deployment made before it no longer verifies; create a new deployment in a new `BIDPARK_DATA_DIR`. Local chains just redeploy.
 
 The API pins confirmed listings and registration checks to finalized state; mining alone is not confirmation on Sepolia. If the app reports a submitted transaction whose finality it cannot establish, check its hash in the explorer before retrying. Normal verification uses an owned local Sepolia-chain-ID fixture, not a public RPC or shared contract.
 
