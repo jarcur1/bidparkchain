@@ -12,7 +12,7 @@ import {
   Warehouse,
   Zap,
 } from 'lucide-react';
-import type { Listing } from '../types';
+import type { Listing, UnindexedAuction } from '../types';
 import { canClaimPayout } from '../utils/booking';
 import type { ReadState } from '../utils/readState';
 import {
@@ -31,6 +31,7 @@ import { ReservationHistory } from './ReservationHistory';
 interface ActivityViewProps {
   currentAddress: string | null;
   listings: Listing[];
+  unindexed?: UnindexedAuction[];
   claimableRefundWei: bigint | null;
   refundRead: ReadState;
   myBidAuctionIds: Set<string> | null;
@@ -45,12 +46,13 @@ interface ActivityViewProps {
   onConnectWallet: () => void;
   isActionBusy: boolean;
   /** Network and contract being read; enables the history section and its scoped links. */
-  deployment?: { chainId: number; contractAddress: string } | null;
+  deployment?: { chainId: number; contractAddress: string; snapshotBlock?: number | null; snapshotTime?: number } | null;
 }
 
 export const ActivityView: React.FC<ActivityViewProps> = ({
   currentAddress,
   listings,
+  unindexed,
   claimableRefundWei,
   refundRead,
   myBidAuctionIds,
@@ -660,6 +662,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
         <ReservationHistory
           currentAddress={currentAddress}
           listings={listings}
+          unindexed={unindexed}
           myBidAuctionIds={myBidAuctionIds}
           nowSec={now}
           deployment={deployment}

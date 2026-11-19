@@ -31,7 +31,12 @@ test('detail view shows indexed bid history, zoned times, and exports a won rese
   await expect(row).toContainText(`${Number(amount).toFixed(3)} ETH`, { timeout: 20_000 });
   await expect(row).toContainText('(you)');
   await expect(history).not.toContainText(/catching up|unavailable|out of date/, { timeout: 20_000 });
-  await expect(detail.getByRole('button', { name: 'Add to calendar (.ics)' })).toHaveCount(0);
+  // A leading bid is already exportable, as a tentative event.
+  const early = page.waitForEvent('download');
+  await detail.getByRole('button', { name: 'Add to calendar (.ics)' }).click();
+  const early_ics = await readFile(await (await early).path(), 'utf8');
+  expect(early_ics).toContain('STATUS:TENTATIVE\r\n');
+  const sequenceOf = (text) => Number(text.match(/SEQUENCE:(\d+)/)[1]);
 
   await detail.getByRole('button', { name: 'Close dialog' }).click();
   await advancePast(page, stack.chain, spot.bidEnd);
@@ -48,5 +53,8 @@ test('detail view shows indexed bid history, zoned times, and exports a won rese
   expect(ics).toContain(`DTSTART:${utc(spot.parkingStart)}\r\n`);
   expect(ics).toContain(`DTEND:${utc(spot.parkingEnd)}\r\n`);
   expect(ics).toContain(`UID:${stack.descriptor.chainId}-${stack.descriptor.contractAddress.toLowerCase()}-${spot.id}@bidpark`);
+  expect(ics).toContain('STATUS:CONFIRMED\r\n');
+  // The revision is the chain snapshot block, so the later export outranks the earlier one.
+  expect(sequenceOf(ics)).toBeGreaterThan(sequenceOf(early_ics));
   expect(ics).not.toContain(spot.description);
 });

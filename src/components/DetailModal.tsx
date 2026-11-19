@@ -25,7 +25,8 @@ import {
 } from '../utils/formatters';
 import { getBidEligibility, getChainNowSec } from '../utils/eligibility';
 import { BOOKING_ACTION_LABELS, bookingView, canClaimPayout, type BookingAction } from '../utils/booking';
-import { downloadReservationIcs } from '../utils/calendar';
+import { canExportIcs, downloadReservationIcs } from '../utils/calendar';
+import { reservationLifecycle } from '../utils/lifecycle';
 import { BidHistory } from './BidHistory';
 import { Dialog } from './Dialog';
 import { ReportSpace } from './ReportSpace';
@@ -36,6 +37,9 @@ interface DetailModalProps {
   listing: Listing | null;
   contractAddress?: string;
   chainId?: number;
+  /** Canonical chain snapshot block the listing was read at; numbers calendar revisions. */
+  snapshotBlock?: number | null;
+  snapshotTime?: number;
   currentAddress: string | null;
   onClose: () => void;
   onOpenBid: (listing: Listing) => void;
@@ -52,6 +56,8 @@ export const DetailModal: React.FC<DetailModalProps> = ({
   listing,
   contractAddress,
   chainId,
+  snapshotBlock,
+  snapshotTime,
   currentAddress,
   onClose,
   onOpenBid,
@@ -93,6 +99,9 @@ export const DetailModal: React.FC<DetailModalProps> = ({
     listing.highestBidder.toLowerCase() === currentAddress?.toLowerCase();
 
   const hasBids = parseFloat(listing.highestBid) > 0;
+  const myLifecycle = currentAddress ? reservationLifecycle(listing, currentAddress, now) : null;
+  const calendarLifecycle = currentAddress && snapshotTime !== undefined
+    ? reservationLifecycle(listing, currentAddress, snapshotTime) : null;
   const currentPriceEth = hasBids ? listing.highestBid : listing.minBid;
 
   const canOwnerCancel = isOwner && !hasBids && !listing.settled && !listing.cancelled;
@@ -146,7 +155,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
           {/* Hero Media */}
           <div className="modal-detail-media">
             <img
-              src={listing.image}
+              src={listing.image || 'https://images.unsplash.com/photo-1590674899484-d5640e854abe?auto=format&fit=crop&w=1200&q=80'}
               alt={listing.title}
               className="modal-detail-image"
               onError={(e) => {
@@ -208,11 +217,11 @@ export const DetailModal: React.FC<DetailModalProps> = ({
               </div>
             </div>
 
-            {isLeading && listing.settled && !listing.cancelled && contractAddress && chainId !== undefined && (
+            {canExportIcs(calendarLifecycle, snapshotBlock) && contractAddress && chainId !== undefined && (
               <button
                 type="button"
                 className="btn-pass-details"
-                onClick={() => downloadReservationIcs(listing, { chainId, contractAddress })}
+                onClick={() => downloadReservationIcs(listing, { chainId, contractAddress, snapshotBlock }, calendarLifecycle)}
               >
                 <CalendarPlus size={14} />
                 <span>Add to calendar (.ics)</span>

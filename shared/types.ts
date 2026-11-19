@@ -97,6 +97,15 @@ export interface UnindexedAuction {
   bidEnd: number;
   settled: boolean;
   cancelled: boolean;
+  minBid: string;
+  highestBidder: string;
+  parkingStart: number;
+  parkingEnd: number;
+  payoutClaimed: boolean;
+  spaceId: string;
+  timeZone: string;
+  booking: BookingState | null;
+  inventoryBlocked: boolean;
 }
 
 /** A listing returned by GET /api/listings/search; distanceKm is set when the query has `near`. */
