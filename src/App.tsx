@@ -6,6 +6,16 @@ import { DetailModal } from './components/DetailModal';
 import { CampusScenarioBanner } from './components/CampusScenarioBanner';
 import { DisclosuresBanner } from './components/DisclosuresBanner';
 import { FilterBar } from './components/FilterBar';
+import {
+  DEFAULT_FILTERS,
+  amenityOptions,
+  describeFilters,
+  destinationOptions,
+  discoverListings,
+  filtersFromSearch,
+  filtersToSearch,
+  resolveDestination,
+} from './utils/discovery';
 import { Footer } from './components/Footer';
 import { Header } from './components/Header';
 import { ReadStatusBanner, type ReadSource } from './components/ReadStatusBanner';
@@ -184,14 +194,14 @@ export const AppContent: React.FC<{
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   // Search & Filter State
-  const [filters, setFilters] = useState<FilterState>({
-    search: '',
-    kind: 'all',
-    status: 'all',
-    minPrice: '',
-    maxPrice: '',
-    sortBy: 'ending-soon',
-  });
+  const [filters, setFilters] = useState<FilterState>(() => filtersFromSearch(window.location.search));
+  // Keep the URL in step with the filters so a reload or shared link restores them.
+  useEffect(() => {
+    const search = filtersToSearch(filters, window.location.search);
+    if (search !== window.location.search) {
+      window.history.replaceState(window.history.state, '', `${window.location.pathname}${search}${window.location.hash}`);
+    }
+  }, [filters]);
 
   // Every wallet transaction is recorded in the persisted transaction center, scoped to this
   // account and deployment, so a reload never loses a submitted transaction or committed metadata.
@@ -935,81 +945,12 @@ export const AppContent: React.FC<{
   };
 
   // Filter & Sort Logic
-  const filteredListings = useMemo(() => {
-    const now = getChainNowSec();
-    const searchLower = filters.search.trim().toLowerCase();
-
-    return listings
-      .filter((item) => {
-        // Search text
-        if (searchLower) {
-          const matchTitle = item.title.toLowerCase().includes(searchLower);
-          const matchAddr = item.address.toLowerCase().includes(searchLower);
-          const matchNeigh = item.neighborhood.toLowerCase().includes(searchLower);
-          const matchDesc = item.description.toLowerCase().includes(searchLower);
-          const matchAmenity = item.amenities?.some((a) =>
-            a.toLowerCase().includes(searchLower)
-          );
-          if (!matchTitle && !matchAddr && !matchNeigh && !matchDesc && !matchAmenity) {
-            return false;
-          }
-        }
-
-        // Kind filter
-        if (filters.kind !== 'all' && item.kind !== filters.kind) {
-          return false;
-        }
-
-        // Status filter
-        if (filters.status !== 'all') {
-          if (filters.status === 'active') {
-            if (item.bidEnd <= now || item.settled || item.cancelled) return false;
-          } else if (filters.status === 'ending-soon') {
-            if (item.bidEnd <= now || item.bidEnd - now >= 1800 || item.settled || item.cancelled) {
-              return false;
-            }
-          } else if (filters.status === 'ended') {
-            if (item.bidEnd > now || item.settled || item.cancelled) return false;
-          } else if (filters.status === 'settled') {
-            if (!item.settled) return false;
-          }
-        }
-
-        // Price filter
-        const priceNum =
-          parseFloat(item.highestBid) > 0
-            ? parseFloat(item.highestBid)
-            : parseFloat(item.minBid);
-        if (filters.minPrice && priceNum < parseFloat(filters.minPrice)) return false;
-        if (filters.maxPrice && priceNum > parseFloat(filters.maxPrice)) return false;
-
-        return true;
-      })
-      .sort((a, b) => {
-        const priceA = parseFloat(a.highestBid) > 0 ? parseFloat(a.highestBid) : parseFloat(a.minBid);
-        const priceB = parseFloat(b.highestBid) > 0 ? parseFloat(b.highestBid) : parseFloat(b.minBid);
-
-        switch (filters.sortBy) {
-          case 'ending-soon': {
-            const aEnded = a.bidEnd <= now || a.settled;
-            const bEnded = b.bidEnd <= now || b.settled;
-            if (aEnded && !bEnded) return 1;
-            if (!aEnded && bEnded) return -1;
-            return a.bidEnd - b.bidEnd;
-          }
-          case 'starts-soon':
-            return a.parkingStart - b.parkingStart;
-          case 'price-asc':
-            return priceA - priceB;
-          case 'price-desc':
-            return priceB - priceA;
-          case 'newest':
-            return parseInt(b.id, 10) - parseInt(a.id, 10);
-          default:
-            return 0;
-        }
-      });
-  }, [listings, filters]);
+  const destinationChoices = useMemo(() => destinationOptions(listings), [listings]);
+  const destination = resolveDestination(filters.destination, destinationChoices);
+  const { listings: filteredListings, distances } = useMemo(
+    () => discoverListings(listings, filters, getChainNowSec(), destination),
+    [listings, filters, destination]
+  );
 
   // Compute active bids count for badge
   const activeBidsCount = useMemo(() => {
@@ -1166,6 +1107,9 @@ export const AppContent: React.FC<{
             <FilterBar
               filters={filters}
               onFilterChange={setFilters}
+              destinationChoices={destinationChoices}
+              destination={destination}
+              amenityChoices={amenityOptions(listings, filters.amenities)}
               totalSpots={listings.length}
               filteredCount={filteredListings.length}
               listingsStatus={listingsView.read.status}
@@ -1189,16 +1133,10 @@ export const AppContent: React.FC<{
                     onOpenBid={handleOpenBidModal}
                     onOpenDetail={handleOpenDetailModal}
                     onSettle={handleSettleListing}
-                    onResetFilters={() =>
-                      setFilters({
-                        search: '',
-                        kind: 'all',
-                        status: 'all',
-                        minPrice: '',
-                        maxPrice: '',
-                        sortBy: 'ending-soon',
-                      })
-                    }
+                    onResetFilters={() => setFilters(DEFAULT_FILTERS)}
+                    activeFilters={describeFilters(filters, destination)}
+                    distances={distances}
+                    destinationLabel={destination?.label ?? null}
                   />
                 </div>
               )}
