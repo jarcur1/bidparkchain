@@ -29,6 +29,7 @@ import { downloadReservationIcs } from '../utils/calendar';
 import { BidHistory } from './BidHistory';
 import { Dialog } from './Dialog';
 import { ReportSpace } from './ReportSpace';
+import { ArrivalPanel } from './ArrivalPanel';
 
 interface DetailModalProps {
   listing: Listing | null;
@@ -391,6 +392,8 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                     ))}
                   </div>
                 )}
+
+                <ArrivalPanel listing={listing} currentAddress={currentAddress} signedIn={signedIn} />
 
                 {isOwner && status.isBiddable && (
                   <p className="owner-notice">
