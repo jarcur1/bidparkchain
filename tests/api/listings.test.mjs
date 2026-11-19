@@ -93,10 +93,13 @@ describe('listing API with real SQLite and onchain auctions', () => {
     expect(hash(variant)).toBe(hash(metadata));
     const created = await register('1', variant);
     expect(created.status).toBe(201);
-    expect(created.json.listing).toMatchObject({ id: '1', spaceId: '1', ...metadata, metadataHash: hash(metadata) });
+    expect(created.json.listing).toMatchObject({ id: '1', spaceId: '1', timeZone: '', ...metadata, metadataHash: hash(metadata) });
     expect((await register(' 01 ')).status).toBe(200);
     expect(runtime.db.countListings(deployment.address)).toBe(1);
     expect((await request('/api/listings')).json.listings).toEqual([created.json.listing]);
+    // The space's time zone is read from the chain with the listing.
+    await (await deployment.contract.setSpaceTimeZone(1, 'America/Chicago')).wait();
+    expect((await request('/api/listings')).json.listings).toEqual([{ ...created.json.listing, timeZone: 'America/Chicago' }]);
   });
 
   it.each([
@@ -211,6 +214,8 @@ describe('listing API with real SQLite and onchain auctions', () => {
     expect((await register()).status).toBe(400);
     const result = await register('1', replacement);
     expect(result.status).toBe(201);
+    // Space state rolled back with the chain: the reused space id has no time zone set.
+    expect(result.json.listing).toMatchObject({ spaceId: '1', timeZone: '' });
     expect((await register('01', replacement)).status).toBe(200);
     expect((await request('/api/listings')).json.listings).toEqual([result.json.listing]);
     expect(runtime.db.getListing('1').title).toBe(replacement.title);

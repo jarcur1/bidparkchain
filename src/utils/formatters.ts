@@ -32,13 +32,24 @@ export function formatBalance(balance: string | null, read: ReadState): string {
 const DATE_OPTS: Intl.DateTimeFormatOptions = { weekday: 'short', month: 'short', day: 'numeric' };
 const TIME_OPTS: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit' };
 
+/** A valid IANA zone name to format in, or undefined (the viewer's zone) when unset or unknown. */
+function zone(timeZone?: string): string | undefined {
+  if (!timeZone) return undefined;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone });
+    return timeZone;
+  } catch {
+    return undefined;
+  }
+}
+
 function part(sec: number, opts: Intl.DateTimeFormatOptions, timeZone?: string): string {
-  return new Date(sec * 1000).toLocaleString('en-US', { ...opts, timeZone });
+  return new Date(sec * 1000).toLocaleString('en-US', { ...opts, timeZone: zone(timeZone) });
 }
 
 function zoneName(sec: number, timeZone?: string): string {
   return (
-    new Intl.DateTimeFormat('en-US', { timeZoneName: 'short', timeZone })
+    new Intl.DateTimeFormat('en-US', { timeZoneName: 'short', timeZone: zone(timeZone) })
       .formatToParts(new Date(sec * 1000))
       .find((p) => p.type === 'timeZoneName')?.value ?? ''
   );

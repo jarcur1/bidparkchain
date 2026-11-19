@@ -34,6 +34,13 @@ describe('date and time-zone display', () => {
     expect(w.timeRange).toBe('1:00 AM CDT – 2:00 AM CST');
     expect(w.durationHours).toBe('2 hrs');
   });
+
+  it('falls back to the viewer zone for an unset or unknown space time zone', () => {
+    const sec = at('2026-11-19T07:27:00Z');
+    expect(formatDateTime(sec, 'Not/AZone')).toBe(formatDateTime(sec));
+    expect(formatParkingWindow(sec, sec + 3600, '').full).toBe(formatParkingWindow(sec, sec + 3600).full);
+    expect(formatDateTime(sec, 'Asia/Tokyo')).toBe('Thu, Nov 19, 4:27 PM GMT+9');
+  });
 });
 
 describe('reservation calendar export', () => {
