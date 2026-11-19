@@ -24,6 +24,8 @@ export interface WalletContextValue {
   connectLocal: (accountIndex?: number) => Promise<void>;
   connectInjected: () => Promise<void>;
   switchInjectedChain: () => Promise<void>;
+  /** Forgets the wallet selection in this app. It does not revoke the site's access in a wallet extension. */
+  disconnect: () => void;
   refreshBalance: () => Promise<ReadResult>;
   balanceRead: ReadState;
 }
@@ -211,6 +213,22 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
     }
   }, [connectBrowser, fail]);
 
+  const disconnect = useCallback(() => {
+    ++selection.current;
+    ++generation.current;
+    ++balanceSeq.current;
+    activeProvider.current = null;
+    localStorage.removeItem(STORAGE_WALLET_TYPE);
+    localStorage.removeItem(STORAGE_ACCOUNT_INDEX);
+    setBalanceRead(LOADING_READ);
+    publishSigner(null);
+    setProvider(null);
+    setWrongChain(false);
+    // Type 'local' with no address is "disconnected": extension account/chain events no longer reconnect.
+    publish({ ...stateRef.current, type: 'local', address: null, balance: null, chainId: null,
+      isReady: false, isConnecting: false, error: null });
+  }, [publish, publishSigner, setBalanceRead]);
+
   const refreshBalance = useCallback(async (): Promise<ReadResult> => {
     const id = generation.current;
     const address = stateRef.current.address;
@@ -280,7 +298,7 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
     (webProfile.id === 'local' || walletState.type === 'injected');
   return <WalletContext.Provider value={{ walletState: usable ? walletState : { ...walletState, isReady: false },
     signer: usable ? signer : null, isCurrentSigner, provider, wrongChain,
-    connectLocal, connectInjected, switchInjectedChain, refreshBalance, balanceRead }}>{children}</WalletContext.Provider>;
+    connectLocal, connectInjected, switchInjectedChain, disconnect, refreshBalance, balanceRead }}>{children}</WalletContext.Provider>;
 };
 
 export function useWallet(): WalletContextValue {

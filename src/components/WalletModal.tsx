@@ -26,6 +26,7 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
     connectLocal,
     connectInjected,
     switchInjectedChain,
+    disconnect,
     wrongChain,
     balanceRead,
   } = useWallet();
@@ -114,6 +115,22 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
                     ? 'Connected to the wrong network'
                     : 'Not connected'}
           </p>
+
+          {(walletState.address || walletState.error) && (
+            <div className="wallet-disconnect-row">
+              <button
+                type="button"
+                className="read-status-retry"
+                onClick={() => { void signOut(); disconnect(); }}
+              >
+                Disconnect
+              </button>
+              <span className="section-note">
+                Forgets this wallet in BidPark and signs you out. It does not revoke this site's access in your wallet
+                extension; do that in the extension's settings.
+              </span>
+            </div>
+          )}
 
           {wrongChain && (
             <div className="wallet-wrong-chain-notice" role="alert">

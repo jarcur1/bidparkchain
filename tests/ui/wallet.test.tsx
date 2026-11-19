@@ -126,6 +126,21 @@ describe('wallet identity and network regressions', () => {
     await until(() => expect(query('.wallet-connection-status').textContent).toBe('Connected and ready'));
   });
 
+  it('disconnects by forgetting the selection, without claiming to revoke extension access', async () => {
+    await connect();
+    expect(localStorage.getItem('bidpark_wallet_type')).toBe('injected');
+    const disconnectButton = Array.from(document.querySelectorAll('button')).find((button) => button.textContent === 'Disconnect')!;
+    expect(disconnectButton.parentElement!.textContent).toContain('does not revoke this site\'s access in your wallet extension');
+    await click(disconnectButton);
+    expect(state()).toMatchObject({ address: null, isReady: false, isConnecting: false, error: null });
+    expect(localStorage.getItem('bidpark_wallet_type')).toBeNull();
+    expect(query('.wallet-connection-status').textContent).toBe('Not connected');
+    // A later account change in the extension does not silently reconnect.
+    await act(async () => { injected.accounts = [b]; injected.emit('accountsChanged', [b]); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(state().address).toBeNull();
+  });
+
   it('explains a rejected connection request and a missing extension', async () => {
     injected.request.mockImplementationOnce(async () => { throw Object.assign(new Error('User rejected the request.'), { code: 4001 }); });
     await render(); await click(query('.avatar-injected').closest('button')!);
