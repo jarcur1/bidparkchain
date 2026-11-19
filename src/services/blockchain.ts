@@ -148,6 +148,62 @@ export async function fetchBidAuctionIds(
   return new Set(logs.map((log) => String((log as EventLog).args.id)));
 }
 
+/** Lifecycle of one wallet transaction, as shown in the transaction center. */
+export type TxStatus =
+  | 'awaiting-wallet' | 'submitted' | 'confirming' | 'confirmed'
+  | 'rejected' | 'failed' | 'reverted' | 'replaced' | 'cancelled' | 'unknown';
+export interface TxUpdate { status: TxStatus; hash?: string; replacementHash?: string; error?: string }
+export type TxObserver = (update: TxUpdate) => void;
+
+const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+function isUserRejection(error: unknown): boolean {
+  const e = error as { code?: unknown; info?: { error?: { code?: unknown } } } | null;
+  return e?.code === 'ACTION_REJECTED' || e?.code === 4001 || e?.info?.error?.code === 4001;
+}
+
+/** Classifies a failure after the transaction was submitted. */
+export function settledFailure(error: unknown, hash: string): TxUpdate {
+  const e = error as { code?: unknown; reason?: unknown; replacement?: { hash?: string } } | null;
+  if (e?.code === 'TRANSACTION_REPLACED') {
+    return { status: e.reason === 'cancelled' ? 'cancelled' : 'replaced', hash, replacementHash: e.replacement?.hash, error: message(error) };
+  }
+  if (e?.code === 'CALL_EXCEPTION' || /reverted/i.test(message(error))) return { status: 'reverted', hash, error: message(error) };
+  return { status: 'unknown', hash, error: message(error) };
+}
+
+/**
+ * Sends one contract call and reports each step: waiting for the wallet, submitted (with hash),
+ * confirming, then confirmed, reverted, replaced/cancelled, or unknown. A refusal in the wallet is
+ * 'rejected'; any other failure before submission is 'failed' and no transaction exists.
+ */
+async function send(
+  contract: Contract,
+  method: string,
+  args: unknown[],
+  confirmation: ConfirmationPolicy,
+  observe: TxObserver = () => {},
+): Promise<TransactionReceipt> {
+  observe({ status: 'awaiting-wallet' });
+  let tx: { hash: string; wait: () => Promise<TransactionReceipt | null> };
+  try {
+    tx = confirmation === 'finalized' ? await dispatchFinalized(contract, method, args) : await contract[method](...args);
+  } catch (error) {
+    observe({ status: isUserRejection(error) ? 'rejected' : 'failed', error: message(error) });
+    throw error;
+  }
+  observe({ status: 'submitted', hash: tx.hash });
+  observe({ status: 'confirming', hash: tx.hash });
+  try {
+    const receipt = await waitForTransaction(tx, contract, confirmation);
+    observe({ status: 'confirmed', hash: receipt.hash ?? tx.hash });
+    return receipt;
+  } catch (error) {
+    observe(settledFailure(error, tx.hash));
+    throw error;
+  }
+}
+
 export interface CreateAuctionResult {
   receipt: TransactionReceipt;
   auctionId: string;
@@ -161,16 +217,14 @@ export async function createAuctionOnChain(
   parkingStartSec: number,
   parkingEndSec: number,
   confirmation: ConfirmationPolicy = 'mined',
+  observe?: TxObserver,
 ): Promise<CreateAuctionResult> {
   const metadataHash = computeMetadataHash(metadata);
   const minBidWei = parseEther(minBidEth);
 
   const args = [metadataHash, minBidWei, BigInt(bidEndSec), BigInt(parkingStartSec), BigInt(parkingEndSec)];
-  const tx = confirmation === 'finalized'
-    ? await dispatchFinalized(contract, 'createAuction', args)
-    : await contract.createAuction(...args);
-
-  const receipt = await waitForTransaction(tx, contract, confirmation);
+  const receipt = await send(contract, 'createAuction', args, confirmation, observe);
+  const tx = { hash: receipt.hash };
 
   // Parse logs for AuctionCreated(uint256 indexed id, address indexed owner)
   let auctionId = '';
@@ -205,44 +259,40 @@ export async function placeBid(
   auctionId: string,
   bidAmountEth: string,
   confirmation: ConfirmationPolicy = 'mined',
+  observe?: TxObserver,
 ): Promise<TransactionReceipt> {
-  const valueWei = parseEther(bidAmountEth);
-  const tx = confirmation === 'finalized'
-    ? await dispatchFinalized(contract, 'bid', [BigInt(auctionId), { value: valueWei }])
-    : await contract.bid(BigInt(auctionId), { value: valueWei });
-  return waitForTransaction(tx, contract, confirmation);
+  return send(contract, 'bid', [BigInt(auctionId), { value: parseEther(bidAmountEth) }], confirmation, observe);
 }
 
-export async function withdrawRefund(contract: Contract, confirmation: ConfirmationPolicy = 'mined'): Promise<TransactionReceipt> {
-  const tx = confirmation === 'finalized' ? await dispatchFinalized(contract, 'withdrawRefund', []) : await contract.withdrawRefund();
-  return waitForTransaction(tx, contract, confirmation);
+export async function withdrawRefund(contract: Contract, confirmation: ConfirmationPolicy = 'mined', observe?: TxObserver): Promise<TransactionReceipt> {
+  return send(contract, 'withdrawRefund', [], confirmation, observe);
 }
 
 export async function settleAuction(
   contract: Contract,
   auctionId: string,
   confirmation: ConfirmationPolicy = 'mined',
+  observe?: TxObserver,
 ): Promise<TransactionReceipt> {
-  const tx = confirmation === 'finalized' ? await dispatchFinalized(contract, 'settle', [BigInt(auctionId)]) : await contract.settle(BigInt(auctionId));
-  return waitForTransaction(tx, contract, confirmation);
+  return send(contract, 'settle', [BigInt(auctionId)], confirmation, observe);
 }
 
 export async function cancelAuction(
   contract: Contract,
   auctionId: string,
   confirmation: ConfirmationPolicy = 'mined',
+  observe?: TxObserver,
 ): Promise<TransactionReceipt> {
-  const tx = confirmation === 'finalized' ? await dispatchFinalized(contract, 'cancel', [BigInt(auctionId)]) : await contract.cancel(BigInt(auctionId));
-  return waitForTransaction(tx, contract, confirmation);
+  return send(contract, 'cancel', [BigInt(auctionId)], confirmation, observe);
 }
 
 export async function claimPayout(
   contract: Contract,
   auctionId: string,
   confirmation: ConfirmationPolicy = 'mined',
+  observe?: TxObserver,
 ): Promise<TransactionReceipt> {
-  const tx = confirmation === 'finalized' ? await dispatchFinalized(contract, 'claimPayout', [BigInt(auctionId)]) : await contract.claimPayout(BigInt(auctionId));
-  return waitForTransaction(tx, contract, confirmation);
+  return send(contract, 'claimPayout', [BigInt(auctionId)], confirmation, observe);
 }
 
 const CONTRACT_ERROR_MESSAGES: Record<string, string> = {
