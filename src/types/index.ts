@@ -6,9 +6,14 @@ import type {
   ChainSnapshot,
   ListingsResponse,
   UnindexedAuction,
+  SearchListing,
+  ListingSearchResponse,
 } from '../../shared/types';
 
-export type { SpotMetadata, Listing, Config, DeploymentIdentity, ChainSnapshot, ListingsResponse, UnindexedAuction };
+export type {
+  SpotMetadata, Listing, Config, DeploymentIdentity, ChainSnapshot, ListingsResponse, UnindexedAuction,
+  SearchListing, ListingSearchResponse,
+};
 
 export type WalletType = 'local' | 'injected';
 

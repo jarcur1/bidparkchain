@@ -62,7 +62,9 @@ export interface DeploymentIdentity {
 
 /** Chain state observed when listings were read. */
 export interface ChainSnapshot extends DeploymentIdentity {
+  /** The one block every contract read of the response used. */
   blockNumber: number;
+  blockHash?: string;
   /** Timestamp of the latest block (unix seconds). */
   blockTimestamp: number;
   /**
@@ -81,6 +83,25 @@ export interface UnindexedAuction {
   bidEnd: number;
   settled: boolean;
   cancelled: boolean;
+}
+
+/** A listing returned by GET /api/listings/search; distanceKm is set when the query has `near`. */
+export interface SearchListing extends Listing {
+  distanceKm?: number;
+}
+
+export interface ListingSearchResponse {
+  listings: SearchListing[];
+  /** Matches across all pages. */
+  total: number;
+  /** Next page of the same query, read at the same block; null on the last page. */
+  nextCursor: string | null;
+  /** The one block every read of this response (and of its cursor pages) used. */
+  chain: (ChainSnapshot & { blockHash: string }) | null;
+  /** Stored listing rows skipped as malformed. */
+  skipped: number;
+  /** Opening and current bids are not final booking prices. */
+  pricing: string;
 }
 
 export interface ListingsResponse {

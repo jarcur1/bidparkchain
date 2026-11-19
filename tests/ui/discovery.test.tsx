@@ -14,6 +14,7 @@ import {
   filtersFromSearch,
   filtersToSearch,
   resolveDestination,
+  searchQuery,
   validateFilters,
 } from '../../src/utils/discovery';
 
@@ -110,5 +111,23 @@ describe('discovery filters', () => {
     expect(el.textContent).toContain('Not a final price');
     act(() => root.unmount());
     el.remove();
+  });
+
+  it('builds the server query with the same semantics as the local filters', () => {
+    const dest = { label: 'X', latitude: 30.123456789, longitude: -97.5 };
+    const q = new URLSearchParams(searchQuery(f({
+      search: ' gar ', kind: 'garage', status: 'active', arrive: epochToLocal(T0), depart: epochToLocal(T0 + 3600),
+      maxPrice: '0.05', amenities: ['EV', 'Gated'], radiusKm: '1', sortBy: 'distance',
+    }), dest));
+    expect(Object.fromEntries(q)).toMatchObject({
+      q: 'gar', kind: 'garage', status: 'active', arrive: String(T0), depart: String(T0 + 3600), maxPrice: '0.05',
+      near: '30.123457,-97.500000', radiusKm: '1', sort: 'distance', limit: '50',
+    });
+    expect(q.getAll('amenity')).toEqual(['EV', 'Gated']);
+    // Invalid ranges are left out, as locally; distance sort needs a destination.
+    const bad = new URLSearchParams(searchQuery(f({
+      arrive: epochToLocal(T0 + 3600), depart: epochToLocal(T0), minPrice: '2', maxPrice: '1', sortBy: 'distance', radiusKm: '1',
+    }), null));
+    expect(Object.fromEntries(bad)).toEqual({ sort: 'ending-soon', limit: '50' });
   });
 });

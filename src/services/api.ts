@@ -1,4 +1,4 @@
-import type { ChainSnapshot, Config, DeploymentIdentity, Listing, ListingsResponse, SpotMetadata, UnindexedAuction } from '../types';
+import type { ChainSnapshot, Config, DeploymentIdentity, Listing, ListingSearchResponse, ListingsResponse, SpotMetadata, UnindexedAuction } from '../types';
 import { webProfile } from '../utils/networkProfile';
 
 export class ApiError extends Error {
@@ -53,6 +53,20 @@ export async function fetchListings(): Promise<ListingsResponse> {
     'chain' in data && data.chain && typeof data.chain === 'object' ? (data.chain as ChainSnapshot) : null;
   const unindexed = 'unindexed' in data && Array.isArray(data.unindexed) ? (data.unindexed as UnindexedAuction[]) : [];
   return { listings: data.listings as Listing[], unindexed, chain };
+}
+
+/** One page of GET /api/listings/search for a query built by searchQuery(); a cursor continues it. */
+export async function searchListings(query: string, cursor?: string): Promise<ListingSearchResponse> {
+  const params = new URLSearchParams(query);
+  if (cursor) params.set('cursor', cursor);
+  const res = await fetch(`/api/listings/search?${params}`);
+  if (!res.ok) throw new ApiError(await extractErrorMessage(res), res.status);
+  const data: unknown = await res.json();
+  if (!data || typeof data !== 'object' || !('listings' in data) || !Array.isArray(data.listings) ||
+      !('total' in data) || typeof data.total !== 'number') {
+    throw new ApiError('Invalid response shape from listing search', res.status);
+  }
+  return data as ListingSearchResponse;
 }
 
 /** Saves metadata under its hash before the auction is created, so a lost registration is recoverable. */
