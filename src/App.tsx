@@ -19,6 +19,7 @@ import { createListingRecord, fetchConfig, fetchListings, stageListingMetadata }
 import type { TxObserver } from './services/blockchain';
 import { patchTransaction, readTransactions, recordTransaction, staleTransactionsFor, transactionsFor, type TxKind, type TxRecord } from './utils/txStore';
 import { TransactionCenter } from './components/TransactionCenter';
+import { Inbox, useInbox } from './components/Inbox';
 import {
   cancelAuction,
   claimPayout,
@@ -141,6 +142,7 @@ export const AppContent: React.FC<{
   const listingsView =
     configDeployment === null || listingsState.deployment === configDeployment ? listingsState : EMPTY_LISTINGS;
   const listings = listingsView.data;
+  const inbox = useInbox(session?.address ?? null);
   const chain = listingsView.deploymentChanged ? null : listingsView.chain;
 
   // Navigation & View
@@ -1081,6 +1083,11 @@ export const AppContent: React.FC<{
         claimableRefundEth={claimableRefundWei === null ? undefined : formatEth(claimableRefundWei)}
         refundStatus={refundRead.status}
         activeBidsCount={activeBidsCount}
+        inboxUnread={session ? (inbox.data && !inbox.error ? inbox.data.unread : null) : undefined}
+        onOpenInbox={() => {
+          setCurrentTab('activity');
+          requestAnimationFrame(() => document.getElementById('inbox-title')?.scrollIntoView({ block: 'start' }));
+        }}
       />
 
       <ReadStatusBanner sources={readSources} isRetrying={isRefreshing} />
@@ -1211,6 +1218,16 @@ export const AppContent: React.FC<{
             onOpenBid={handleOpenBidModal}
             onConnectWallet={() => setIsWalletModalOpen(true)}
             isActionBusy={isActionBusy}
+          />
+        )}
+        {currentTab === 'activity' && session && (
+          <Inbox
+            inbox={inbox}
+            onOpenListing={(auctionId) => {
+              const listing = listings.find((l) => l.id === auctionId);
+              if (listing) handleOpenDetailModal(listing);
+              else addToast('info', 'Listing not available', `Auction #${auctionId} is not in the current listings.`);
+            }}
           />
         )}
         {currentTab === 'activity' && txScope && (
