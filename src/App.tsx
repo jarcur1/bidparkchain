@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityView } from './components/ActivityView';
 import { BidModal } from './components/BidModal';
-import { CreateListingModal } from './components/CreateListingModal';
+import { CreateListingModal, type OwnedSpace } from './components/CreateListingModal';
 import { DetailModal } from './components/DetailModal';
 import { CampusScenarioBanner } from './components/CampusScenarioBanner';
 import { DisclosuresBanner } from './components/DisclosuresBanner';
@@ -635,7 +635,7 @@ export const AppContent: React.FC<{
         throw new Error('Transaction submitted; finality not established. Check the explorer before bidding again.');
       }
       if (err instanceof BidPreflightError) throw err;
-      const msg = parseContractError(err);
+      const msg = parseContractError(err, config?.abi);
       addToast('error', 'Bid Submission Failed', msg);
       // The chain may have moved (competing bid, cutoff); refresh so the open dialog shows current state.
       void loadListings();
@@ -651,7 +651,8 @@ export const AppContent: React.FC<{
     minBidEth: string,
     bidEndSec: number,
     parkingStartSec: number,
-    parkingEndSec: number
+    parkingEndSec: number,
+    spaceId?: string
   ) => {
     if (isActionBusy) return;
     if (!config?.contractAddress || !config.abi) {
@@ -689,6 +690,7 @@ export const AppContent: React.FC<{
         parkingEndSec,
         config.confirmation,
         created.observe,
+        spaceId,
       );
       if (created.id) patchTransaction(created.id, { auctionId, registered: false });
 
@@ -731,7 +733,7 @@ export const AppContent: React.FC<{
         reportUnknown(err);
         throw new Error('Transaction submitted; finality not established. Check the explorer before creating another auction.');
       }
-      const msg = parseContractError(err);
+      const msg = parseContractError(err, config?.abi);
       addToast('error', 'Listing Notice', msg);
       throw new Error(msg);
     } finally {
@@ -827,7 +829,7 @@ export const AppContent: React.FC<{
         reportUnknown(err);
         return;
       }
-      const msg = parseContractError(err);
+      const msg = parseContractError(err, config?.abi);
       addToast('error', 'Refund Withdrawal Failed', msg);
     } finally {
       setIsActionBusy(false);
@@ -862,7 +864,7 @@ export const AppContent: React.FC<{
         reportUnknown(err);
         return;
       }
-      const msg = parseContractError(err);
+      const msg = parseContractError(err, config?.abi);
       addToast('error', 'Settlement Failed', msg);
     } finally {
       setIsActionBusy(false);
@@ -898,7 +900,7 @@ export const AppContent: React.FC<{
         reportUnknown(err);
         return;
       }
-      const msg = parseContractError(err);
+      const msg = parseContractError(err, config?.abi);
       addToast('error', 'Cancellation Failed', msg);
     } finally {
       setIsActionBusy(false);
@@ -933,7 +935,7 @@ export const AppContent: React.FC<{
         reportUnknown(err);
         return;
       }
-      const msg = parseContractError(err);
+      const msg = parseContractError(err, config?.abi);
       addToast('error', 'Payout Claim Failed', msg);
     } finally {
       setIsActionBusy(false);
@@ -961,6 +963,23 @@ export const AppContent: React.FC<{
         !l.cancelled &&
         l.bidEnd > now
     ).length;
+  }, [listings, walletState.address]);
+
+  // The wallet's spaces and the windows each still holds, mirroring the contract's holdsWindow rule.
+  const ownedSpaces = useMemo<OwnedSpace[]>(() => {
+    if (!walletState.address) return [];
+    const now = getChainNowSec();
+    const addr = walletState.address.toLowerCase();
+    const spaces = new Map<string, OwnedSpace>();
+    for (const l of listings) {
+      if (l.owner.toLowerCase() !== addr) continue;
+      const space = spaces.get(l.spaceId) ?? { id: l.spaceId, title: l.title, held: [] };
+      space.title = l.title;
+      const hasBid = BigInt(l.highestBidder || 0) !== 0n;
+      if (!l.cancelled && (hasBid || l.bidEnd > now)) space.held.push({ start: l.parkingStart, end: l.parkingEnd });
+      spaces.set(l.spaceId, space);
+    }
+    return [...spaces.values()];
   }, [listings, walletState.address]);
 
   const readSources: ReadSource[] = [
@@ -1195,6 +1214,7 @@ export const AppContent: React.FC<{
         onRetryRegistration={handleRetryRegistration}
         pendingRegistration={pendingRegistration}
         isSubmitting={isActionBusy}
+        spaces={ownedSpaces}
       />
 
       {/* Wallet Management Modal */}

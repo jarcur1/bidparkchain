@@ -258,3 +258,89 @@ describe('adversarial ETH recipients and reentrancy', () => {
     await reverts(actor.execute.staticCall(encoded('claimPayout', [1])), 'PayoutAlreadyClaimed');
   });
 });
+
+describe('parking-space inventory and overlap protection', () => {
+  async function space(signer = owner) {
+    const spaceId = await escrow.nextSpaceId();
+    await mined(escrow.connect(signer).registerSpace());
+    return spaceId;
+  }
+  async function list(spaceId, parkingStart, parkingEnd, { signer = owner, bidEnd } = {}) {
+    bidEnd ??= (await timestamp()) + 100;
+    const id = await escrow.nextAuctionId();
+    await mined(escrow.connect(signer).createSpaceAuction(spaceId, hash, 1, bidEnd, parkingStart, parkingEnd));
+    return id;
+  }
+  const window = async (from, to) => { const t = await timestamp(); return [t + from, t + to]; };
+
+  it('gives each legacy auction its own stable space and each registered space an owner', async () => {
+    const first = await create();
+    const second = await create({ signer: alice });
+    expect(await escrow.auctionSpace(first.id)).toBe(1n);
+    expect(await escrow.auctionSpace(second.id)).toBe(2n);
+    expect(await escrow.spaceOwner(2)).toBe(alice.address);
+    const spaceId = await space(bob);
+    expect(spaceId).toBe(3n);
+    expect(await escrow.spaceOwner(spaceId)).toBe(bob.address);
+    expect(await escrow.spaceAuctions(spaceId)).toEqual([]);
+  });
+
+  it('rejects overlapping windows on one space, allows adjacent windows and other spaces', async () => {
+    const spaceId = await space();
+    const [start, end] = await window(1000, 2000);
+    const id = await list(spaceId, start, end);
+    for (const [s, e] of [[start, end], [start - 50, start + 1], [end - 1, end + 50], [start + 10, end - 10], [start - 50, end + 50]]) {
+      await reverts(escrow.createSpaceAuction.staticCall(spaceId, hash, 1, start - 500, s, e), 'SpaceWindowTaken');
+    }
+    const before = await list(spaceId, start - 500, start);
+    const after = await list(spaceId, end, end + 500);
+    const elsewhere = await list(await space(), start, end);
+    expect(await escrow.spaceAuctions(spaceId)).toEqual([id, before, after]);
+    expect(await escrow.auctionSpace(elsewhere)).not.toBe(spaceId);
+  });
+
+  it('lets only the space owner list it, including through direct contract calls', async () => {
+    const spaceId = await space();
+    const [start, end] = await window(1000, 2000);
+    await reverts(escrow.connect(alice).createSpaceAuction.staticCall(spaceId, hash, 1, start - 500, start, end), 'NotSpaceOwner');
+    await reverts(escrow.createSpaceAuction.staticCall(999, hash, 1, start - 500, start, end), 'NotSpaceOwner');
+  });
+
+  it('releases a window on cancellation or a bidless close, but never under a winning bid', async () => {
+    const spaceId = await space();
+    const [start, end] = await window(1000, 2000);
+    const cancelled = await list(spaceId, start, end);
+    expect(await escrow.holdsWindow(cancelled)).toBe(true);
+    await mined(escrow.cancel(cancelled));
+    expect(await escrow.holdsWindow(cancelled)).toBe(false);
+
+    const bidless = await list(spaceId, start, end, { bidEnd: start - 900 });
+    await mineAt(start - 900);
+    expect(await escrow.holdsWindow(bidless)).toBe(false);
+
+    const won = await list(spaceId, start, end, { bidEnd: start - 500 });
+    await mined(escrow.connect(alice).bid(won, { value: 1n }));
+    await mineAt(start - 500);
+    await mined(escrow.settle(won));
+    expect(await escrow.holdsWindow(won)).toBe(true);
+    await reverts(escrow.createSpaceAuction.staticCall(spaceId, hash, 1, start - 100, start, end), 'SpaceWindowTaken');
+  });
+
+  it('accepts only the first of two overlapping listings mined in the same block', async () => {
+    const spaceId = await space();
+    const [start, end] = await window(1000, 2000);
+    await chain.provider.send('evm_setAutomine', [false]);
+    try {
+      const signer = escrow.connect(owner);
+      const nonce = await chain.provider.getTransactionCount(owner.address, 'pending');
+      const a = await signer.createSpaceAuction(spaceId, hash, 1, start - 500, start, end, { nonce, gasLimit: 500_000 });
+      const b = await signer.createSpaceAuction(spaceId, hash, 1, start - 500, start + 10, end + 10, { nonce: nonce + 1, gasLimit: 500_000 });
+      await chain.provider.send('evm_mine', []);
+      expect((await chain.provider.getTransactionReceipt(a.hash)).status).toBe(1);
+      expect((await chain.provider.getTransactionReceipt(b.hash)).status).toBe(0);
+    } finally {
+      await chain.provider.send('evm_setAutomine', [true]);
+    }
+    expect((await escrow.spaceAuctions(spaceId)).length).toBe(1);
+  });
+});

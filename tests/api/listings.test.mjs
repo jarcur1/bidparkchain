@@ -93,7 +93,7 @@ describe('listing API with real SQLite and onchain auctions', () => {
     expect(hash(variant)).toBe(hash(metadata));
     const created = await register('1', variant);
     expect(created.status).toBe(201);
-    expect(created.json.listing).toMatchObject({ id: '1', ...metadata, metadataHash: hash(metadata) });
+    expect(created.json.listing).toMatchObject({ id: '1', spaceId: '1', ...metadata, metadataHash: hash(metadata) });
     expect((await register(' 01 ')).status).toBe(200);
     expect(runtime.db.countListings(deployment.address)).toBe(1);
     expect((await request('/api/listings')).json.listings).toEqual([created.json.listing]);

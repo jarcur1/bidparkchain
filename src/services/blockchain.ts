@@ -218,12 +218,16 @@ export async function createAuctionOnChain(
   parkingEndSec: number,
   confirmation: ConfirmationPolicy = 'mined',
   observe?: TxObserver,
+  spaceId?: string,
 ): Promise<CreateAuctionResult> {
   const metadataHash = computeMetadataHash(metadata);
   const minBidWei = parseEther(minBidEth);
 
   const args = [metadataHash, minBidWei, BigInt(bidEndSec), BigInt(parkingStartSec), BigInt(parkingEndSec)];
-  const receipt = await send(contract, 'createAuction', args, confirmation, observe);
+  // Without a space id, createAuction registers a new space for this listing.
+  const receipt = spaceId
+    ? await send(contract, 'createSpaceAuction', [BigInt(spaceId), ...args], confirmation, observe)
+    : await send(contract, 'createAuction', args, confirmation, observe);
   const tx = { hash: receipt.hash };
 
   // Parse logs for AuctionCreated(uint256 indexed id, address indexed owner)
@@ -303,16 +307,30 @@ const CONTRACT_ERROR_MESSAGES: Record<string, string> = {
   AuctionCancelledError: 'This auction was cancelled.',
   AuctionNotFound: 'This auction does not exist on the connected deployment.',
   OwnerCannotBid: 'Spot owners cannot bid on their own listing.',
+  SpaceWindowTaken: 'This space already has a listing for an overlapping parking window. Pick a window that does not overlap, or cancel the other listing first.',
+  NotSpaceOwner: 'Only the wallet that owns this parking space can list it.',
 };
 
-export function parseContractError(err: unknown): string {
+/** Decodes raw revert data with the escrow ABI: ethers leaves gas-estimation reverts undecoded. */
+function decodeRevert(errorObj: Record<string, unknown>, abi?: InterfaceAbi): { name: string } | null {
+  const info = errorObj.info as { error?: { data?: unknown } } | undefined;
+  const data = [errorObj.data, info?.error?.data].find((value): value is string => typeof value === 'string' && value.startsWith('0x'));
+  if (!abi || !data) return null;
+  try {
+    return new Interface(abi).parseError(data);
+  } catch {
+    return null;
+  }
+}
+
+export function parseContractError(err: unknown, abi?: InterfaceAbi): string {
   if (!err) return 'Unknown error occurred';
 
   if (typeof err === 'object') {
     const errorObj = err as Record<string, unknown>;
 
     // Decoded custom errors from the escrow contract ABI
-    const revert = errorObj.revert;
+    const revert = errorObj.revert ?? decodeRevert(errorObj, abi);
     if (revert && typeof revert === 'object') {
       const known = CONTRACT_ERROR_MESSAGES[(revert as Record<string, unknown>).name as string];
       if (known) return known;
