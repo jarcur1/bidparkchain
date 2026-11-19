@@ -69,13 +69,13 @@ it('walks a protected booking through both parties\' inboxes in order and keeps 
   // Inside 24 hours: upcoming; inside the hour: arrival, saying instructions exist without their text.
   await chain.increaseTime(2 * 86400 - 100 - 20 * 60);
   runtime.db.setArrivalKey(Buffer.alloc(32, 1));
-  const host = await api(HOST, `/api/auctions/${id}/arrival`, { instructions: 'Gate code 4321' });
+  const host = await api(HOST, `/api/auctions/${id}/arrival`, { instructions: 'Gate code QX-SECRET-7731' });
   expect(host.status).toBe(200);
   runtime.db.setArrivalKey(null);
   let winner = await inbox(WINNER);
   expect(feed(winner)).toEqual(['arrival', 'upcoming', 'won']);
   expect(winner.items[0]).toMatchObject({ id: `arrival:${id}`, hasInstructions: true, parkingStart: start, category: 'reservations', read: false });
-  expect(JSON.stringify(winner)).not.toContain('4321');
+  expect(JSON.stringify(winner)).not.toContain('QX-SECRET');
 
   // The winner checks in; only the host is told.
   await chain.increaseTime(10 * 60);
