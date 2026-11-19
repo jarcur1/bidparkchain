@@ -83,6 +83,17 @@ The My Activity tab holds a host workspace for a connected wallet:
 
 Published auction metadata is immutable; relisting a space starts a new draft and a new auction.
 
+## Arrival instruction encryption
+
+Private arrival instructions are encrypted at rest with AES-256-GCM (`node:crypto`). The key is `BIDPARK_ARRIVAL_KEY`: 32 random bytes as 64 hex characters (or base64). An invalid value stops the API at startup.
+
+- **Hosted mode** (`BIDPARK_ALLOWED_ORIGINS` set) refuses to save instructions while the key is unset (HTTP 503).
+- **Local and demo mode** keep working without a key and store the text unencrypted. `GET /api/settings` reports `arrivalEncryption: "off"` with a note, or `"aes-256-gcm"`. It never returns the key.
+- **Existing rows.** Rows saved before the key was set are plaintext (migration 11 adds an `encrypted` flag, default 0). Start the API once with the key set and it encrypts them in place; a repeat start finds none.
+- **Binding.** Each value is authenticated with its chain, contract, scope and id, so a value copied to another row fails to decrypt.
+- **Keep the key apart from backups.** The database and its backups then hold only ciphertext. SQLite may leave old plaintext in free pages of a file that held plaintext rows, so run `VACUUM` once after enabling the key, and treat backups taken before that as plaintext.
+- **Losing the key** makes stored instructions unreadable; hosts must enter them again. There is no key rotation yet: to change the key, decrypt with the old one and re-save with the new one.
+
 ## First deployment
 
 1. Create a `bidpark` user and `/var/lib/bidpark` (mode 700). Install Node 24 and Caddy.
