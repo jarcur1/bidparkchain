@@ -8,12 +8,13 @@ export interface SessionContextValue {
   session: Session | null;
   isSigningIn: boolean;
   error: string | null;
-  signIn: () => Promise<void>;
+  /** Signs in with the connected wallet; resolves true once signed in. */
+  signIn: () => Promise<boolean>;
   signOut: () => Promise<void>;
 }
 
 const SIGNED_OUT: SessionContextValue = {
-  session: null, isSigningIn: false, error: null, signIn: async () => {}, signOut: async () => {},
+  session: null, isSigningIn: false, error: null, signIn: async () => false, signOut: async () => {},
 };
 const SessionContext = createContext<SessionContextValue | null>(null);
 
@@ -62,7 +63,7 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const address = walletState.address;
     if (!address || !walletState.isReady || !signer || !('signMessage' in signer)) {
       setError('Connect a wallet on the supported network before signing in.');
-      return;
+      return false;
     }
     setIsSigningIn(true);
     setError(null);
@@ -70,10 +71,12 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const { nonce, message } = await requestSignIn(address);
       const signature = await (signer as Signer).signMessage(message);
       setStored(await verifySignIn(nonce, signature));
+      return true;
     } catch (err) {
       setError(isRejection(err)
         ? 'Signature request was rejected. You are not signed in.'
         : err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setIsSigningIn(false);
     }

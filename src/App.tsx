@@ -14,7 +14,7 @@ import { SpotGrid } from './components/SpotGrid';
 import { Toast } from './components/Toast';
 import { WalletModal } from './components/WalletModal';
 import { useWallet, WalletProvider } from './context/WalletContext';
-import { SessionProvider } from './context/SessionContext';
+import { SessionProvider, useSession } from './context/SessionContext';
 import { createListingRecord, fetchConfig, fetchListings, stageListingMetadata } from './services/api';
 import {
   cancelAuction,
@@ -117,6 +117,12 @@ export const AppContent: React.FC<{
   onRefreshConfig: () => Promise<ReadResult>;
 }> = ({ config, configRead, onRefreshConfig }) => {
   const { walletState, signer, isCurrentSigner, provider, wrongChain, refreshBalance, balanceRead } = useWallet();
+  const { session, signIn: signInSession } = useSession();
+  // Listing details are an off-chain write, so the API requires a wallet sign-in for them.
+  const ensureSignedIn = async () => {
+    if (session || await signInSession()) return;
+    throw new Error('Sign in with your wallet to save listing details. Signing in proves wallet control only and moves no funds.');
+  };
 
   // Primary state
   const [listingsState, setListingsState] = useState<ListingsState>(EMPTY_LISTINGS);
@@ -565,6 +571,7 @@ export const AppContent: React.FC<{
     setIsActionBusy(true);
     try {
       await preflightWrite();
+      await ensureSignedIn();
       // Save the exact metadata before signing: if registration is lost after the transaction,
       // the server can still match the new auction's hash to these details.
       await stageListingMetadata(metadata, webProfile.id === 'sepolia' ? expectedDeployment : undefined);
@@ -634,6 +641,7 @@ export const AppContent: React.FC<{
     }
     setIsActionBusy(true);
     try {
+      await ensureSignedIn();
       if (webProfile.id === 'sepolia') {
         await createListingRecord(auctionId, metadata, pendingRegistration.deployment);
       } else {

@@ -7,7 +7,7 @@ import { assertProfileDirectory, resolveRuntimeProfile } from '../scripts/helper
 import { verifyPersistentDeployment } from '../scripts/helpers/persistent-deployment.mjs';
 import { compileEscrowContract } from '../scripts/helpers/compiler.mjs';
 import { getNetworkProfile } from '../shared/network-profiles.mjs';
-import { mountAuth } from './auth.mjs';
+import { mountAuth, readSession } from './auth.mjs';
 
 let sepoliaArtifact;
 
@@ -210,6 +210,20 @@ export function createApp(options = {}) {
     return { listings, unindexed };
   }
 
+  /** The signed-in session, or null after answering 401: listing details are an off-chain write. */
+  function requireSession(req, res) {
+    const session = readSession(db, req);
+    if (!session) res.status(401).json({ error: 'Sign in with your wallet to save listing details' });
+    return session;
+  }
+
+  /** Only the auction's on-chain owner may register its details. */
+  function ownsAuction(session, onchain, res) {
+    if (onchain.owner.toLowerCase() === session.address.toLowerCase()) return true;
+    res.status(403).json({ error: "Only the auction's owner can register its details" });
+    return false;
+  }
+
   /** True when a client-supplied deployment identity names the deployment this API serves. */
   function matchesDeployment(expected, deployment) {
     return Boolean(expected) && expected.chainId === profile.chainId &&
@@ -401,6 +415,7 @@ export function createApp(options = {}) {
    */
   app.post('/api/listings/stage', async (req, res, next) => {
     try {
+      if (!requireSession(req, res)) return;
       const validation = validateSpotMetadata(req.body?.metadata);
       if (!validation.valid || !validation.normalized) {
         res.status(400).json({ error: validation.error || 'Invalid listing metadata' });
@@ -427,6 +442,8 @@ export function createApp(options = {}) {
    */
   app.post('/api/listings', async (req, res, next) => {
     try {
+      const session = requireSession(req, res);
+      if (!session) return;
       const { auctionId, metadata } = req.body || {};
 
       const canonicalId = canonicalizeAuctionId(auctionId);
@@ -460,6 +477,7 @@ export function createApp(options = {}) {
             res.status(404).json({ error: `Auction ID ${canonicalId} does not exist onchain` });
             return;
           }
+          if (!ownsAuction(session, onchain, res)) return;
           if (onchain.metadataHash.toLowerCase() !== canonicalHash.toLowerCase()) {
             res.status(400).json({ error: 'Metadata canonical hash does not match onchain auction metadataHash' });
             return;
@@ -513,6 +531,7 @@ export function createApp(options = {}) {
         res.status(404).json({ error: `Auction ID ${canonicalId} does not exist onchain` });
         return;
       }
+      if (!ownsAuction(session, onchain, res)) return;
 
       if (onchain.metadataHash.toLowerCase() !== canonicalHash.toLowerCase()) {
         res.status(400).json({

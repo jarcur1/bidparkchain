@@ -74,6 +74,10 @@ beforeEach(() => {
   fetchBoundary = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     if (input === '/api/config') return Response.json(config);
     if (input === '/api/listings/stage') { events.push('stage'); return Response.json({ metadataHash: '0x' }); }
+    // Sign-in boundary: the wallet signs the issued message before any listing write.
+    if (input === '/api/auth/session') return Response.json({ error: 'Not signed in' }, { status: 401 });
+    if (input === '/api/auth/nonce') return Response.json({ nonce: 'n', message: 'Sign in to BidPark', expiresAt: Date.now() + 60_000 });
+    if (input === '/api/auth/verify') { events.push('sign-in'); return Response.json({ address: account, chainId: 31337, expiresAt: Date.now() + 60_000 }); }
     if (input === '/api/listings' && init?.method === 'POST') {
       if (postFails) return Response.json({ error: 'Registration service unavailable' }, { status: 503 });
       const { auctionId } = JSON.parse(String(init.body)) as { auctionId: string };
@@ -112,7 +116,7 @@ describe('real application transaction boundaries', () => {
     expect(await deployment.contract.nextAuctionId()).toBe(BigInt(auctionId) + 1n);
     expect(sends).toHaveLength(1);
     // The metadata was staged exactly once, before the create transaction was signed.
-    expect(events).toEqual(['stage', 'send']);
+    expect(events).toEqual(['sign-in', 'stage', 'send']);
     // Close and reopen through the durable in-session recovery banner.
     await click(query('.modal-create-dialog .modal-close-btn'));
     await click(query('.btn-retry-registration'));

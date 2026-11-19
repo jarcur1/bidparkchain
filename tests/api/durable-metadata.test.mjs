@@ -7,6 +7,7 @@ import { createApp } from '../../server/app.mjs';
 import { EscrowDatabase, SCHEMA_VERSION } from '../../server/db.mjs';
 import { validateSpotMetadata } from '../../shared/validation.js';
 import { createScope, deployEscrow, writeDeployment } from '../support/owned-env.mjs';
+import { signInCookie } from '../support/auth.mjs';
 
 const SEPOLIA = 11155111;
 const A = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
@@ -83,10 +84,10 @@ describe('schema migrations and composite identity', () => {
 });
 
 describe('registration recovery against an owned chain', () => {
-  let chain, deployment, runtime, server, url;
+  let chain, deployment, runtime, server, url, cookie;
   const call = async (route, body) => {
     const response = await fetch(`${url}${route}`, body === undefined ? undefined : {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify(body),
     });
     return { status: response.status, json: await response.json() };
   };
@@ -104,6 +105,7 @@ describe('registration recovery against an owned chain', () => {
     server = runtime.app.listen(0, '127.0.0.1');
     await once(server, 'listening');
     url = `http://127.0.0.1:${server.address().port}`;
+    cookie = await signInCookie(url, chain.wallet(0));
   });
   afterAll(async () => {
     if (server) await new Promise((resolve) => server.close(resolve));

@@ -6,6 +6,7 @@ import { ethers } from 'ethers';
 import { canonicalizeAuctionId, createApp } from '../../server/app.mjs';
 import { validateSpotMetadata } from '../../shared/validation.js';
 import { createScope, deployEscrow, writeDeployment } from '../support/owned-env.mjs';
+import { signInCookie } from '../support/auth.mjs';
 
 const metadata = {
   title: 'Downtown garage', address: '123 Main Street', neighborhood: 'Downtown',
@@ -16,12 +17,13 @@ const hash = (value) => ethers.keccak256(ethers.toUtf8Bytes(JSON.stringify(valid
 
 // Every request uses an ephemeral listener, database, deployment and owned chain.
 describe('listing API with real SQLite and onchain auctions', () => {
-  let scope, chain, deployment, deploymentPath, runtime, server, url, snapshot;
+  let scope, chain, deployment, deploymentPath, runtime, server, url, snapshot, cookie;
   async function request(route, body, options = {}) {
     const response = await fetch(`${url}${route}`, {
       ...options,
       ...(body === undefined ? {} : { method: 'POST', body: JSON.stringify(body) }),
-      headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...options.headers },
+      // Signed in as the deployer, which owns every auction these tests create.
+      headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(cookie ? { Cookie: cookie } : {}), ...options.headers },
     });
     expect(response.headers.get('content-type')).toContain('application/json');
     const json = await response.json();
@@ -49,6 +51,7 @@ describe('listing API with real SQLite and onchain auctions', () => {
     server = runtime.app.listen(0, '127.0.0.1');
     await once(server, 'listening');
     url = `http://127.0.0.1:${server.address().port}`;
+    cookie = await signInCookie(url, chain.wallet(0));
     await createAuction(metadata);
   });
   afterAll(async () => {
@@ -60,6 +63,15 @@ describe('listing API with real SQLite and onchain auctions', () => {
       chain?.provider.destroy();
       await scope?.close();
     }
+  });
+
+  it('requires a signed-in session, and only the auction owner may register details', async () => {
+    expect((await request('/api/listings', { auctionId: '1', metadata }, { headers: { Cookie: '' } })).status).toBe(401);
+    expect((await request('/api/listings/stage', { metadata }, { headers: { Cookie: '' } })).status).toBe(401);
+    const stranger = await signInCookie(url, chain.wallet(5));
+    const denied = await request('/api/listings', { auctionId: '1', metadata }, { headers: { Cookie: stranger } });
+    expect(denied).toMatchObject({ status: 403, json: { error: "Only the auction's owner can register its details" } });
+    expect(runtime.db.getListing('1', deployment.address)).toBeNull();
   });
 
   it('recovers delayed registration using canonical normalized metadata and is idempotent', async () => {
