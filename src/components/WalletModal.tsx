@@ -26,6 +26,7 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
     connectLocal,
     connectInjected,
     switchInjectedChain,
+    disconnect,
     wrongChain,
     balanceRead,
   } = useWallet();
@@ -103,6 +104,34 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
             )}
           </div>
 
+          <p className={walletState.error ? 'wallet-connection-error' : 'wallet-connection-status'} role={walletState.error ? 'alert' : 'status'}>
+            {walletState.isConnecting
+              ? 'Connecting…'
+              : walletState.error
+                ? walletState.error
+                : walletState.isReady
+                  ? 'Connected and ready'
+                  : wrongChain
+                    ? 'Connected to the wrong network'
+                    : 'Not connected'}
+          </p>
+
+          {(walletState.address || walletState.error) && (
+            <div className="wallet-disconnect-row">
+              <button
+                type="button"
+                className="read-status-retry"
+                onClick={() => { void signOut(); disconnect(); }}
+              >
+                Disconnect
+              </button>
+              <span className="section-note">
+                Forgets this wallet in BidPark and signs you out. It does not revoke this site's access in your wallet
+                extension; do that in the extension's settings.
+              </span>
+            </div>
+          )}
+
           {wrongChain && (
             <div className="wallet-wrong-chain-notice" role="alert">
               <ShieldAlert size={15} />
@@ -163,9 +192,11 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
 
           <div className="demo-accounts-list">
             {DEMO_ACCOUNTS.map((acc) => {
+              // Only an account that finished connecting is marked active.
               const isActive =
                 walletState.type === 'local' &&
-                walletState.localAccountIndex === acc.index;
+                walletState.localAccountIndex === acc.index &&
+                walletState.isReady;
               return (
                 <button
                   key={acc.index}

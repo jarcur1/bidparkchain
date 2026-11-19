@@ -48,6 +48,7 @@ function show(listings: Listing[], bidIds: Set<string> | null, listingsRead: Rea
       onClaimPayoutListing={noop}
       onOpenListingDetail={vi.fn()}
       onOpenBid={vi.fn()}
+      onConnectWallet={vi.fn()}
       isActionBusy={false}
     />,
   ));
@@ -72,6 +73,19 @@ it('names leading, outbid, pending and confirmed results in text', () => {
   expect(text).toContain('You won — confirmed on-chain');
   expect(text).toContain('does not grant access to any real space');
   expect(text).toContain('Withdraw 0.060 ETH');
+});
+
+it('offers a direct Connect Wallet action when no wallet is connected', () => {
+  const onConnectWallet = vi.fn();
+  act(() => root.render(
+    <ActivityView currentAddress={null} listings={[]} claimableRefundWei={null} refundRead={LOADING_READ}
+      myBidAuctionIds={null} listingsRead={LOADING_READ} onRetryRefund={vi.fn()} onWithdrawRefund={vi.fn()}
+      onSettleListing={vi.fn()} onCancelListing={vi.fn()} onClaimPayoutListing={vi.fn()} onOpenListingDetail={vi.fn()}
+      onOpenBid={vi.fn()} onConnectWallet={onConnectWallet} isActionBusy={false} />,
+  ));
+  const button = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Connect Wallet')!;
+  act(() => button.click());
+  expect(onConnectWallet).toHaveBeenCalledOnce();
 });
 
 it('never shows unknown listings or bid history as an empty account', () => {

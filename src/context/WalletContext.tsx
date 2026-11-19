@@ -24,6 +24,8 @@ export interface WalletContextValue {
   connectLocal: (accountIndex?: number) => Promise<void>;
   connectInjected: () => Promise<void>;
   switchInjectedChain: () => Promise<void>;
+  /** Forgets the wallet selection in this app. It does not revoke the site's access in a wallet extension. */
+  disconnect: () => void;
   refreshBalance: () => Promise<ReadResult>;
   balanceRead: ReadState;
 }
@@ -31,6 +33,15 @@ export interface WalletContextValue {
 const STORAGE_WALLET_TYPE = 'bidpark_wallet_type';
 const STORAGE_ACCOUNT_INDEX = 'bidpark_account_index';
 const WalletContext = createContext<WalletContextValue | null>(null);
+
+/** A connection error in words a user can act on; a declined wallet prompt is not shown as a failure code. */
+function describeConnectionError(error: unknown): string {
+  const e = error as { code?: unknown; info?: { error?: { code?: unknown } } } | null;
+  if (e?.code === 4001 || e?.code === 'ACTION_REJECTED' || e?.info?.error?.code === 4001) {
+    return 'The connection request was rejected in your wallet. Choose a wallet again to retry.';
+  }
+  return error instanceof Error ? error.message : String(error);
+}
 type Provider = JsonRpcProvider | BrowserProvider;
 
 export const WalletProvider: React.FC<{ config: Config | null; children: React.ReactNode }> = ({ config, children }) => {
@@ -98,8 +109,7 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
   const fail = useCallback((id: number, error: unknown) => {
     if (generation.current !== id) return;
     setBalanceRead(readFailed(LOADING_READ, error));
-    publish({ ...stateRef.current, isReady: false, isConnecting: false,
-      error: error instanceof Error ? error.message : String(error) });
+    publish({ ...stateRef.current, isReady: false, isConnecting: false, error: describeConnectionError(error) });
   }, [publish]);
 
   const connectLocal = useCallback(async (accountIndex?: number) => {
@@ -203,6 +213,22 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
     }
   }, [connectBrowser, fail]);
 
+  const disconnect = useCallback(() => {
+    ++selection.current;
+    ++generation.current;
+    ++balanceSeq.current;
+    activeProvider.current = null;
+    localStorage.removeItem(STORAGE_WALLET_TYPE);
+    localStorage.removeItem(STORAGE_ACCOUNT_INDEX);
+    setBalanceRead(LOADING_READ);
+    publishSigner(null);
+    setProvider(null);
+    setWrongChain(false);
+    // Type 'local' with no address is "disconnected": extension account/chain events no longer reconnect.
+    publish({ ...stateRef.current, type: 'local', address: null, balance: null, chainId: null,
+      isReady: false, isConnecting: false, error: null });
+  }, [publish, publishSigner, setBalanceRead]);
+
   const refreshBalance = useCallback(async (): Promise<ReadResult> => {
     const id = generation.current;
     const address = stateRef.current.address;
@@ -272,7 +298,7 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
     (webProfile.id === 'local' || walletState.type === 'injected');
   return <WalletContext.Provider value={{ walletState: usable ? walletState : { ...walletState, isReady: false },
     signer: usable ? signer : null, isCurrentSigner, provider, wrongChain,
-    connectLocal, connectInjected, switchInjectedChain, refreshBalance, balanceRead }}>{children}</WalletContext.Provider>;
+    connectLocal, connectInjected, switchInjectedChain, disconnect, refreshBalance, balanceRead }}>{children}</WalletContext.Provider>;
 };
 
 export function useWallet(): WalletContextValue {

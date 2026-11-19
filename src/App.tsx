@@ -1082,6 +1082,7 @@ export const AppContent: React.FC<{
             onClaimPayoutListing={handleClaimPayout}
             onOpenListingDetail={handleOpenDetailModal}
             onOpenBid={handleOpenBidModal}
+            onConnectWallet={() => setIsWalletModalOpen(true)}
             isActionBusy={isActionBusy}
           />
         )}

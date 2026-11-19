@@ -38,6 +38,7 @@ interface ActivityViewProps {
   onClaimPayoutListing: (listing: Listing) => Promise<void>;
   onOpenListingDetail: (listing: Listing) => void;
   onOpenBid: (listing: Listing) => void;
+  onConnectWallet: () => void;
   isActionBusy: boolean;
 }
 
@@ -55,6 +56,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
   onClaimPayoutListing,
   onOpenListingDetail,
   onOpenBid,
+  onConnectWallet,
   isActionBusy,
 }) => {
   if (!currentAddress) {
@@ -66,6 +68,9 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
           <p className="unconnected-text">
             Connect {webProfile.id === 'local' ? 'a local test wallet or browser wallet' : 'a browser wallet'} to view your active bids, claimable outbid refunds, and confirmed parking reservations.
           </p>
+          <button type="button" className="read-status-retry" onClick={onConnectWallet}>
+            Connect Wallet
+          </button>
         </div>
       </div>
     );
