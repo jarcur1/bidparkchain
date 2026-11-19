@@ -135,3 +135,21 @@ it('does not let a moderator decide on their own space', async () => {
   expect((await decide(MOD_HOST, 2, 'approve', 'control-verified')).status).toBe(403);
   expect((await decide(MOD, 2, 'approve', 'control-verified')).status).toBe(200);
 });
+
+it('keeps a review tied to the period when proof was submitted, even when the same host regains ownership', async () => {
+  const host = deployment.contract.connect(chain.wallet(HOST));
+  const other = deployment.contract.connect(chain.wallet(OTHER));
+  await (await host.registerSpace()).wait();
+  const spaceId = 3;
+  const route = `/api/moderation/verifications/${spaceId}/attestation`;
+  expect((await submit(HOST, spaceId)).status).toBe(201);
+  expect((await decide(MOD, spaceId, 'approve', 'control-verified')).status).toBe(200);
+  expect((await call(OTHER, route)).status).toBe(403);
+  const reviewed = (await call(MOD, route)).json;
+  expect(reviewed).toMatchObject({ action: 'approve', epoch: String(await host.spaceOwnershipEpoch(spaceId)) });
+  await (await host.transferSpace(spaceId, chain.wallet(OTHER).address)).wait();
+  await (await other.transferSpace(spaceId, chain.wallet(HOST).address)).wait();
+  expect((await call(MOD, route)).json.epoch).toBe(reviewed.epoch);
+  expect((await submit(HOST, spaceId, 'New lease after transfer')).status).toBe(201);
+  expect((await call(MOD, route)).json).toMatchObject({ action: null, epoch: String(await host.spaceOwnershipEpoch(spaceId)) });
+});

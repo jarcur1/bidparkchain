@@ -43,9 +43,9 @@ const audit = (db, contract, spaceId, { reports }) => db.getVerificationAudit(co
 /**
  * @param {import('express').Express} app
  * @param {{ db: any, moderators: Set<string>, contractAddress: () => string | null,
- *   readSpaceOwner: (spaceId: string) => Promise<string> }} deps
+ *   readSpaceOwnership: (spaceId: string) => Promise<{owner: string, epoch: string}> }} deps
  */
-export function mountVerification(app, { db, moderators, contractAddress, readSpaceOwner }) {
+export function mountVerification(app, { db, moderators, contractAddress, readSpaceOwnership }) {
   const isModerator = (session) => moderators.has(session.address.toLowerCase());
 
   /** Session and deployment for a verification route, or null after answering. */
@@ -89,22 +89,22 @@ export function mountVerification(app, { db, moderators, contractAddress, readSp
       if (evidence.length < 10 || evidence.length > MAX_EVIDENCE) {
         return res.status(400).json({ error: `Describe your proof of control in 10 to ${MAX_EVIDENCE} characters` });
       }
-      let owner;
-      try { owner = await readSpaceOwner(spaceId); } catch {
+      let ownership;
+      try { ownership = await readSpaceOwnership(spaceId); } catch {
         return res.status(503).json({ error: 'Blockchain service unavailable' });
       }
-      if (owner.toLowerCase() !== s.session.address.toLowerCase()) {
+      if (ownership.owner.toLowerCase() !== s.session.address.toLowerCase()) {
         return res.status(403).json({ error: "Only the space's on-chain owner can request verification" });
       }
       // Read after the chain call: nothing else can interleave between this check and the write.
       const current = db.getVerification(s.contract, spaceId);
       const sameHost = current && current.host.toLowerCase() === s.session.address.toLowerCase();
-      if (sameHost && ['pending', 'approved'].includes(current.status)) {
+      if (sameHost && current.ownership_epoch === ownership.epoch && ['pending', 'approved'].includes(current.status)) {
         return res.status(409).json({ error: `This space is already ${current.status}` });
       }
       db.recordVerification(s.contract, spaceId, {
         action: 'submit', status: 'pending', actor: s.session.address, host: s.session.address, evidence,
-        reason: sameHost ? 're-review' : 'initial-request',
+        reason: sameHost ? 're-review' : 'initial-request', epoch: ownership.epoch,
       });
       res.status(201).json({ spaceId, status: 'pending', audit: audit(db, s.contract, spaceId, { reports: false }) });
     } catch (err) {
@@ -125,7 +125,7 @@ export function mountVerification(app, { db, moderators, contractAddress, readSp
       const text = note(req, res);
       if (text === null) return;
       let owner;
-      try { owner = await readSpaceOwner(spaceId); } catch {
+      try { ({ owner } = await readSpaceOwnership(spaceId)); } catch {
         return res.status(503).json({ error: 'Blockchain service unavailable' });
       }
       if (owner === ethers.ZeroAddress) return res.status(404).json({ error: `Space ${spaceId} does not exist` });
@@ -152,10 +152,25 @@ export function mountVerification(app, { db, moderators, contractAddress, readSp
       nextOffset: offset + limit < total ? offset + limit : null,
       queue: db.getModerationQueue(s.contract, { limit, offset }).map((row) => ({
         spaceId: row.space_id, host: row.host ?? null, status: row.status ?? 'unverified',
+        epoch: row.ownership_epoch ?? null,
         evidence: row.evidence ?? '', updatedAt: row.updated_at ?? null,
         audit: audit(db, s.contract, row.space_id, { reports: true }),
       })),
     });
+  });
+
+  /** The current audited decision for one space. No evidence, signing, or state changes. */
+  app.get('/api/moderation/verifications/:spaceId/attestation', (req, res) => {
+    const s = scope(req, res, { moderator: true });
+    if (!s) return;
+    const spaceId = spaceIdOf(req.params.spaceId);
+    const current = spaceId && db.getVerification(s.contract, spaceId);
+    if (!current) return res.status(404).json({ error: 'Verification request not found.' });
+    const lastDecision = db.getVerificationAudit(s.contract, spaceId)
+      .findLast((entry) => entry.action === 'approve' || entry.action === 'revoke');
+    const action = current.status === 'approved' ? 'approve' : lastDecision?.action === 'revoke' ? 'revoke' : null;
+    res.set('Cache-Control', 'no-store');
+    res.json({ contractAddress: s.contract, reviewer: s.session.address, host: current.host, epoch: current.ownership_epoch, action });
   });
 
   /** POST /api/moderation/verifications/:spaceId { action, reason, note }: approve, reject or revoke. */

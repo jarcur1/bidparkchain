@@ -8,7 +8,7 @@ A wallet signature only proves control of a wallet. It does not prove the right 
 | --- | --- |
 | (none) | No request yet. Shown as "Not verified". |
 | `pending` | The space's on-chain owner submitted proof; waiting for a moderator. |
-| `approved` | A moderator accepted the proof. Listings on the space show **Verified space**. |
+| `approved` | A moderator accepted the proof. On advisory deployments the review supplies the public badge; gated deployments require a separate on-chain approval. |
 | `rejected` | A moderator did not accept the proof. The host can submit new proof for re-review. |
 | `suspended` | An approval was revoked (for example after a confirmed report). The host can submit new proof for re-review. |
 
@@ -18,7 +18,7 @@ Public listing responses only carry `verification: "verified" | "unverified"`. `
 
 1. The host signs in with the wallet that owns the space on chain and opens **My Activity → Space verification**.
 2. The host describes the proof in 10 to 2000 characters, e.g. a lease, deed, HOA or landlord permission, or a utility bill for the address. Ask for the least that shows control. Don't ask for ID numbers or full documents.
-3. The API checks `spaceOwner(spaceId)` on chain, and only the owner can submit. A space that is already pending or approved cannot be submitted again.
+3. The API checks the owner and records the ownership epoch from the same chain block. A pending or approved request for the same ownership epoch cannot be submitted again. If ownership changed (even if the same wallet later regained the space), submit new proof. Older approvals without a recorded epoch need new proof before they can be signed on-chain.
 4. A moderator reviews the proof against the listing address and approves or rejects it with a reason code.
 
 ## Moderators and reason codes
@@ -52,6 +52,7 @@ Every submission, decision and report is appended to `verification_audit` with t
 | `POST /api/spaces/:spaceId/verification` `{ evidence }` | space owner | Request verification or re-review. |
 | `POST /api/spaces/:spaceId/report` `{ reason, note }` | signed in | Flag a space for moderators. |
 | `GET /api/moderation/verifications` | moderator | Queue with evidence and full history. |
+| `GET /api/moderation/verifications/:spaceId/attestation` | moderator | Current review decision and ownership epoch, checked just before signing. Does not sign or change state. |
 | `POST /api/moderation/verifications/:spaceId` `{ action, reason, note }` | moderator | Approve, reject or revoke. |
 
 ## Verified inventory deployments
@@ -62,7 +63,7 @@ The local demo and the default illustrative Sepolia deployment use advisory veri
 2. The host calls `registerSpace()` and uses the `spaceId` from the mined `SpaceRegistered` event to submit the usual off-chain proof. The reviewer checks the current `spaceOwner(spaceId)` and `spaceOwnershipEpoch(spaceId)` against the proof they reviewed.
 3. Maintain a private stall registry. Resolve spelling, address and unit aliases to the same record, distinguish separately controlled stalls at one property, and assign each genuine stall one random opaque 32-byte key. Never publish evidence, raw location identifiers, or hashes of guessable addresses as keys. The contract cannot independently tell whether two different keys refer to one real stall.
 4. Review the exact public listing details as well as proof of control. Compute the same metadata hash as the listing form: keccak256 of the UTF-8 JSON returned by `JSON.stringify(validateSpotMetadata(details).normalized)` after validation succeeds. The deployer does not need to provide its key to the API.
-5. From the verifier wallet, call `setSpaceVerification(spaceId, reviewedOwner, reviewedEpoch, key, metadataHash)` to approve, or pass zero for both hashes to suspend. Check the finalized receipt on Sepolia. Record the off-chain review action separately in the moderation queue; API moderation actions do not sign transactions or sync permissions automatically. On a gated deployment the public badge and bid availability come from the chain, not the queue.
+5. Sign in with a wallet that is both an app moderator (`BIDPARK_MODERATORS`) and an on-chain verifier. In **My Activity → Moderation queue**, record **Approve** or **Revoke**, then choose **Check on-chain verification**. Inspect the owner and epoch. Enter the stall key (or reuse the bound key) and reviewed listing hash to **Sign on-chain approval**, or choose **Sign on-chain suspension**. The queue reports wallet and confirmation progress, then refreshes the chain state. A rejection or pending transaction does not change the off-chain decision or imply that bidding has changed. Check an unresolved transaction in the transaction center before sending another. On a gated deployment the public badge and bid availability come from the chain, not the queue.
 6. The host or an authorized lister uses `createSpaceAuction` or `createProtectedAuction` with the approved `spaceId` and metadata hash. Quick creation that implicitly registers a new space is unavailable in this mode. Reviewing a new metadata hash pauses new bids on listings with the previous hash but does not free their windows or change their settlement rules.
 
 The same key can never claim a second `spaceId` in that contract, even after suspension. Transfer keeps the key and calendar, drops the delegated listers, and clears approval; the new owner needs review. If a stall was bound incorrectly, suspend it and investigate rather than issuing another key to bypass its calendar. The registry must be reconciled separately on redeployment; a new contract does not see old calendars.
