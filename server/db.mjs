@@ -143,6 +143,21 @@ const MIGRATIONS = [
       CREATE INDEX idx_events_auction ON auction_events (chain_id, contract_address, auction_id, canonical);
     `);
   },
+  // 5: inbox read state per wallet. Inbox entries are derived from canonical events and identified by
+  //    the triggering event's (block hash, log index); only which ones a wallet has read is stored.
+  (db) => {
+    db.exec(`
+      CREATE TABLE inbox_reads (
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        address TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        read_at INTEGER NOT NULL,
+        PRIMARY KEY (chain_id, contract_address, address, item_id)
+      );
+      CREATE INDEX idx_events_account ON auction_events (chain_id, contract_address, account);
+    `);
+  },
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
@@ -499,6 +514,38 @@ export class EscrowDatabase {
       WHERE chain_id = ? AND contract_address = ? AND (? IS NULL OR auction_id = ?) AND (? OR canonical = 1)
       ORDER BY block_number, log_index
     `).all(this.chainId, contractAddress.toLowerCase(), auctionId ?? null, auctionId ?? null, includeOrphaned ? 1 : 0);
+  }
+
+  /**
+   * Canonical events that can produce inbox entries for `address` (checksummed, as the indexer stores
+   * it): its own events, plus every bid on auctions it bid on (to see when it was outbid). Chain order.
+   */
+  getInboxEvents(contractAddress, address) {
+    const contract = contractAddress.toLowerCase();
+    return this.db.prepare(`
+      SELECT block_number, block_hash, tx_hash, log_index, event, auction_id, account, amount
+      FROM auction_events
+      WHERE chain_id = ? AND contract_address = ? AND canonical = 1 AND (
+        account = ? OR (event = 'BidPlaced' AND auction_id IN (
+          SELECT auction_id FROM auction_events
+          WHERE chain_id = ? AND contract_address = ? AND canonical = 1 AND event = 'BidPlaced' AND account = ?
+        ))
+      )
+      ORDER BY block_number, log_index
+    `).all(this.chainId, contract, address, this.chainId, contract, address);
+  }
+
+  getInboxReads(contractAddress, address) {
+    return new Set(this.db.prepare('SELECT item_id FROM inbox_reads WHERE chain_id = ? AND contract_address = ? AND address = ?')
+      .all(this.chainId, contractAddress.toLowerCase(), address.toLowerCase()).map((row) => row.item_id));
+  }
+
+  markInboxRead(contractAddress, address, itemIds) {
+    const insert = this.db.prepare(`
+      INSERT OR IGNORE INTO inbox_reads (chain_id, contract_address, address, item_id, read_at) VALUES (?, ?, ?, ?, ?)
+    `);
+    return this.#transaction(() => itemIds.reduce((n, id) => n + insert.run(this.chainId,
+      contractAddress.toLowerCase(), address.toLowerCase(), id, Date.now()).changes, 0));
   }
 
   close() {

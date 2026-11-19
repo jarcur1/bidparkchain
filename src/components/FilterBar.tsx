@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import type { ReadStatus } from '../utils/readState';
 import type { FilterState, SortOption, SpotKindFilter, AuctionStatusFilter } from '../types';
+import { DEFAULT_FILTERS, RADIUS_OPTIONS_KM, validateFilters, type Place } from '../utils/discovery';
 
 interface FilterBarProps {
   filters: FilterState;
@@ -18,6 +19,10 @@ interface FilterBarProps {
   listingsStatus: ReadStatus;
   viewMode: 'split' | 'cards' | 'map';
   onViewModeChange: (mode: 'split' | 'cards' | 'map') => void;
+  destinationChoices?: Place[];
+  /** The typed destination resolved to a known place, or null. */
+  destination?: Place | null;
+  amenityChoices?: string[];
 }
 
 export const FilterBar: React.FC<FilterBarProps> = ({
@@ -28,24 +33,24 @@ export const FilterBar: React.FC<FilterBarProps> = ({
   listingsStatus,
   viewMode,
   onViewModeChange,
+  destinationChoices = [],
+  destination = null,
+  amenityChoices = [],
 }) => {
-  const isFiltered =
-    Boolean(filters.search.trim()) ||
-    filters.kind !== 'all' ||
-    filters.status !== 'all' ||
-    Boolean(filters.minPrice) ||
-    Boolean(filters.maxPrice);
-
-  const handleReset = () => {
-    onFilterChange({
-      search: '',
-      kind: 'all',
-      status: 'all',
-      minPrice: '',
-      maxPrice: '',
-      sortBy: 'ending-soon',
+  const isFiltered = (Object.keys(DEFAULT_FILTERS) as (keyof FilterState)[]).some(
+    (k) => k !== 'sortBy' && String(filters[k]) !== String(DEFAULT_FILTERS[k])
+  );
+  const errors = validateFilters(filters);
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const set = (patch: Partial<FilterState>) => onFilterChange({ ...filters, ...patch });
+  const toggleAmenity = (a: string) =>
+    set({
+      amenities: filters.amenities.includes(a)
+        ? filters.amenities.filter((x) => x !== a)
+        : [...filters.amenities, a],
     });
-  };
+
+  const handleReset = () => onFilterChange(DEFAULT_FILTERS);
 
   return (
     <div className="filter-toolbar">
@@ -98,6 +103,142 @@ export const FilterBar: React.FC<FilterBarProps> = ({
         </div>
       </div>
 
+      {/* Trip row: destination, visit times, budget, amenities */}
+      <div className="filter-row-trip">
+        <div className="trip-field">
+          <label htmlFor="destination-input" className="filter-label">
+            Destination
+          </label>
+          <div className="trip-inline">
+            <input
+              id="destination-input"
+              type="text"
+              className="trip-input"
+              list="destination-options"
+              autoComplete="off"
+              placeholder="Address, landmark or listing"
+              value={filters.destination}
+              aria-describedby="destination-hint"
+              onChange={(e) => set({ destination: e.target.value })}
+            />
+            <datalist id="destination-options">
+              {destinationChoices.map((o) => (
+                <option key={o.label} value={o.label} />
+              ))}
+            </datalist>
+            <select
+              id="radius-select"
+              className="filter-select"
+              aria-label="Maximum distance"
+              value={filters.radiusKm}
+              onChange={(e) => set({ radiusKm: e.target.value })}
+            >
+              <option value="">Any distance</option>
+              {RADIUS_OPTIONS_KM.map((km) => (
+                <option key={km} value={km}>
+                  Within {km} km
+                </option>
+              ))}
+            </select>
+          </div>
+          <p id="destination-hint" className="trip-hint" role="status">
+            {!filters.destination.trim()
+              ? 'Pick a landmark or listing address to see straight-line distances.'
+              : destination
+                ? `Distances are straight-line from ${destination.label}, not driving or walking routes.`
+                : `No landmark or listing address matches "${filters.destination.trim()}". Pick one of the suggestions.`}
+          </p>
+        </div>
+
+        <fieldset className="trip-field">
+          <legend className="filter-label">Your visit</legend>
+          <div className="trip-inline">
+            <label className="trip-sublabel">
+              Arrive
+              <input
+                type="datetime-local"
+                className="trip-input"
+                value={filters.arrive}
+                aria-invalid={Boolean(errors.time)}
+                aria-describedby="visit-hint"
+                onChange={(e) => set({ arrive: e.target.value })}
+              />
+            </label>
+            <label className="trip-sublabel">
+              Depart
+              <input
+                type="datetime-local"
+                className="trip-input"
+                value={filters.depart}
+                aria-invalid={Boolean(errors.time)}
+                aria-describedby="visit-hint"
+                onChange={(e) => set({ depart: e.target.value })}
+              />
+            </label>
+          </div>
+          <p id="visit-hint" className={`trip-hint ${errors.time ? 'trip-error' : ''}`} role="status">
+            {errors.time
+              ? `${errors.time} The visit filter is not applied.`
+              : `Times are in ${timeZone}. Only spaces whose parking window covers your whole visit are shown.`}
+          </p>
+        </fieldset>
+
+        <fieldset className="trip-field">
+          <legend className="filter-label">Budget (ETH)</legend>
+          <div className="trip-inline">
+            <label className="trip-sublabel">
+              Min
+              <input
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step="0.001"
+                className="trip-input trip-number"
+                value={filters.minPrice}
+                aria-invalid={Boolean(errors.price)}
+                aria-describedby="budget-hint"
+                onChange={(e) => set({ minPrice: e.target.value })}
+              />
+            </label>
+            <label className="trip-sublabel">
+              Max
+              <input
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step="0.001"
+                className="trip-input trip-number"
+                value={filters.maxPrice}
+                aria-invalid={Boolean(errors.price)}
+                aria-describedby="budget-hint"
+                onChange={(e) => set({ maxPrice: e.target.value })}
+              />
+            </label>
+          </div>
+          <p id="budget-hint" className={`trip-hint ${errors.price ? 'trip-error' : ''}`} role="status">
+            {errors.price
+              ? `${errors.price} The budget filter is not applied.`
+              : 'Compared with the current highest bid, or the opening bid if there is none. Not a final price: bids can still rise.'}
+          </p>
+        </fieldset>
+
+        <details className="trip-field trip-amenities" open={filters.amenities.length > 0 || undefined}>
+          <summary className="filter-label">
+            Amenities{filters.amenities.length ? ` (${filters.amenities.length} selected)` : ''}
+          </summary>
+          <fieldset className="amenity-checklist">
+            <legend className="filter-label">Required amenities</legend>
+            {amenityChoices.length === 0 && <p className="trip-hint">No amenities in the loaded listings.</p>}
+            {amenityChoices.map((a) => (
+              <label key={a} className="amenity-check">
+                <input type="checkbox" checked={filters.amenities.includes(a)} onChange={() => toggleAmenity(a)} />
+                {a}
+              </label>
+            ))}
+          </fieldset>
+        </details>
+      </div>
+
       {/* Bottom row: status, price, sort, view toggles & clear */}
       <div className="filter-row-bottom">
         <div className="filter-selects-group">
@@ -148,6 +289,9 @@ export const FilterBar: React.FC<FilterBarProps> = ({
                 <option value="price-asc">Price: Low to High</option>
                 <option value="price-desc">Price: High to Low</option>
                 <option value="newest">Recently Listed</option>
+                <option value="distance" disabled={!destination}>
+                  Distance from destination
+                </option>
               </select>
             </div>
           </div>

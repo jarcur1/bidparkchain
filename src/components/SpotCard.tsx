@@ -18,6 +18,7 @@ import {
   getListingStatus,
 } from '../utils/formatters';
 import { getBidEligibility, isOwnerOf } from '../utils/eligibility';
+import { formatDistance } from '../utils/discovery';
 
 interface SpotCardProps {
   listing: Listing;
@@ -27,6 +28,8 @@ interface SpotCardProps {
   onOpenBid: (listing: Listing) => void;
   onOpenDetail: (listing: Listing) => void;
   onSettle?: (listing: Listing) => void;
+  /** Straight-line distance from the driver's destination. */
+  distance?: { km: number; from: string };
 }
 
 export const SpotCard: React.FC<SpotCardProps> = ({
@@ -37,6 +40,7 @@ export const SpotCard: React.FC<SpotCardProps> = ({
   onOpenBid,
   onOpenDetail,
   onSettle,
+  distance,
 }) => {
   const [timeRemaining, setTimeRemaining] = useState(() =>
     getAuctionTimeRemaining(listing.bidEnd)
@@ -142,6 +146,11 @@ export const SpotCard: React.FC<SpotCardProps> = ({
           </button>
         </h3>
         <p className="card-address">{listing.address}</p>
+        {distance && (
+          <p className="card-distance">
+            {formatDistance(distance.km)} straight-line from {distance.from}
+          </p>
+        )}
 
         {/* Parking reservation window info */}
         <div className="card-parking-window">

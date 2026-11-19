@@ -27,6 +27,7 @@ vi.mock('../src/context/WalletContext', () => ({ useWallet: () => wallet }));
 import { Dialog } from '../src/components/Dialog';
 import { Header } from '../src/components/Header';
 import { FilterBar } from '../src/components/FilterBar';
+import { DEFAULT_FILTERS } from '../src/utils/discovery';
 import { SpotGrid } from '../src/components/SpotGrid';
 import { WalletModal } from '../src/components/WalletModal';
 import { CreateListingModal } from '../src/components/CreateListingModal';
@@ -276,7 +277,7 @@ describe('native controls', () => {
   it('search input has an accessible name', () => {
     render(
       <FilterBar
-        filters={{ search: '', kind: 'all', status: 'all', minPrice: '', maxPrice: '', sortBy: 'ending-soon' }}
+        filters={DEFAULT_FILTERS}
         onFilterChange={() => {}}
         totalSpots={1}
         filteredCount={1}
