@@ -60,6 +60,31 @@ contract ParkingAuctionEscrow {
 
     uint256 private _status = 1;
 
+    // Protected bookings (protocol version 2, docs/booking-policy.md). Auctions made with
+    // createAuction/createSpaceAuction keep the version 1 rules; only createProtectedAuction opts in.
+    uint64 public constant MIN_BID_LEAD = 30 minutes; // parkingStart - bidEnd
+    uint64 public constant EARLY_CANCEL_NOTICE = 24 hours; // before parkingStart
+    uint64 public constant NO_SHOW_GRACE = 30 minutes; // after parkingStart
+    uint64 public constant REPORT_WINDOW = 24 hours; // after parkingEnd; also the host-claim hold
+    uint64 public constant RESOLUTION_WINDOW = 72 hours; // after parkingEnd
+
+    /// Terminal disposition of a protected winning principal. None while it is still held.
+    enum Outcome { None, WinnerCancelled, HostCancelled, Expired, DisputeUpheld, DisputeExpired, HostPaid }
+
+    struct Booking {
+        bool isProtected;
+        Outcome outcome;
+        bool lateCancelled;
+        bool noShowRecorded;
+        address disputeReporter; // non-zero while a seller-failure report is open
+        bytes32 disputeEvidence; // opaque reference into the off-chain review record
+    }
+    mapping(uint256 => Booking) public bookings;
+
+    /// Deployer; may only add or remove resolvers. It holds no funds and cannot decide disputes itself.
+    address public immutable resolverAdmin;
+    mapping(address => bool) public resolvers;
+
     // Custom errors
     error InvalidMetadataHash();
     error InvalidMinBid();
@@ -88,6 +113,17 @@ contract ParkingAuctionEscrow {
     error InvalidSpaceOwner();
     error InvalidTimeZone();
     error BlockedWindowNotFound();
+    error NotProtected();
+    error NotWinner();
+    error NotResolver();
+    error ResolverIsParty();
+    error TooEarly();
+    error TooLate();
+    error BookingFinalized();
+    error AlreadyRecorded();
+    error DisputeOpen();
+    error NoOpenDispute();
+    error InvalidEvidence();
 
     // Events
     event AuctionCreated(uint256 indexed id, address indexed owner);
@@ -102,12 +138,24 @@ contract ParkingAuctionEscrow {
     event SpaceTimeZoneSet(uint256 indexed spaceId, string timeZone);
     event SpaceWindowBlocked(uint256 indexed spaceId, uint256 indexed blockId, uint64 start, uint64 end);
     event SpaceWindowUnblocked(uint256 indexed spaceId, uint256 indexed blockId);
+    event ProtectedAuctionCreated(uint256 indexed id);
+    event ResolverSet(address indexed resolver, bool allowed);
+    /// The full winning principal was credited to the winner for withdrawal (terminal).
+    event BookingRefunded(uint256 indexed id, address indexed winner, uint256 amount, Outcome outcome);
+    event LateCancellationRecorded(uint256 indexed id, address indexed winner);
+    event NoShowRecorded(uint256 indexed id, address indexed host);
+    event DisputeOpened(uint256 indexed id, address indexed reporter, bytes32 evidence);
+    event DisputeResolved(uint256 indexed id, address indexed resolver, bool upheld, bytes32 decision);
 
     modifier nonReentrant() {
         if (_status == 2) revert ReentrantCall();
         _status = 2;
         _;
         _status = 1;
+    }
+
+    constructor() {
+        resolverAdmin = msg.sender;
     }
 
     modifier onlySpaceOwner(uint256 spaceId) {
@@ -157,6 +205,39 @@ contract ParkingAuctionEscrow {
         if (!isSpaceLister(spaceId, msg.sender)) revert NotSpaceOwner();
         _checkWindowFree(spaceId, parkingStart, parkingEnd);
         id = _createAuction(spaceId, metadataHash, minBid, bidEnd, parkingStart, parkingEnd);
+    }
+
+    /**
+     * @notice Creates a protected-booking auction (protocol version 2): winner cancellation, host
+     * cancellation, settlement expiry, seller-failure disputes and a held host payout, as specified in
+     * docs/booking-policy.md. spaceId 0 registers a new space; otherwise the createSpaceAuction rules
+     * apply. Bidding must close at least MIN_BID_LEAD before parking starts.
+     */
+    function createProtectedAuction(
+        uint256 spaceId,
+        bytes32 metadataHash,
+        uint256 minBid,
+        uint64 bidEnd,
+        uint64 parkingStart,
+        uint64 parkingEnd
+    ) external returns (uint256 id) {
+        if (uint256(parkingStart) < uint256(bidEnd) + MIN_BID_LEAD) revert InvalidTimeWindow();
+        if (spaceId == 0) {
+            spaceId = _registerSpace();
+        } else {
+            if (!isSpaceLister(spaceId, msg.sender)) revert NotSpaceOwner();
+            _checkWindowFree(spaceId, parkingStart, parkingEnd);
+        }
+        id = _createAuction(spaceId, metadataHash, minBid, bidEnd, parkingStart, parkingEnd);
+        bookings[id].isProtected = true;
+        emit ProtectedAuctionCreated(id);
+    }
+
+    /** @notice Adds or removes a dispute resolver. Only the deployer may call it. */
+    function setResolver(address resolver, bool allowed) external {
+        if (msg.sender != resolverAdmin) revert NotResolver();
+        resolvers[resolver] = allowed;
+        emit ResolverSet(resolver, allowed);
     }
 
     /** @notice True if `account` may list windows on the space: its owner or a delegated lister. */
@@ -380,6 +461,10 @@ contract ParkingAuctionEscrow {
         if (auction.cancelled) revert AlreadyCancelled();
         if (auction.settled) revert AlreadySettled();
         if (block.timestamp < auction.bidEnd) revert AuctionNotEnded();
+        // Protected: a winner can only be settled before parking starts; after that, expire() refunds it.
+        if (bookings[id].isProtected && auction.highestBidder != address(0) && block.timestamp >= auction.parkingStart) {
+            revert TooLate();
+        }
 
         auction.settled = true;
 
@@ -387,7 +472,9 @@ contract ParkingAuctionEscrow {
     }
 
     /**
-     * @notice Seller claims payout after parkingEnd has elapsed.
+     * @notice Host claims the winning bid. Version 1: paid directly at or after parkingEnd.
+     * Protected: only at or after parkingEnd + REPORT_WINDOW with no open dispute, and credited to
+     * pendingReturns for withdrawRefund rather than sent.
      */
     function claimPayout(uint256 id) external nonReentrant {
         Auction storage auction = auctions[id];
@@ -397,9 +484,20 @@ contract ParkingAuctionEscrow {
         if (block.timestamp < auction.parkingEnd) revert ParkingNotEnded();
         if (auction.payoutClaimed) revert PayoutAlreadyClaimed();
         if (auction.highestBidder == address(0) || auction.highestBid == 0) revert NoBidsToPayout();
+        if (auction.cancelled) revert BookingFinalized();
 
         auction.payoutClaimed = true;
         uint256 payout = auction.highestBid;
+
+        Booking storage booking = bookings[id];
+        if (booking.isProtected) {
+            if (block.timestamp < uint256(auction.parkingEnd) + REPORT_WINDOW) revert TooEarly();
+            if (booking.disputeReporter != address(0)) revert DisputeOpen();
+            booking.outcome = Outcome.HostPaid;
+            pendingReturns[auction.owner] += payout;
+            emit PayoutClaimed(id, auction.owner, payout);
+            return;
+        }
 
         (bool success, ) = auction.owner.call{value: payout}("");
         if (!success) revert TransferFailed();
@@ -422,5 +520,144 @@ contract ParkingAuctionEscrow {
         auction.cancelled = true;
 
         emit AuctionCancelled(id);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Protected bookings. None of these send ETH: every refund or payout is a pendingReturns credit.
+
+    /**
+     * @notice Expires a protected auction whose winner was not settled before parkingStart: the
+     * winner is credited the full principal. Permissionless.
+     */
+    function expire(uint256 id) external nonReentrant {
+        Auction storage auction = _openBooking(id);
+        if (auction.settled) revert AlreadySettled();
+        if (auction.highestBidder == address(0)) revert NoBidsToPayout();
+        if (block.timestamp < auction.parkingStart) revert TooEarly();
+        _refundWinner(id, Outcome.Expired);
+    }
+
+    /**
+     * @notice Winner cancels a settled protected booking before parkingStart. At least
+     * EARLY_CANCEL_NOTICE ahead it is refunded in full; later it is only recorded (no refund: the
+     * host may still claim after the hold unless a seller-failure report is upheld or expires).
+     */
+    function cancelBooking(uint256 id) external nonReentrant {
+        Auction storage auction = _openBooking(id);
+        if (msg.sender != auction.highestBidder) revert NotWinner();
+        if (!auction.settled) revert NotSettled();
+        if (block.timestamp >= auction.parkingStart) revert TooLate();
+        if (block.timestamp + EARLY_CANCEL_NOTICE <= auction.parkingStart) {
+            _refundWinner(id, Outcome.WinnerCancelled);
+        } else {
+            Booking storage booking = bookings[id];
+            if (booking.lateCancelled) revert AlreadyRecorded();
+            booking.lateCancelled = true;
+            emit LateCancellationRecorded(id, msg.sender);
+        }
+    }
+
+    /**
+     * @notice Host (auction owner or current space owner) withdraws a protected booking that has a
+     * winning bid, settled or not, after bidding closes and before parkingStart: the winner is
+     * credited in full, without review.
+     */
+    function hostCancelBooking(uint256 id) external nonReentrant {
+        Auction storage auction = _openBooking(id);
+        if (!_isHost(id, msg.sender)) revert NotAuctionOwner();
+        if (auction.highestBidder == address(0)) revert NoBidsToPayout();
+        if (block.timestamp < auction.bidEnd) revert TooEarly();
+        if (block.timestamp >= auction.parkingStart) revert TooLate();
+        _refundWinner(id, Outcome.HostCancelled);
+    }
+
+    /**
+     * @notice Host records a no-show from min(parkingStart + NO_SHOW_GRACE, parkingEnd) until the
+     * report window closes. An attestation only: it changes no funds, deadlines or dispute rights.
+     */
+    function recordNoShow(uint256 id) external {
+        Auction storage auction = _openBooking(id);
+        if (!_isHost(id, msg.sender)) revert NotAuctionOwner();
+        if (!auction.settled) revert NotSettled();
+        Booking storage booking = bookings[id];
+        if (booking.noShowRecorded || booking.lateCancelled) revert AlreadyRecorded();
+        uint256 from = uint256(auction.parkingStart) + NO_SHOW_GRACE;
+        if (from > auction.parkingEnd) from = auction.parkingEnd;
+        if (block.timestamp < from) revert TooEarly();
+        if (block.timestamp >= uint256(auction.parkingEnd) + REPORT_WINDOW) revert TooLate();
+        booking.noShowRecorded = true;
+        emit NoShowRecorded(id, msg.sender);
+    }
+
+    /**
+     * @notice Winner or host reports a seller failure on a settled protected booking before
+     * parkingEnd + REPORT_WINDOW. The principal is held until a resolver decides or the report
+     * expires. `evidence` is an opaque reference to the off-chain review record, never the evidence.
+     */
+    function reportSellerFailure(uint256 id, bytes32 evidence) external {
+        Auction storage auction = _openBooking(id);
+        if (msg.sender != auction.highestBidder && !_isHost(id, msg.sender)) revert NotWinner();
+        if (!auction.settled) revert NotSettled();
+        if (evidence == bytes32(0)) revert InvalidEvidence();
+        if (block.timestamp >= uint256(auction.parkingEnd) + REPORT_WINDOW) revert TooLate();
+        Booking storage booking = bookings[id];
+        if (booking.disputeReporter != address(0)) revert DisputeOpen();
+        booking.disputeReporter = msg.sender;
+        booking.disputeEvidence = evidence;
+        emit DisputeOpened(id, msg.sender, evidence);
+    }
+
+    /**
+     * @notice A resolver who is not a party upholds (winner credited in full) or denies (hold
+     * released; the host claim still waits for parkingEnd + REPORT_WINDOW) an open report, before
+     * parkingEnd + RESOLUTION_WINDOW. `decision` references the reason in the review record.
+     */
+    function resolveDispute(uint256 id, bool uphold, bytes32 decision) external nonReentrant {
+        if (!resolvers[msg.sender]) revert NotResolver();
+        Auction storage auction = _openBooking(id);
+        if (msg.sender == auction.highestBidder || _isHost(id, msg.sender)) revert ResolverIsParty();
+        if (bookings[id].disputeReporter == address(0)) revert NoOpenDispute();
+        if (block.timestamp >= uint256(auction.parkingEnd) + RESOLUTION_WINDOW) revert TooLate();
+        if (decision == bytes32(0)) revert InvalidEvidence();
+        emit DisputeResolved(id, msg.sender, uphold, decision);
+        if (uphold) {
+            _refundWinner(id, Outcome.DisputeUpheld);
+        } else {
+            bookings[id].disputeReporter = address(0);
+        }
+    }
+
+    /** @notice Credits the winner in full when a report is still open at parkingEnd + RESOLUTION_WINDOW. */
+    function expireDispute(uint256 id) external nonReentrant {
+        Auction storage auction = _openBooking(id);
+        if (bookings[id].disputeReporter == address(0)) revert NoOpenDispute();
+        if (block.timestamp < uint256(auction.parkingEnd) + RESOLUTION_WINDOW) revert TooEarly();
+        _refundWinner(id, Outcome.DisputeExpired);
+    }
+
+    /** @dev The protected auction, reverting unless its principal is still undecided. */
+    function _openBooking(uint256 id) private view returns (Auction storage auction) {
+        auction = auctions[id];
+        if (auction.owner == address(0)) revert AuctionNotFound();
+        if (!bookings[id].isProtected) revert NotProtected();
+        if (bookings[id].outcome != Outcome.None || auction.cancelled || auction.payoutClaimed) revert BookingFinalized();
+    }
+
+    function _isHost(uint256 id, address account) private view returns (bool) {
+        return account == auctions[id].owner || account == spaceOwner[auctionSpace[id]];
+    }
+
+    /**
+     * @dev Terminal winner credit. Marking the auction cancelled releases its window and keeps the
+     * invariant: balance == sum(pendingReturns) + sum(highestBid of auctions neither cancelled nor paid).
+     */
+    function _refundWinner(uint256 id, Outcome outcome) private {
+        Auction storage auction = auctions[id];
+        Booking storage booking = bookings[id];
+        booking.outcome = outcome;
+        booking.disputeReporter = address(0);
+        auction.cancelled = true;
+        pendingReturns[auction.highestBidder] += auction.highestBid;
+        emit BookingRefunded(id, auction.highestBidder, auction.highestBid, outcome);
     }
 }
