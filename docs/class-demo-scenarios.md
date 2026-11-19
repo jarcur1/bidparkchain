@@ -48,3 +48,44 @@ Listing titles start with the ID, e.g. `N1 · Quad Edge Commuter Spot [Fictional
 The only planned change is that the fictional residence-hall expansion takes over N2, N3 and N4 (`CAMPUS_EXPANSION_REMOVED`). N1 and F1-F3 are byte-identical in both scenarios, so they have the same metadata hash. Tiers, opening bids, timing and the far-away fallback do not change.
 
 `tests/api/campus-scenarios.test.mjs` checks these counts against both seeds through the API.
+
+## Auction walkthrough
+
+Simulated roles, all built-in local test wallets (no wallet extension or public network):
+
+| Role | Wallet menu entry |
+| --- | --- |
+| Host (owns every seeded spot) | Account #0 |
+| Driver A | Account #1 |
+| Driver B | Account #2 |
+
+The bid amounts below are scripted for the demo. They are not derived from the fixtures and say nothing about what scarcity would do to a real price.
+
+### Live, in the app
+
+1. Start a scenario (see above) and open http://127.0.0.1:5173.
+2. **Connect Wallet**, pick Account #1. Open **N1 · Quad Edge Commuter Spot**, **Bid Now**, bid `0.03`.
+3. Switch to Account #2 and bid `0.05` on N1.
+4. Switch back to Account #1, open **My Activity**: N1 shows "Outbid — bidding still open" and **Withdraw 0.030 ETH**. Withdraw it.
+5. In a second terminal, close bidding without waiting an hour:
+   ```sh
+   npm run demo -- advance
+   ```
+   Then press **Refresh data** in the app.
+6. Switch to Account #2. **My Activity** shows "You won — pending settlement". Press **Settle Auction & Claim Pass**; it changes to "You won — confirmed on-chain".
+
+### Scripted fallback
+
+If clicking through is not an option, run the same sequence in one step while `npm run dev` is running, then refresh the app:
+
+```sh
+npm run demo -- walkthrough
+```
+
+It prints each step and ends with driver B winning N1 at 0.05 ETH, driver A's 0.03 ETH withdrawn, and the auction settled. It refuses to run if N1 already has bids.
+
+### Reset
+
+Stop `npm run dev` with Ctrl+C and start it again with the same `BIDPARK_SCENARIO`. The local chain is in memory, so a restart redeploys and reseeds from scratch, and the walkthrough produces the same result every time. The demo helpers only talk to a loopback RPC on chain 31337 with the local profile, and only to the deployment in this checkout's `data/` directory (or `BIDPARK_DATA_DIR`). They never touch another running stack or a public network.
+
+`tests/api/demo-walkthrough.test.mjs` runs the walkthrough on two fresh stacks and checks that both give the same result.
