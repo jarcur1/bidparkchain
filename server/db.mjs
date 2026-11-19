@@ -315,6 +315,22 @@ const MIGRATIONS = [
   // 14: creation parameters of each indexed auction (JSON on its AuctionCreated row), so search can filter
   //    from the index. Kept on the event row, so a reorg orphans them with the event.
   (db) => db.exec('ALTER TABLE auction_events ADD COLUMN detail TEXT'),
+  // 15: host-verified arrival. A used token nonce is kept so a replay is refused, and the check-in
+  //    records which host verified it.
+  (db) => {
+    db.exec(`
+      CREATE TABLE arrival_token_uses (
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        nonce TEXT NOT NULL,
+        auction_id TEXT NOT NULL,
+        used_at INTEGER NOT NULL,
+        PRIMARY KEY (chain_id, contract_address, nonce)
+      );
+      ALTER TABLE arrival_checkins ADD COLUMN verified_by TEXT;
+      ALTER TABLE arrival_checkins ADD COLUMN verified_at INTEGER;
+    `);
+  },
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
@@ -435,6 +451,7 @@ export class EscrowDatabase {
     // Same for private arrival details: a new space or auction with a reused id must not see the old ones.
     this.db.prepare('DELETE FROM arrival_instructions WHERE chain_id = ?').run(this.chainId);
     this.db.prepare('DELETE FROM arrival_checkins WHERE chain_id = ?').run(this.chainId);
+    this.db.prepare('DELETE FROM arrival_token_uses WHERE chain_id = ?').run(this.chainId);
     return this.db.prepare('DELETE FROM listings WHERE chain_id = ?').run(this.chainId).changes;
   }
 
@@ -1067,7 +1084,7 @@ export class EscrowDatabase {
 
   getCheckIn(contractAddress, auctionId) {
     return this.db.prepare(`
-      SELECT winner, checked_in_at, block_number FROM arrival_checkins WHERE chain_id = ? AND contract_address = ? AND auction_id = ?
+      SELECT winner, checked_in_at, block_number, verified_by, verified_at FROM arrival_checkins WHERE chain_id = ? AND contract_address = ? AND auction_id = ?
     `).get(this.chainId, contractAddress.toLowerCase(), auctionId) ?? null;
   }
 
@@ -1078,6 +1095,35 @@ export class EscrowDatabase {
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(this.chainId, contractAddress.toLowerCase(), auctionId, winner.toLowerCase(), Date.now(), blockNumber).changes > 0;
     return [this.getCheckIn(contractAddress, auctionId), created];
+  }
+
+  /**
+   * Spends an arrival token's nonce and records the host-verified check-in in one transaction.
+   * Returns { replayed: true } if the nonce was used; else { row, created } (created: first verification).
+   */
+  verifyArrivalToken(contractAddress, auctionId, { nonce, winner, host, blockNumber }) {
+    const contract = contractAddress.toLowerCase();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const now = Date.now();
+      const spent = this.db.prepare(`
+        INSERT OR IGNORE INTO arrival_token_uses (chain_id, contract_address, nonce, auction_id, used_at) VALUES (?, ?, ?, ?, ?)
+      `).run(this.chainId, contract, nonce, auctionId, now).changes > 0;
+      if (!spent) {
+        this.db.exec('ROLLBACK');
+        return { replayed: true };
+      }
+      this.recordCheckIn(contractAddress, auctionId, { winner, blockNumber });
+      const created = this.db.prepare(`
+        UPDATE arrival_checkins SET verified_by = ?, verified_at = ?
+        WHERE chain_id = ? AND contract_address = ? AND auction_id = ? AND verified_by IS NULL
+      `).run(host.toLowerCase(), now, this.chainId, contract, auctionId).changes > 0;
+      this.db.exec('COMMIT');
+      return { row: this.getCheckIn(contractAddress, auctionId), created };
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
   }
 
   close() {

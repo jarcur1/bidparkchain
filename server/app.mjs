@@ -1260,7 +1260,8 @@ export function createApp(options = {}) {
       : 'BIDPARK_ARRIVAL_KEY is not set: arrival instructions are stored unencrypted (local/demo mode only).' }),
   }));
 
-  mountArrival(app, { db, requireKey: settings.hosted, pinnedReader, contractAddress: () => loadDeployment()?.contractAddress ?? null });
+  mountArrival(app, {
+    db, requireKey: settings.hosted, tokenKey: parseArrivalKey(options.arrivalTokenKey ?? process.env.BIDPARK_ARRIVAL_TOKEN_KEY), pinnedReader, contractAddress: () => loadDeployment()?.contractAddress ?? null });
 
   /** GET /api/health/live: the process is up and answering. Checks no dependencies. */
   app.get('/api/health/live', (req, res) => res.json({ live: true }));
