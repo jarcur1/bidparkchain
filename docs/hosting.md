@@ -35,6 +35,7 @@ Hosted mode is on whenever `BIDPARK_ALLOWED_ORIGINS` is set:
 
 These apply in every mode:
 - Writes to listing details need a signed-in wallet that owns the auction (#11).
+- Host verification review is limited to the wallets in `BIDPARK_MODERATORS`; see [host verification](host-verification.md).
 - Bodies are capped at 100 KB, URLs at 2,048 characters, and query strings are parsed flat.
 - Every RPC call times out after `BIDPARK_RPC_TIMEOUT_MS` (10 s).
 - `GET /api/listings/search` returns at most 50 listings a page, reads at most `BIDPARK_SEARCH_SCAN_LIMIT` (500) candidates from the chain (422 beyond that), and gives up after `BIDPARK_SEARCH_DEADLINE_MS` (20 s) with 503. See [listing search](listing-search.md).
