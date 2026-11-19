@@ -46,6 +46,13 @@ export function publicSettings(options = {}, env = process.env) {
 }
 
 const MAX_URL_LENGTH = 2048;
+const API_CSP = "default-src 'none'; frame-ancestors 'none'";
+/** Policy for the built web app: its own scripts only, OSM tiles and listing photos over https, Google Fonts. */
+export const WEB_CSP = [
+  "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src https://fonts.gstatic.com", "img-src 'self' data: https:", "connect-src 'self'",
+  "object-src 'none'", "base-uri 'none'", "form-action 'self'", "frame-ancestors 'none'",
+].join('; ');
 
 const MAX_UINT256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffn;
 
@@ -147,7 +154,7 @@ export function createApp(options = {}) {
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'");
+    res.setHeader('Content-Security-Policy', req.path.startsWith('/api') ? API_CSP : WEB_CSP);
     if (req.originalUrl.length > MAX_URL_LENGTH) {
       res.status(414).json({ error: 'Request URL is too long' });
       return;
