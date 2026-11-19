@@ -288,7 +288,7 @@ describe('open bid dialog stays synchronized with chain listing state', () => {
     await click(submitButton());
 
     expect(placeBid).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(placeBid).mock.calls[0].slice(1)).toEqual(['1', '0.1', 'mined']);
+    expect(vi.mocked(placeBid).mock.calls[0].slice(1)).toEqual(['1', '0.1', 'mined', expect.any(Function)]);
     expect(bidDialog()).toBeNull();
   });
 
