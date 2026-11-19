@@ -39,20 +39,37 @@ export async function fetchConfig(): Promise<Config> {
   return data as Config;
 }
 
-export async function fetchListings(): Promise<ListingsResponse> {
-  const res = await fetch('/api/listings');
+/** Pages of GET /api/listings followed per refresh; the server caps each page (BIDPARK_LISTINGS_SCAN_LIMIT). */
+const MAX_LISTING_PAGES = 20;
+
+async function fetchListingsPage(cursor: string | null): Promise<ListingsResponse & { nextCursor: string | null }> {
+  const res = await fetch(cursor ? `/api/listings?cursor=${encodeURIComponent(cursor)}` : '/api/listings');
   if (!res.ok) {
     const msg = await extractErrorMessage(res);
     throw new ApiError(msg, res.status);
   }
   const data: unknown = await res.json();
   if (!data || typeof data !== 'object' || !('listings' in data) || !Array.isArray(data.listings)) {
-    return { listings: [], unindexed: [], chain: null };
+    return { listings: [], unindexed: [], chain: null, nextCursor: null };
   }
   const chain =
     'chain' in data && data.chain && typeof data.chain === 'object' ? (data.chain as ChainSnapshot) : null;
   const unindexed = 'unindexed' in data && Array.isArray(data.unindexed) ? (data.unindexed as UnindexedAuction[]) : [];
-  return { listings: data.listings as Listing[], unindexed, chain };
+  const nextCursor = 'nextCursor' in data && typeof data.nextCursor === 'string' ? data.nextCursor : null;
+  return { listings: data.listings as Listing[], unindexed, chain, nextCursor };
+}
+
+/** Every listing, following the server's bounded pages; the snapshot carries the last page's chain identity. */
+export async function fetchListings(): Promise<ListingsResponse> {
+  let page = await fetchListingsPage(null);
+  const listings = [...page.listings];
+  const unindexed = [...page.unindexed];
+  for (let n = 1; page.nextCursor && n < MAX_LISTING_PAGES; n++) {
+    page = await fetchListingsPage(page.nextCursor);
+    listings.push(...page.listings);
+    unindexed.push(...page.unindexed);
+  }
+  return { listings, unindexed, chain: page.chain };
 }
 
 /** One page of GET /api/listings/search for a query built by searchQuery(); a cursor continues it. */
