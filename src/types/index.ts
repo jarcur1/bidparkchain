@@ -5,9 +5,10 @@ import type {
   DeploymentIdentity,
   ChainSnapshot,
   ListingsResponse,
+  UnindexedAuction,
 } from '../../shared/types';
 
-export type { SpotMetadata, Listing, Config, DeploymentIdentity, ChainSnapshot, ListingsResponse };
+export type { SpotMetadata, Listing, Config, DeploymentIdentity, ChainSnapshot, ListingsResponse, UnindexedAuction };
 
 export type WalletType = 'local' | 'injected';
 

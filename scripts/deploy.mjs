@@ -173,8 +173,9 @@ async function main() {
       `[BidPark Deploy] ParkingAuctionEscrow deployed at: ${contractAddress} (block ${deploymentBlock}, tx: ${deploymentTxHash})`
     );
 
-    // On fresh deploy, clear all prior listing records for this local DB to purge stale same-address data
-    const cleared = db.clearAllListings();
+    // Explicit local demo reset: a fresh local chain may reuse the same contract address, so drop its
+    // old listings. Deployment history is kept; persistent profiles never reach this code.
+    const cleared = db.resetLocalDemo();
     if (cleared > 0) {
       console.log(`[BidPark Deploy] Cleared ${cleared} prior listing records to seed clean database.`);
     }

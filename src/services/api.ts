@@ -1,4 +1,4 @@
-import type { ChainSnapshot, Config, DeploymentIdentity, Listing, ListingsResponse, SpotMetadata } from '../types';
+import type { ChainSnapshot, Config, DeploymentIdentity, Listing, ListingsResponse, SpotMetadata, UnindexedAuction } from '../types';
 import { webProfile } from '../utils/networkProfile';
 
 export class ApiError extends Error {
@@ -47,11 +47,22 @@ export async function fetchListings(): Promise<ListingsResponse> {
   }
   const data: unknown = await res.json();
   if (!data || typeof data !== 'object' || !('listings' in data) || !Array.isArray(data.listings)) {
-    return { listings: [], chain: null };
+    return { listings: [], unindexed: [], chain: null };
   }
   const chain =
     'chain' in data && data.chain && typeof data.chain === 'object' ? (data.chain as ChainSnapshot) : null;
-  return { listings: data.listings as Listing[], chain };
+  const unindexed = 'unindexed' in data && Array.isArray(data.unindexed) ? (data.unindexed as UnindexedAuction[]) : [];
+  return { listings: data.listings as Listing[], unindexed, chain };
+}
+
+/** Saves metadata under its hash before the auction is created, so a lost registration is recoverable. */
+export async function stageListingMetadata(metadata: SpotMetadata, deployment?: DeploymentIdentity): Promise<void> {
+  const res = await fetch('/api/listings/stage', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ metadata, ...(deployment === undefined ? {} : { deployment }) }),
+  });
+  if (!res.ok) throw new ApiError(await extractErrorMessage(res), res.status);
 }
 
 export async function createListingRecord(
