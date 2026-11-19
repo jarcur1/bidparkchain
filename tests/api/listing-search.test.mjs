@@ -289,4 +289,37 @@ describe('GET /api/listings/search', () => {
       for (const [i, rt] of [idx, direct, strict].entries()) await close(servers[i].srv, rt);
     }
   });
+
+  it('keeps unavailable inventory out of active results, reading the chain when verification is required', async () => {
+    const verified = await deployEscrow(chain, true);
+    const dir = scope.tempDir();
+    const rt = createApp({ dbPath: path.join(dir, 'bidpark.db'), deploymentPath: writeDeployment(dir, verified), rpcUrl: chain.rpcUrl });
+    const { srv, url: vUrl } = await listen(rt.app);
+    try {
+      const host = verified.contract;
+      const verifier = host.connect(chain.wallet(1));
+      await (await host.setSpaceVerifier(chain.wallet(1).address, true)).wait();
+      const now = await chain.latestTimestamp();
+      const listVerified = async (name) => {
+        const space = await host.nextSpaceId();
+        await (await host.registerSpace()).wait();
+        await (await verifier.setSpaceVerification(space, chain.wallet(0).address, 0, ethers.id(`stall-${name}`), hash(SPOTS[name]))).wait();
+        const id = (await host.nextAuctionId()).toString();
+        await (await host.createSpaceAuction(space, hash(SPOTS[name]), ethers.parseEther('0.01'), now + H, now + H, now + 3 * H)).wait();
+        rt.db.upsertListing({ ...validateSpotMetadata(SPOTS[name]).normalized, auctionId: id, contractAddress: verified.address, metadataHash: hash(SPOTS[name]) });
+        return { id, space };
+      };
+      const open = await listVerified('garage');
+      const blocked = await listVerified('driveway');
+      // Suspending the space's approval makes its auction unavailable.
+      await (await verifier.setSpaceVerification(blocked.space, chain.wallet(0).address, 0, ethers.ZeroHash, ethers.ZeroHash)).wait();
+      await rt.syncIndexOnce();
+      const all = await search('sort=newest', vUrl);
+      expect(all.json).toMatchObject({ source: 'index', total: 2 });
+      expect(all.json.listings.map((l) => [l.id, l.inventoryBlocked])).toEqual([[blocked.id, true], [open.id, false]]);
+      expect((await search('status=active', vUrl)).json).toMatchObject({ source: 'chain', total: 1, listings: [{ id: open.id }] });
+    } finally {
+      await close(srv, rt);
+    }
+  });
 });
