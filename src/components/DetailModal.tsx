@@ -110,6 +110,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
         <div className="modal-detail-header">
           <div className="modal-header-left">
             <span className="badge-demo-sample">Demo Listing</span>
+            {listing.verification === 'verified' && <span className="badge-verified">Verified space</span>}
             <span className={`badge-kind badge-kind-${listing.kind}`}>
               {listing.kind}
             </span>
@@ -210,6 +211,15 @@ export const DetailModal: React.FC<DetailModalProps> = ({
             <div className="modal-section">
               <h4 className="section-label">Public Space Description</h4>
               <p className="modal-description-text">{listing.description}</p>
+            </div>
+
+            <div className="modal-section" data-testid="verification-meaning">
+              <h4 className="section-label">Host Verification</h4>
+              <p className="modal-description-text">
+                {listing.verification === 'verified'
+                  ? 'Verified: a BidPark moderator reviewed proof that this host controls space #' + listing.spaceId + '. It is not a guarantee about the space itself.'
+                  : 'Not verified: BidPark has not confirmed that this host controls space #' + listing.spaceId + '.'}
+              </p>
             </div>
 
             {/* Amenities */}

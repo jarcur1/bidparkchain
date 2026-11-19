@@ -10,6 +10,7 @@ import { getNetworkProfile } from '../shared/network-profiles.mjs';
 import { mountAuth, readSession } from './auth.mjs';
 import { syncIndex } from './indexer.mjs';
 import { deriveInbox } from './inbox.mjs';
+import { mountVerification, parseModerators, publicVerification } from './verification.mjs';
 
 let sepoliaArtifact;
 
@@ -43,6 +44,8 @@ export function publicSettings(options = {}, env = process.env) {
     writesPerMinute: options.writesPerMinute ?? Number(env.BIDPARK_WRITES_PER_MINUTE ?? (hosted ? 60 : 0)),
     trustProxy: options.trustProxy ?? env.BIDPARK_TRUST_PROXY ?? false,
     rpcTimeoutMs: options.rpcTimeoutMs ?? Number(env.BIDPARK_RPC_TIMEOUT_MS ?? 10_000),
+    // Wallets allowed to review host verification requests (comma-separated addresses).
+    moderators: parseModerators(options.moderators ?? env.BIDPARK_MODERATORS),
   };
 }
 
@@ -78,9 +81,9 @@ export function canonicalizeAuctionId(raw) {
   }
 }
 
-function listingFromRow(id, onchain, row, [spaceId, timeZone]) {
+function listingFromRow(id, onchain, row, [spaceId, timeZone], verification) {
   return {
-    id, spaceId: spaceId.toString(), timeZone, owner: onchain.owner,
+    id, spaceId: spaceId.toString(), timeZone, owner: onchain.owner, verification,
     minBid: ethers.formatEther(onchain.minBid),
     highestBid: ethers.formatEther(onchain.highestBid),
     highestBidder: onchain.highestBidder,
@@ -278,6 +281,10 @@ export function createApp(options = {}) {
    * metadata is either recovered from metadata staged under its hash or reported as unindexed,
    * so an auction never silently disappears. RPC errors propagate to the caller.
    */
+  /** [[spaceId, timeZone], public verification] for a listing: only the verification status is ever exposed. */
+  const withBadge = (contractAddress, onchain, space) =>
+    [space, publicVerification(db.getVerification(contractAddress, space[0].toString()), onchain.owner)];
+
   async function buildListings(contractAddress, readAuction, readSpace, nextId) {
     const listings = [];
     const unindexed = [];
@@ -290,7 +297,7 @@ export function createApp(options = {}) {
       if (!onchain || onchain.owner === ethers.ZeroAddress ||
           row.metadata_hash.toLowerCase() !== onchain.metadataHash.toLowerCase()) continue;
       indexed.add(id);
-      listings.push(listingFromRow(id, onchain, row, await readSpace(id)));
+      listings.push(listingFromRow(id, onchain, row, ...withBadge(contractAddress, onchain, await readSpace(id))));
     }
     // ponytail: reads every auction id per request; the event indexer (#15) replaces this scan.
     for (let n = 1n; n < BigInt(nextId); n++) {
@@ -301,7 +308,7 @@ export function createApp(options = {}) {
       const staged = db.getStagedMetadata(contractAddress, onchain.metadataHash);
       if (staged) {
         db.upsertListing({ ...staged, auctionId: id, contractAddress, metadataHash: onchain.metadataHash });
-        listings.push(listingFromRow(id, onchain, { ...staged, amenities: JSON.stringify(staged.amenities) }, await readSpace(id)));
+        listings.push(listingFromRow(id, onchain, { ...staged, amenities: JSON.stringify(staged.amenities) }, ...withBadge(contractAddress, onchain, await readSpace(id))));
       } else {
         unindexed.push({
           id, owner: onchain.owner, metadataHash: onchain.metadataHash,
@@ -594,7 +601,7 @@ export function createApp(options = {}) {
           db.upsertListing({ auctionId: canonicalId, contractAddress: deployment.contractAddress,
             metadataHash: canonicalHash, ...normalized });
           res.status(existing && !isReconciliation ? 200 : 201).json({
-            listing: listingFromRow(canonicalId, onchain, { ...normalized, amenities: JSON.stringify(normalized.amenities) }, space),
+            listing: listingFromRow(canonicalId, onchain, { ...normalized, amenities: JSON.stringify(normalized.amenities) }, ...withBadge(deployment.contractAddress, onchain, space)),
           });
         } catch {
           res.status(503).json({ error: 'Blockchain service unavailable' });
@@ -669,7 +676,7 @@ export function createApp(options = {}) {
 
       const listing = listingFromRow(canonicalId, onchain, {
         ...normalized, amenities: JSON.stringify(normalized.amenities),
-      }, space);
+      }, ...withBadge(deployment.contractAddress, onchain, space));
 
       res.status(existing && !isReconciliation ? 200 : 201).json({ listing });
     } catch (err) {
@@ -794,6 +801,25 @@ export function createApp(options = {}) {
     }
     db.markInboxRead(scope.contractAddress, scope.session.address, ids);
     res.json(inboxFor(scope.session, scope.contractAddress));
+  });
+
+  /** On-chain owner of a space (the zero address when it does not exist). Throws when it can't be read. */
+  async function readSpaceOwner(spaceId) {
+    const deployment = loadDeployment();
+    if (profile.id === 'sepolia') {
+      const { finalized, iface } = await readFinalizedDeployment(deployment);
+      const [owner] = await readFinalized(deployment, iface, finalized, 'spaceOwner', [spaceId]);
+      await assertCanonicalFinalized(finalized);
+      return owner;
+    }
+    const contract = deployment && isLocalDeployment(deployment) ? getContract(deployment) : null;
+    if (!contract) throw new Error('Smart contract not deployed');
+    return contract.spaceOwner(spaceId);
+  }
+
+  mountVerification(app, {
+    db, moderators: settings.moderators, readSpaceOwner,
+    contractAddress: () => loadDeployment()?.contractAddress ?? null,
   });
 
   /** GET /api/health/live: the process is up and answering. Checks no dependencies. */

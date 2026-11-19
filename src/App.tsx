@@ -30,6 +30,7 @@ import type { TxObserver } from './services/blockchain';
 import { patchTransaction, readTransactions, recordTransaction, staleTransactionsFor, transactionsFor, type TxKind, type TxRecord } from './utils/txStore';
 import { TransactionCenter } from './components/TransactionCenter';
 import { Inbox, useInbox } from './components/Inbox';
+import { HostVerificationPanel, ModerationPanel, useVerifications } from './components/Verification';
 import {
   cancelAuction,
   claimPayout,
@@ -153,6 +154,7 @@ export const AppContent: React.FC<{
     configDeployment === null || listingsState.deployment === configDeployment ? listingsState : EMPTY_LISTINGS;
   const listings = listingsView.data;
   const inbox = useInbox(session?.address ?? null);
+  const verification = useVerifications(session?.address ?? null);
   const chain = listingsView.deploymentChanged ? null : listingsView.chain;
 
   // Navigation & View
@@ -1187,6 +1189,10 @@ export const AppContent: React.FC<{
             }}
           />
         )}
+        {currentTab === 'activity' && session && (
+          <HostVerificationPanel spaces={ownedSpaces} state={verification} />
+        )}
+        {currentTab === 'activity' && session && verification.moderator && <ModerationPanel />}
         {currentTab === 'activity' && txScope && (
           <TransactionCenter
             records={txRecords}
