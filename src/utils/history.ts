@@ -1,5 +1,6 @@
-import type { Listing, UnindexedAuction } from '../types';
+import type { DeploymentIdentity, Listing, UnindexedAuction } from '../types';
 import type { AuctionEvent } from '../services/api';
+import { resolveListing, type ListingTarget } from './eligibility';
 import { reservationLifecycle, type Lifecycle, type LifecycleState } from './lifecycle';
 
 /**
@@ -11,10 +12,26 @@ export function unregisteredListing(u: UnindexedAuction): Listing {
     id: u.id, spaceId: u.spaceId, timeZone: u.timeZone, owner: u.owner, minBid: u.minBid, highestBid: u.highestBid,
     highestBidder: u.highestBidder, bidEnd: u.bidEnd, parkingStart: u.parkingStart, parkingEnd: u.parkingEnd,
     settled: u.settled, cancelled: u.cancelled, payoutClaimed: u.payoutClaimed, metadataHash: u.metadataHash, booking: u.booking,
+    inventoryBlocked: u.inventoryBlocked,
     title: `Auction #${u.id}`, address: 'Details not registered by the seller yet', neighborhood: '', latitude: 0, longitude: 0,
     description: 'The seller has not registered public details for this auction. The times and amounts shown come from the contract.',
     image: '', kind: 'driveway', amenities: [],
   };
+}
+
+/**
+ * Resolves a dialog target against one chain snapshot: registered listings and auctions without
+ * registered details are both candidates, and the exact deployment and metadata hash must match.
+ * The one resolver for what a dialog shows and what a write is judged against.
+ */
+export function resolveSnapshotListing(
+  snapshot: { listings: readonly Listing[]; unindexed?: readonly UnindexedAuction[]; chain: DeploymentIdentity | null },
+  target: ListingTarget | null,
+): Listing | null {
+  const registered = resolveListing(snapshot.listings, snapshot.chain, target);
+  if (registered || !target) return registered;
+  const unindexed = snapshot.unindexed?.find((auction) => auction.id === target.id);
+  return unindexed ? resolveListing([unregisteredListing(unindexed)], snapshot.chain, target) : null;
 }
 
 export interface HistoryRow {

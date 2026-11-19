@@ -37,6 +37,9 @@ interface DetailModalProps {
   listing: Listing | null;
   contractAddress?: string;
   chainId?: number;
+  /** Canonical chain snapshot block the listing was read at; numbers calendar revisions. */
+  snapshotBlock?: number | null;
+  snapshotTime?: number;
   currentAddress: string | null;
   onClose: () => void;
   onOpenBid: (listing: Listing) => void;
@@ -53,6 +56,8 @@ export const DetailModal: React.FC<DetailModalProps> = ({
   listing,
   contractAddress,
   chainId,
+  snapshotBlock,
+  snapshotTime,
   currentAddress,
   onClose,
   onOpenBid,
@@ -95,6 +100,8 @@ export const DetailModal: React.FC<DetailModalProps> = ({
 
   const hasBids = parseFloat(listing.highestBid) > 0;
   const myLifecycle = currentAddress ? reservationLifecycle(listing, currentAddress, now) : null;
+  const calendarLifecycle = currentAddress && snapshotTime !== undefined
+    ? reservationLifecycle(listing, currentAddress, snapshotTime) : null;
   const currentPriceEth = hasBids ? listing.highestBid : listing.minBid;
 
   const canOwnerCancel = isOwner && !hasBids && !listing.settled && !listing.cancelled;
@@ -210,11 +217,11 @@ export const DetailModal: React.FC<DetailModalProps> = ({
               </div>
             </div>
 
-            {canExportIcs(myLifecycle) && contractAddress && chainId !== undefined && (
+            {canExportIcs(calendarLifecycle, snapshotBlock) && contractAddress && chainId !== undefined && (
               <button
                 type="button"
                 className="btn-pass-details"
-                onClick={() => downloadReservationIcs(listing, { chainId, contractAddress }, myLifecycle)}
+                onClick={() => downloadReservationIcs(listing, { chainId, contractAddress, snapshotBlock }, calendarLifecycle)}
               >
                 <CalendarPlus size={14} />
                 <span>Add to calendar (.ics)</span>

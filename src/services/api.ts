@@ -59,17 +59,23 @@ async function fetchListingsPage(cursor: string | null): Promise<ListingsRespons
   return { listings: data.listings as Listing[], unindexed, chain, nextCursor };
 }
 
-/** Every listing, following the server's bounded pages; the snapshot carries the last page's chain identity. */
+/** A listing refresh must not mix deployments or chain blocks across pages. */
 export async function fetchListings(): Promise<ListingsResponse> {
   let page = await fetchListingsPage(null);
+  const chain = page.chain;
   const listings = [...page.listings];
   const unindexed = [...page.unindexed];
   for (let n = 1; page.nextCursor && n < MAX_LISTING_PAGES; n++) {
     page = await fetchListingsPage(page.nextCursor);
+    if (!chain?.blockHash || !page.chain || chain.blockHash !== page.chain.blockHash ||
+        chain.chainId !== page.chain.chainId || chain.contractAddress !== page.chain.contractAddress ||
+        chain.deploymentBlock !== page.chain.deploymentBlock || chain.deploymentBlockHash !== page.chain.deploymentBlockHash) {
+      throw new ApiError('The chain snapshot changed between listing pages. Refresh and try again.', 409);
+    }
     listings.push(...page.listings);
     unindexed.push(...page.unindexed);
   }
-  return { listings, unindexed, chain: page.chain };
+  return { listings, unindexed, chain };
 }
 
 /** One page of GET /api/listings/search for a query built by searchQuery(); a cursor continues it. */

@@ -46,7 +46,7 @@ interface ActivityViewProps {
   onConnectWallet: () => void;
   isActionBusy: boolean;
   /** Network and contract being read; enables the history section and its scoped links. */
-  deployment?: { chainId: number; contractAddress: string } | null;
+  deployment?: { chainId: number; contractAddress: string; snapshotBlock?: number | null; snapshotTime?: number } | null;
 }
 
 export const ActivityView: React.FC<ActivityViewProps> = ({

@@ -5,7 +5,7 @@ import { canExportIcs, downloadReservationIcs } from '../utils/calendar';
 import { fetchAccountHistory, type AccountHistory } from '../services/api';
 import { formatDateTime, formatEth, formatParkingWindow, shortenAddress } from '../utils/formatters';
 import { buildHistoryRows, filterHistory, historyLink, pageOf, readHistoryLink, unregisteredListing } from '../utils/history';
-import { LIFECYCLE_STATES, zoneNote, type LifecycleState } from '../utils/lifecycle';
+import { LIFECYCLE_STATES, reservationLifecycle, zoneNote, type LifecycleState } from '../utils/lifecycle';
 import { LOADING_READ, readFailed, readSucceeded, type ReadState } from '../utils/readState';
 
 const POLL_MS = 10_000;
@@ -22,7 +22,7 @@ interface Props {
   unindexed?: UnindexedAuction[];
   myBidAuctionIds: Set<string> | null;
   nowSec: number;
-  deployment: { chainId: number; contractAddress: string } | null;
+  deployment: { chainId: number; contractAddress: string; snapshotBlock?: number | null; snapshotTime?: number } | null;
   onOpenListingDetail: (listing: Listing) => void;
 }
 
@@ -129,6 +129,8 @@ export const ReservationHistory: React.FC<Props> = ({ currentAddress, listings, 
         <ol className="history-list" aria-label="Bid and reservation history">
           {shown.items.map((row) => {
             const l = row.listing;
+            const calendarLifecycle = l && deployment?.snapshotTime !== undefined
+              ? reservationLifecycle(l, currentAddress, deployment.snapshotTime) : null;
             const win = l ? formatParkingWindow(l.parkingStart, l.parkingEnd, l.timeZone) : null;
             return (
               <li key={row.auctionId} className="history-row" id={`history-${row.auctionId}`}>
@@ -148,8 +150,8 @@ export const ReservationHistory: React.FC<Props> = ({ currentAddress, listings, 
                 )}
                 <div className="history-row-actions">
                   {l && <button type="button" className="btn-table-action" onClick={() => onOpenListingDetail(l)}>View Details</button>}
-                  {l && deployment && canExportIcs(row.lifecycle) && (
-                    <button type="button" className="btn-table-action" onClick={() => downloadReservationIcs(l, deployment, row.lifecycle!)}>
+                  {l && deployment && canExportIcs(calendarLifecycle, deployment.snapshotBlock) && (
+                    <button type="button" className="btn-table-action" onClick={() => downloadReservationIcs(l, deployment, calendarLifecycle)}>
                       Add to calendar
                     </button>
                   )}

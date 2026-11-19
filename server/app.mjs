@@ -377,6 +377,7 @@ export function createApp(options = {}) {
           parkingStart: Number(onchain.parkingStart), parkingEnd: Number(onchain.parkingEnd),
           payoutClaimed: Boolean(onchain.payoutClaimed), spaceId: inventory.spaceId.toString(),
           timeZone: inventory.timeZone, booking: bookingFromChain(booking),
+          inventoryBlocked: !inventory.canAcceptBids,
         });
       }
     }

@@ -105,6 +105,7 @@ export interface UnindexedAuction {
   spaceId: string;
   timeZone: string;
   booking: BookingState | null;
+  inventoryBlocked: boolean;
 }
 
 /** A listing returned by GET /api/listings/search; distanceKm is set when the query has `near`. */

@@ -29,23 +29,34 @@ function fold(line: string): string {
 export type IcsStatus = 'CONFIRMED' | 'TENTATIVE' | 'CANCELLED';
 
 /**
- * Calendar status and revision number per lifecycle state. The revision (SEQUENCE) only grows as a
- * reservation moves on, so re-importing a later export replaces the event instead of duplicating
- * it. An outbid wallet has no reservation, so it has no event.
+ * Calendar status per lifecycle state. An outbid wallet has no reservation, so it has no event.
+ * The revision (SEQUENCE) is not part of this table: it is the canonical chain snapshot block the
+ * state was read at, which only grows, so re-importing a later export replaces the event.
  */
-const ICS: Record<LifecycleState, { status: IcsStatus; sequence: number } | null> = {
-  leading: { status: 'TENTATIVE', sequence: 0 },
-  'awaiting-settlement': { status: 'TENTATIVE', sequence: 0 },
-  upcoming: { status: 'CONFIRMED', sequence: 1 },
-  'in-progress': { status: 'CONFIRMED', sequence: 1 },
-  completed: { status: 'CONFIRMED', sequence: 1 },
-  disputed: { status: 'TENTATIVE', sequence: 2 },
-  'cancelled-refunded': { status: 'CANCELLED', sequence: 3 },
-  expired: { status: 'CANCELLED', sequence: 3 },
+const ICS: Record<LifecycleState, { status: IcsStatus } | null> = {
+  leading: { status: 'TENTATIVE' },
+  'awaiting-settlement': { status: 'TENTATIVE' },
+  upcoming: { status: 'CONFIRMED' },
+  'in-progress': { status: 'CONFIRMED' },
+  completed: { status: 'CONFIRMED' },
+  disputed: { status: 'TENTATIVE' },
+  'cancelled-refunded': { status: 'CANCELLED' },
+  expired: { status: 'CANCELLED' },
   outbid: null,
 };
 
-export const canExportIcs = (lifecycle: Lifecycle | null): lifecycle is Lifecycle => Boolean(lifecycle && ICS[lifecycle.state]);
+/** Deployment identity plus the canonical snapshot block (null until a snapshot was read). */
+export interface CalendarDeployment {
+  chainId: number;
+  contractAddress: string;
+  snapshotBlock?: number | null;
+}
+
+const validBlock = (n: number | null | undefined): n is number => Number.isSafeInteger(n) && (n as number) >= 0;
+
+/** An export needs an exportable state and a snapshot block to number the revision with. */
+export const canExportIcs = (lifecycle: Lifecycle | null, snapshotBlock: number | null | undefined): lifecycle is Lifecycle =>
+  Boolean(lifecycle && ICS[lifecycle.state]) && validBlock(snapshotBlock);
 
 /**
  * A calendar event for a reservation in any lifecycle state. Times are absolute UTC instants, which
@@ -56,12 +67,14 @@ export const canExportIcs = (lifecycle: Lifecycle | null): lifecycle is Lifecycl
  */
 export function reservationIcs(
   listing: Pick<Listing, 'id' | 'title' | 'address' | 'parkingStart' | 'parkingEnd'> & { timeZone?: string },
-  deployment: { chainId: number; contractAddress: string },
+  deployment: CalendarDeployment,
   lifecycle: Lifecycle,
   nowSec = Math.floor(Date.now() / 1000),
 ): string {
   const kind = ICS[lifecycle.state];
   if (!kind) throw new Error(`No calendar event for state ${lifecycle.state}`);
+  const sequence = deployment.snapshotBlock;
+  if (!validBlock(sequence)) throw new Error('No canonical chain snapshot block to number the calendar revision with');
   const zone = listing.timeZone && isValidZone(listing.timeZone) ? listing.timeZone : '';
   const where = zone
     ? `Local time (${zone}): ${formatParkingWindow(listing.parkingStart, listing.parkingEnd, zone).full}.`
@@ -75,7 +88,7 @@ export function reservationIcs(
     'METHOD:PUBLISH',
     'BEGIN:VEVENT',
     `UID:${deployment.chainId}-${deployment.contractAddress.toLowerCase()}-${listing.id}@bidpark`,
-    `SEQUENCE:${kind.sequence}`,
+    `SEQUENCE:${sequence}`,
     `DTSTAMP:${utc(nowSec)}`,
     `DTSTART:${utc(listing.parkingStart)}`,
     `DTEND:${utc(listing.parkingEnd)}`,

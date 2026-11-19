@@ -82,7 +82,7 @@ import {
   type ListingTarget,
 } from './utils/eligibility';
 import { formatEth } from './utils/formatters';
-import { unregisteredListing } from './utils/history';
+import { resolveSnapshotListing, unregisteredListing } from './utils/history';
 import { webProfile } from './utils/networkProfile';
 import {
   LOADING_READ,
@@ -169,6 +169,7 @@ export const AppContent: React.FC<{
   const inbox = useInbox(session?.address ?? null);
   const verification = useVerifications(session?.address ?? null);
   const chain = listingsView.deploymentChanged ? null : listingsView.chain;
+  const calendarSnapshot = listingsView.read.status === 'success' ? chain : null;
 
   // Navigation & View
   const [currentTab, setCurrentTab] = useState<AppTab>(() => (new URLSearchParams(window.location.search).get('tab') === 'activity' ? 'activity' : 'marketplace'));
@@ -579,7 +580,7 @@ export const AppContent: React.FC<{
         JSON.stringify(configRef.current) !== JSON.stringify(config) || !isCurrentSigner(signer)) {
       throw new BidPreflightError('Cannot confirm the current wallet or deployment. No transaction was sent.');
     }
-    if (target && !resolveListing(fresh.listings, fresh.chain, target)) {
+    if (target && !resolveSnapshotListing(fresh, target)) {
       throw new BidPreflightError('This auction is no longer available. No transaction was sent.');
     }
     return fresh;
@@ -621,7 +622,7 @@ export const AppContent: React.FC<{
           'The marketplace deployment changed. Reload the page to continue; no bid was sent.'
         );
       }
-      const current = resolveListing(fresh.listings, fresh.chain, bidTarget);
+      const current = resolveSnapshotListing(fresh, bidTarget);
       if (!current) {
         throw new BidPreflightError('This auction is no longer available. No bid was sent.');
       }
@@ -1378,7 +1379,7 @@ export const AppContent: React.FC<{
             onOpenBid={handleOpenBidModal}
             onConnectWallet={() => setIsWalletModalOpen(true)}
             isActionBusy={isActionBusy}
-            deployment={config ? { chainId: config.chainId, contractAddress: config.contractAddress } : null}
+            deployment={config ? { chainId: config.chainId, contractAddress: config.contractAddress, snapshotBlock: calendarSnapshot?.blockNumber, snapshotTime: calendarSnapshot?.blockTimestamp } : null}
           />
         )}
         {currentTab === 'activity' && session && (
@@ -1443,6 +1444,8 @@ export const AppContent: React.FC<{
         listing={detailListing}
         contractAddress={config?.contractAddress}
         chainId={config?.chainId}
+        snapshotBlock={calendarSnapshot?.blockNumber}
+        snapshotTime={calendarSnapshot?.blockTimestamp}
         currentAddress={walletState.address}
         signedIn={Boolean(session)}
         onClose={() => setDetailTarget(null)}

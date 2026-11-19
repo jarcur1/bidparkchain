@@ -4,7 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Listing } from '../src/types';
 import { formatDateTime, formatParkingWindow } from '../src/utils/formatters';
 import { canExportIcs, reservationIcs } from '../src/utils/calendar';
-import { unregisteredListing } from '../src/utils/history';
+import { resolveSnapshotListing, unregisteredListing } from '../src/utils/history';
+import { deploymentKey, makeListingTarget } from '../src/utils/eligibility';
 import { reservationLifecycle, type Lifecycle, type LifecycleState } from '../src/utils/lifecycle';
 import { BidHistory } from '../src/components/BidHistory';
 
@@ -51,8 +52,9 @@ describe('reservation calendar export', () => {
     parkingStart: at('2026-11-20T05:00:00Z'), parkingEnd: at('2026-11-20T08:00:00Z'), timeZone: CHI,
   };
   const life = (state: LifecycleState, label = state): Lifecycle => ({ state, label, detail: '' });
-  const dep = { chainId: 31337, contractAddress: '0xABCDEF' };
-  const make = (state: LifecycleState, l = listing) => reservationIcs(l, dep, life(state), at('2026-11-19T00:00:00Z'));
+  const dep = { chainId: 31337, contractAddress: '0xABCDEF', snapshotBlock: 1234 };
+  const make = (state: LifecycleState, l = listing, block: number | null = 1234) =>
+    reservationIcs(l, { ...dep, snapshotBlock: block }, life(state), at('2026-11-19T00:00:00Z'));
   const ics = make('upcoming');
 
   it('writes UTC instants, a stable UID and escaped text with CRLF lines', () => {
@@ -67,24 +69,32 @@ describe('reservation calendar export', () => {
     expect(ics.replace(/\r\n/g, '')).not.toMatch(/\n/);
   });
 
-  it('writes status and a revision that only grows as the reservation moves on', () => {
-    const seq = (s: LifecycleState) => ({
-      status: make(s).split('\r\n').find((x) => x.startsWith('STATUS:')),
-      sequence: Number(make(s).match(/SEQUENCE:(\d+)/)![1]),
-    });
-    expect(seq('awaiting-settlement')).toEqual({ status: 'STATUS:TENTATIVE', sequence: 0 });
-    expect(seq('upcoming')).toEqual({ status: 'STATUS:CONFIRMED', sequence: 1 });
-    expect(seq('completed').status).toBe('STATUS:CONFIRMED');
-    expect(seq('disputed')).toEqual({ status: 'STATUS:TENTATIVE', sequence: 2 });
-    expect(seq('cancelled-refunded')).toEqual({ status: 'STATUS:CANCELLED', sequence: 3 });
-    expect(seq('expired').status).toBe('STATUS:CANCELLED');
+  it('writes status per state and the snapshot block as the revision, with one UID', () => {
+    const read = (s: LifecycleState, block = 1234) => {
+      const out = make(s, listing, block);
+      return {
+        status: out.split('\r\n').find((x) => x.startsWith('STATUS:')),
+        sequence: Number(out.match(/SEQUENCE:(\d+)/)![1]),
+      };
+    };
+    expect(read('awaiting-settlement')).toEqual({ status: 'STATUS:TENTATIVE', sequence: 1234 });
+    expect(read('upcoming')).toEqual({ status: 'STATUS:CONFIRMED', sequence: 1234 });
+    expect(read('completed').status).toBe('STATUS:CONFIRMED');
+    expect(read('disputed').status).toBe('STATUS:TENTATIVE');
+    expect(read('cancelled-refunded').status).toBe('STATUS:CANCELLED');
+    expect(read('expired').status).toBe('STATUS:CANCELLED');
     expect(make('cancelled-refunded')).toContain('SUMMARY:CANCELLED: Parking');
+    // A later snapshot always outranks an earlier one, whatever the lifecycle state did in between.
+    expect(read('cancelled-refunded', 1000).sequence).toBeLessThan(read('upcoming', 1001).sequence);
+    expect(read('upcoming', 1001).sequence).toBeLessThan(read('awaiting-settlement', 1002).sequence);
     // The same event identity in every state, so a re-export updates it.
     expect(make('cancelled-refunded')).toContain('UID:31337-0xabcdef-7@bidpark');
     expect(() => make('outbid')).toThrow();
-    expect(canExportIcs(life('outbid'))).toBe(false);
-    expect(canExportIcs(null)).toBe(false);
-    expect(canExportIcs(life('leading'))).toBe(true);
+    expect(() => make('upcoming', listing, null)).toThrow(/snapshot block/);
+    expect(canExportIcs(life('outbid'), 1)).toBe(false);
+    expect(canExportIcs(null, 1)).toBe(false);
+    expect(canExportIcs(life('leading'), 1)).toBe(true);
+    expect(canExportIcs(life('leading'), null)).toBe(false);
   });
 
   it('uses UTC instants and names the space zone and local overnight window in the description', () => {
@@ -113,7 +123,7 @@ describe('reservation calendar export', () => {
   });
 
   it('folds long lines to 75 octets', () => {
-    const long = reservationIcs({ ...listing, title: 'é'.repeat(80) }, { chainId: 1, contractAddress: '0x1' }, life('upcoming'));
+    const long = reservationIcs({ ...listing, title: 'é'.repeat(80) }, { chainId: 1, contractAddress: '0x1', snapshotBlock: 5 }, life('upcoming'));
     for (const line of long.split('\r\n')) expect(new TextEncoder().encode(line).length).toBeLessThanOrEqual(75);
     expect(long.replace(/\r\n /g, '')).toContain(`SUMMARY:Parking: ${'é'.repeat(80)}`);
   });
@@ -210,11 +220,25 @@ describe('auction without registered details', () => {
     const l = unregisteredListing({
       id: '9', owner: '0x1', metadataHash: '0xabc', highestBid: '0.5', bidEnd: at('2026-11-10T00:00:00Z'), settled: true, cancelled: false,
       highestBidder: me, minBid: '0.1', parkingStart: at('2026-11-20T05:00:00Z'), parkingEnd: at('2026-11-20T08:00:00Z'),
-      payoutClaimed: false, spaceId: '2', timeZone: CHI, booking: null,
+      payoutClaimed: false, spaceId: '2', timeZone: CHI, booking: null, inventoryBlocked: false,
     });
     const life = reservationLifecycle(l, me, at('2026-11-19T00:00:00Z'));
     expect(life?.state).toBe('upcoming');
-    expect(canExportIcs(life)).toBe(true);
+    expect(canExportIcs(life, 10)).toBe(true);
     expect(l.title).toBe('Auction #9');
+  });
+
+  it('resolves an unregistered auction from a snapshot by exact deployment and hash', () => {
+    const chain = { chainId: 1, contractAddress: '0xAbC', deploymentBlock: 3, deploymentBlockHash: '0xdead', blockNumber: 50, blockTimestamp: 1, chainTime: 1 };
+    const u = {
+      id: '9', owner: '0x1', metadataHash: '0xABC', highestBid: '0.5', bidEnd: 1, settled: false, cancelled: false,
+      highestBidder: '0x2', minBid: '0.1', parkingStart: 2, parkingEnd: 3, payoutClaimed: false, spaceId: '2', timeZone: CHI, booking: null, inventoryBlocked: true,
+    };
+    const target = makeListingTarget(unregisteredListing(u), chain);
+    expect(target.deployment).toBe(deploymentKey(chain));
+    expect(resolveSnapshotListing({ listings: [], unindexed: [u], chain }, target)).toMatchObject({ id: '9', inventoryBlocked: true });
+    expect(resolveSnapshotListing({ listings: [], unindexed: [{ ...u, metadataHash: '0xdef' }], chain }, target)).toBeNull();
+    expect(resolveSnapshotListing({ listings: [], unindexed: [u], chain: { ...chain, deploymentBlockHash: '0xbeef' } }, target)).toBeNull();
+    expect(resolveSnapshotListing({ listings: [], unindexed: [], chain }, target)).toBeNull();
   });
 });
