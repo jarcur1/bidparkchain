@@ -47,14 +47,17 @@ function sessionCookie(req, token, maxAgeSeconds) {
 }
 
 /**
- * The signed-in session for this request, or null. A session only counts for the origin and chain
- * it was created on, and only until it expires or is revoked.
+ * The signed-in session for this request, or null. A session only counts for the chain it was
+ * created on, and only until it expires or is revoked. Browsers send Origin on every POST, so a
+ * request from another origin is refused; same-origin GETs carry no Origin (and a dev proxy may
+ * rewrite Host), and those are already limited to this site by the SameSite=Strict cookie.
  */
 export function readSession(db, req, now = Date.now()) {
   const token = readCookie(req, SESSION_COOKIE);
   if (!token) return null;
   const session = db.getSession(sha256(token));
-  if (!session || session.revoked || session.expires_at <= now || session.origin !== requestOrigin(req)) return null;
+  const origin = req.get('origin');
+  if (!session || session.revoked || session.expires_at <= now || (origin && origin !== session.origin)) return null;
   return { address: session.address, chainId: session.chain_id, expiresAt: session.expires_at, tokenHash: session.token_hash };
 }
 
