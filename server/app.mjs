@@ -606,7 +606,8 @@ export function createApp(options = {}) {
           const onchain = await call('auctions', [id]);
           if (onchain.owner === ethers.ZeroAddress || row.metadata_hash.toLowerCase() !== onchain.metadataHash.toLowerCase()) return null;
           const [spaceId] = await call('auctionSpace', [id]);
-          return listingFromRow(id, onchain, { ...meta, amenities: JSON.stringify(meta.amenities) }, spaceId);
+          const [timeZone] = await call('spaceTimeZone', [spaceId]);
+          return listingFromRow(id, onchain, { ...meta, amenities: JSON.stringify(meta.amenities) }, [spaceId, timeZone]);
         }));
         listings.push(...read.filter(Boolean));
       }
