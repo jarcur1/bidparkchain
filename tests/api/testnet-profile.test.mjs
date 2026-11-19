@@ -7,6 +7,7 @@ import { createApp } from '../../server/app.mjs';
 import { resolveRuntimeProfile } from '../../scripts/helpers/runtime-profile.mjs';
 import { validateSpotMetadata } from '../../shared/validation.js';
 import { createSepoliaFixture, runProfileDeploy } from '../support/sepolia-fixture.mjs';
+import { signInCookie } from '../support/auth.mjs';
 
 const metadata = {
   title: 'Downtown garage', address: '123 Main Street', neighborhood: 'Downtown',
@@ -31,9 +32,11 @@ async function stopApi() {
   appRuntime?.provider.destroy();
   appRuntime = undefined;
 }
+// Session of the fixture wallet, which owns the auctions it creates; sessions survive API restarts.
+let cookie = '';
 async function request(route, body) {
   const response = await fetch(`${url}${route}`, body === undefined ? {} : {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body),
   });
   return { status: response.status, json: await response.json() };
 }
@@ -82,6 +85,7 @@ it('persists a verified deployment and finalized listings across CLI and API res
     deploymentBlock: config.json.deploymentBlock,
     deploymentBlockHash: config.json.deploymentBlockHash,
   };
+  cookie = await signInCookie(url, fixture.wallet);
   expect((await request('/api/listings', { auctionId: '1', metadata, deployment: { ...deployment, chainId: 31337 } })).status).toBe(409);
   expect(config.status).toBe(200);
   expect(config.json).toMatchObject({ profile: 'sepolia', chainId: 11155111, confirmation: 'finalized', contractAddress: descriptor.contractAddress });
