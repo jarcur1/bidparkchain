@@ -12,6 +12,7 @@ import { syncIndex } from './indexer.mjs';
 import { deriveInbox } from './inbox.mjs';
 import { createSettlementJob, settlementSettings } from './settlement.mjs';
 import { PRICE_NOTE, QueryError, encodeCursor, filterAndSort, matchesMetadata, parseSearchQuery } from './search.mjs';
+import { mountDrafts } from './drafts.mjs';
 import { mountVerification, parseModerators, publicVerification } from './verification.mjs';
 
 let sepoliaArtifact;
@@ -949,6 +950,8 @@ export function createApp(options = {}) {
     db, moderators: settings.moderators, readSpaceOwner,
     contractAddress: () => loadDeployment()?.contractAddress ?? null,
   });
+
+  mountDrafts(app, { db, contractAddress: () => loadDeployment()?.contractAddress ?? null });
 
   /** GET /api/health/live: the process is up and answering. Checks no dependencies. */
   app.get('/api/health/live', (req, res) => res.json({ live: true }));

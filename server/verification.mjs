@@ -139,13 +139,18 @@ export function mountVerification(app, { db, moderators, contractAddress, readSp
     }
   });
 
-  /** GET /api/moderation/verifications: the review queue with evidence and full history. Moderators only. */
+  /** GET /api/moderation/verifications?limit&offset: a page of the review queue with evidence and full history. Moderators only. */
   app.get('/api/moderation/verifications', (req, res) => {
     const s = scope(req, res, { moderator: true });
     if (!s) return;
+    const limit = Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 25));
+    const offset = Math.max(0, Number.parseInt(req.query.offset, 10) || 0);
+    const total = db.countModerationQueue(s.contract);
     res.json({
       reasons: REASONS,
-      queue: db.getModerationQueue(s.contract).map((row) => ({
+      total,
+      nextOffset: offset + limit < total ? offset + limit : null,
+      queue: db.getModerationQueue(s.contract, { limit, offset }).map((row) => ({
         spaceId: row.space_id, host: row.host ?? null, status: row.status ?? 'unverified',
         evidence: row.evidence ?? '', updatedAt: row.updated_at ?? null,
         audit: audit(db, s.contract, row.space_id, { reports: true }),
