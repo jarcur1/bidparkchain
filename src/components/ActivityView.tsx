@@ -735,7 +735,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
             <div>
               <p className="activity-empty-heading">No hosted spaces listed under this account</p>
               <p className="activity-empty-text">
-                Have a private driveway or garage in Austin? Click "+ List a Spot" in the top bar to create an on-chain escrow auction.
+                Have a private driveway or garage? Click "+ List a Spot" in the top bar to create an on-chain escrow auction.
               </p>
             </div>
           </div>

@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.mjs';
+import { bid, selectWallet } from './helpers.mjs';
 
 test.use({ scenario: 'campus-expansion' });
 
@@ -39,19 +40,9 @@ for (const viewport of [{ width: 1280, height: 720 }, { width: 375, height: 800 
   });
 }
 
-test('a demo account can still bid on the remaining near spot', async ({ page, stack }) => {
+// Shares this worker's stack with presenter-expansion.spec.mjs, which needs N1 and accounts 1-2 untouched.
+test('a demo account can still bid in the campus scenario', async ({ page, stack }) => {
   await page.goto(stack.webUrl);
-  const header = page.getByRole('banner');
-  await header.getByRole('button', { name: /Connect Wallet/ }).click();
-  const wallets = page.getByRole('dialog', { name: 'Connect & Switch Wallet' });
-  await wallets.getByRole('button', { name: /Account #1 \(/ }).click();
-  await wallets.getByRole('button', { name: 'Close dialog' }).click();
-
-  const n1 = page.getByRole('article', { name: `Listing: ${N1}`, exact: true });
-  await n1.getByRole('button', { name: 'Bid Now' }).click();
-  const bid = page.getByRole('dialog').filter({ has: page.getByLabel('Your New Bid Amount (ETH)') });
-  await bid.getByLabel('Your New Bid Amount (ETH)').fill('0.03');
-  await bid.getByRole('button', { name: 'Deposit 0.03 ETH', exact: true }).click();
-  await expect(bid).toBeHidden();
-  await expect(n1.locator('.bid-amount')).toHaveText('0.030');
+  await selectWallet(page, 3);
+  await bid(page, 'F3 · Park-and-Walk Garage Spot [Fictional Class Demo]', '0.01');
 });
