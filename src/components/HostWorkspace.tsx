@@ -7,6 +7,7 @@ import { isValidImageUrl, validateSpotMetadata } from '../../shared/validation.j
 import { AUSTIN_PRESET_LOCATIONS, CURATED_PARKING_PHOTOS } from '../utils/constants';
 import { formatDateTime } from '../utils/formatters';
 import { getChainNowSec } from '../utils/eligibility';
+import { MIN_BID_LEAD } from '../utils/booking';
 import { findConflicts, isValidZone, parseSchedule, zonedToEpoch, type Span } from '../utils/schedule';
 import { STATUS_TEXT, type HostVerification } from './Verification';
 
@@ -34,7 +35,7 @@ interface Props {
   verifications: HostVerification[];
   isActionBusy: boolean;
   onSpaceAction: (action: SpaceAction, label: string) => Promise<boolean>;
-  onPublish: (metadata: SpotMetadata, minBidEth: string, bidEnd: number, start: number, end: number, spaceId?: string) => Promise<void>;
+  onPublish: (metadata: SpotMetadata, minBidEth: string, bidEnd: number, start: number, end: number, spaceId?: string, protectedBooking?: boolean) => Promise<void>;
   onSignIn: () => void;
 }
 
@@ -45,6 +46,7 @@ export const HostWorkspace: React.FC<Props> = ({
   const [editing, setEditing] = useState<{ id: number | null; name: string; kind: DraftKind }>({ id: null, name: '', kind: 'draft' });
   const [drafts, setDrafts] = useState<SavedDraft[]>([]);
   const [message, setMessage] = useState<string | null>(null);
+  const [protectedBooking, setProtectedBooking] = useState(false);
   const [photoFailed, setPhotoFailed] = useState(false);
   const [nowSec, setNowSec] = useState(() => getChainNowSec());
   const set = <K extends keyof DraftFields>(key: K, value: DraftFields[K]) => setForm((f) => ({ ...f, [key]: value }));
@@ -86,10 +88,14 @@ export const HostWorkspace: React.FC<Props> = ({
   const problem = !validation.valid ? validation.error ?? 'Listing details are incomplete.'
     : !photoOk ? 'Photo must be an https URL or a local path starting with /'
       : !minBidOk ? 'Enter a minimum bid greater than 0.'
-        : parsed.error ?? (conflicts.length > 0 ? 'The window overlaps a held or blocked window on this space.' : null);
+        : parsed.error ?? (conflicts.length > 0 ? 'The window overlaps a held or blocked window on this space.'
+          : protectedBooking && parsed.schedule && parsed.schedule.start - parsed.schedule.bidEnd < MIN_BID_LEAD
+            ? 'A protected booking needs at least 30 minutes between the bidding cutoff and parking start. Move the cutoff earlier or the start later, or clear Protected booking.'
+            : null);
 
   function fill(source: Partial<DraftFields>, keepDates: boolean) {
     setForm({ ...EMPTY, ...source, ...(keepDates ? {} : { cutoff: '', start: '', end: '' }) });
+    setProtectedBooking(false);
   }
   function relist(spaceId: string) {
     const latest = [...listings].filter((l) => l.spaceId === spaceId).sort((a, b) => b.parkingEnd - a.parkingEnd)[0];
@@ -132,7 +138,8 @@ export const HostWorkspace: React.FC<Props> = ({
   async function publish() {
     if (problem || !parsed.schedule || !validation.normalized) return;
     try {
-      await onPublish(validation.normalized, form.minBidEth, parsed.schedule.bidEnd, parsed.schedule.start, parsed.schedule.end, form.spaceId || undefined);
+      await onPublish(validation.normalized, form.minBidEth, parsed.schedule.bidEnd, parsed.schedule.start, parsed.schedule.end, form.spaceId || undefined, protectedBooking);
+      setProtectedBooking(false);
       setMessage('Auction created.');
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
@@ -230,6 +237,24 @@ export const HostWorkspace: React.FC<Props> = ({
           <input className="form-input" type="datetime-local" value={form.end} onChange={(e) => set('end', e.target.value)} />
         </label>
 
+        <label className="form-checkbox-row">
+          <input
+            type="checkbox"
+            checked={protectedBooking}
+            onChange={(e) => setProtectedBooking(e.target.checked)}
+            aria-labelledby="workspace-protected-booking"
+            aria-describedby="workspace-protected-booking-help"
+          />
+          <span>
+            <strong id="workspace-protected-booking">Protected booking</strong>{' '}
+            <span id="workspace-protected-booking-help">
+              You can withdraw it after bidding closes and before parking starts (the winner is refunded in full).
+              The winner or you can report a seller failure, and your payout opens 24 hours after parking ends if no report is open.
+              Parking must start at least 30 minutes after bidding closes.
+            </span>
+          </span>
+        </label>
+
         {conflicts.length > 0 && (
           <div role="alert" className="workspace-conflicts" data-testid="schedule-conflicts">
             Conflicts on space #{space?.id}:
@@ -245,6 +270,7 @@ export const HostWorkspace: React.FC<Props> = ({
             <dt>Bidding closes</dt><dd>{when(parsed.schedule.bidEnd)} ({new Date(parsed.schedule.bidEnd * 1000).toISOString()})</dd>
             <dt>Parking</dt><dd>{when(parsed.schedule.start)} to {when(parsed.schedule.end)} ({Math.round((parsed.schedule.end - parsed.schedule.start) / 360) / 10} h)</dd>
             <dt>Minimum bid</dt><dd>{form.minBidEth} ETH</dd>
+            <dt>Booking</dt><dd>{protectedBooking ? 'Protected booking' : 'Standard booking'}</dd>
           </dl>
         )}
         {problem && <p className="auction-disclosure-subtext" data-testid="schedule-problem">{problem}</p>}
