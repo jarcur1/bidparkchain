@@ -9,7 +9,7 @@ import { compileEscrowContract } from '../scripts/helpers/compiler.mjs';
 import { getNetworkProfile } from '../shared/network-profiles.mjs';
 import { mountAuth, readSession } from './auth.mjs';
 import { syncIndex } from './indexer.mjs';
-import { deriveInbox } from './inbox.mjs';
+import { CATEGORY_NAMES, deriveInbox, INBOX_CATEGORIES, INBOX_ID, mergeFeed, reservationEntries } from './inbox.mjs';
 import { createSettlementJob, settlementSettings } from './settlement.mjs';
 import { PRICE_NOTE, QueryError, encodeCursor, filterAndSort, matchesMetadata, parseSearchQuery } from './search.mjs';
 import { mountDrafts } from './drafts.mjs';
@@ -912,15 +912,18 @@ export function createApp(options = {}) {
   // Block timestamps by block hash (immutable per hash). null when the node cannot be read.
   const blockTimes = new Map();
   async function withBlockTimes(rows) {
-    const missing = [...new Map(rows.filter((e) => !blockTimes.has(e.block_hash)).map((e) => [e.block_hash, e.block_number]))];
-    await Promise.all(missing.slice(0, 200).map(async ([hash]) => {
-      const block = await provider.getBlock(hash).catch(() => null);
-      if (block) blockTimes.set(hash, block.timestamp);
-    }));
+    await fillBlockTimes(rows);
     return rows.map((e) => ({
       event: e.event, auctionId: e.auction_id, account: e.account, amount: e.amount === null ? null : ethers.formatEther(e.amount),
       blockNumber: e.block_number, blockHash: e.block_hash, txHash: e.tx_hash, logIndex: e.log_index,
       blockTime: blockTimes.get(e.block_hash) ?? null,
+    }));
+  }
+  async function fillBlockTimes(rows) {
+    const missing = [...new Map(rows.filter((e) => !blockTimes.has(e.block_hash)).map((e) => [e.block_hash, e.block_number]))];
+    await Promise.all(missing.slice(0, 200).map(async ([hash]) => {
+      const block = await provider.getBlock(hash).catch(() => null);
+      if (block) blockTimes.set(hash, block.timestamp);
     }));
   }
 
@@ -953,27 +956,43 @@ export function createApp(options = {}) {
   });
 
   /**
-   * The signed-in wallet's inbox on the deployment this API serves, built from canonical indexed events
-   * only, with its read state and the index freshness so the client can say when it may be behind.
+   * The signed-in wallet's inbox on the deployment this API serves: entries from canonical indexed
+   * events merged by time with its off-chain reservation entries, minus dismissed entries and hidden
+   * categories, with read state and the index freshness so the client can say when it may be behind.
    */
-  function inboxFor(session, contractAddress) {
-    const read = db.getInboxReads(contractAddress, session.address);
-    const items = deriveInbox(db.getInboxEvents(contractAddress, session.address), session.address).map((item) => ({
-      ...item,
-      amount: item.amount === null ? null : ethers.formatEther(item.amount),
-      title: item.auctionId ? db.getListing(item.auctionId, contractAddress)?.title ?? null : null,
-      read: read.has(item.id),
+  const parkingTimes = new Map();
+  async function inboxFor(session, contractAddress) {
+    const events = db.getInboxEvents(contractAddress, session.address);
+    const { read, dismissed } = db.getInboxState(contractAddress, session.address);
+    const preferences = db.getInboxPreferences(session.address);
+    await fillBlockTimes(events);
+    const chainItems = deriveInbox(events, session.address).map(({ blockHash, ...item }) => ({
+      ...item, amount: item.amount === null ? null : ethers.formatEther(item.amount), at: blockTimes.get(blockHash) ?? null,
     }));
+    const reservations = await reservationEntries({
+      db, contractAddress, address: session.address, events, pinnedReader, times: parkingTimes,
+      blockTime: (hash) => blockTimes.get(hash),
+    });
+    const items = mergeFeed(chainItems, reservations.items)
+      .filter((item) => !dismissed.has(item.id) && !preferences.hidden.includes(INBOX_CATEGORIES[item.kind]))
+      .map((item) => ({
+        ...item,
+        category: INBOX_CATEGORIES[item.kind],
+        title: item.auctionId ? db.getListing(item.auctionId, contractAddress)?.title ?? null : null,
+        read: read.has(item.id),
+      }));
     const checkpoint = db.getCheckpoint(contractAddress);
     return {
       items,
       unread: items.filter((item) => !item.read).length,
+      preferences,
       index: {
         indexedBlock: checkpoint?.block_number ?? null,
         headBlock: lastSync?.headBlock ?? null,
         lagBlocks: lastSync?.lagBlocks ?? null,
         lastSyncAt: lastSync?.at ?? null,
         lastSyncError: lastSync?.error ?? null,
+        reservationsError: reservations.error,
       },
     };
   }
@@ -992,23 +1011,49 @@ export function createApp(options = {}) {
     return { session, contractAddress: deployment.contractAddress };
   }
 
-  /** GET /api/inbox: outbid, win, refund and payout entries for the signed-in wallet. */
-  app.get('/api/inbox', (req, res) => {
+  /** The `ids` of an inbox write, or null after answering 400. */
+  function inboxIds(req, res) {
+    const ids = req.body?.ids;
+    if (Array.isArray(ids) && ids.length <= 500 && ids.every((id) => typeof id === 'string' && INBOX_ID.test(id))) return ids;
+    res.status(400).json({ error: 'ids must be a list of at most 500 inbox entry ids' });
+    return null;
+  }
+
+  /** GET /api/inbox: bid, reservation, booking and funds entries for the signed-in wallet. */
+  app.get('/api/inbox', async (req, res) => {
     const scope = inboxDeployment(req, res);
-    if (scope) res.json(inboxFor(scope.session, scope.contractAddress));
+    if (scope) res.json(await inboxFor(scope.session, scope.contractAddress));
   });
 
   /** POST /api/inbox/read { ids }: marks the signed-in wallet's entries read and returns the inbox. */
-  app.post('/api/inbox/read', (req, res) => {
+  app.post('/api/inbox/read', async (req, res) => {
+    const scope = inboxDeployment(req, res);
+    const ids = scope && inboxIds(req, res);
+    if (!ids) return;
+    db.markInboxRead(scope.contractAddress, scope.session.address, ids);
+    res.json(await inboxFor(scope.session, scope.contractAddress));
+  });
+
+  /** POST /api/inbox/dismiss { ids }: hides the signed-in wallet's entries for good and returns the inbox. */
+  app.post('/api/inbox/dismiss', async (req, res) => {
+    const scope = inboxDeployment(req, res);
+    const ids = scope && inboxIds(req, res);
+    if (!ids) return;
+    db.dismissInboxItems(scope.contractAddress, scope.session.address, ids);
+    res.json(await inboxFor(scope.session, scope.contractAddress));
+  });
+
+  /** POST /api/inbox/preferences { hidden }: the categories the signed-in wallet does not want shown. */
+  app.post('/api/inbox/preferences', async (req, res) => {
     const scope = inboxDeployment(req, res);
     if (!scope) return;
-    const ids = req.body?.ids;
-    if (!Array.isArray(ids) || ids.length > 500 || !ids.every((id) => typeof id === 'string' && /^0x[0-9a-f]{64}:\d{1,6}$/.test(id))) {
-      res.status(400).json({ error: 'ids must be a list of at most 500 inbox entry ids' });
+    const hidden = req.body?.hidden;
+    if (!Array.isArray(hidden) || !hidden.every((name) => CATEGORY_NAMES.includes(name))) {
+      res.status(400).json({ error: `hidden must be a list of: ${CATEGORY_NAMES.join(', ')}` });
       return;
     }
-    db.markInboxRead(scope.contractAddress, scope.session.address, ids);
-    res.json(inboxFor(scope.session, scope.contractAddress));
+    db.setInboxPreferences(scope.session.address, { hidden: [...new Set(hidden)] });
+    res.json(await inboxFor(scope.session, scope.contractAddress));
   });
 
   // Optional settlement keeper (off by default); serve() runs it on a timer and drains it on shutdown.
