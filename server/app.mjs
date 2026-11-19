@@ -9,10 +9,11 @@ import { compileEscrowContract } from '../scripts/helpers/compiler.mjs';
 import { getNetworkProfile } from '../shared/network-profiles.mjs';
 import { mountAuth, readSession } from './auth.mjs';
 import { syncIndex } from './indexer.mjs';
-import { CATEGORY_NAMES, deriveInbox, INBOX_CATEGORIES, INBOX_ID, mergeFeed, reservationEntries } from './inbox.mjs';
+import { CATEGORY_NAMES, deriveInbox, INBOX_CATEGORIES, INBOX_ID, mergeFeed, replacementEntries, reservationEntries } from './inbox.mjs';
 import { createSettlementJob, settlementSettings } from './settlement.mjs';
 import { PRICE_NOTE, QueryError, encodeCursor, filterAndSort, matchesMetadata, parseSearchQuery } from './search.mjs';
 import { mountDrafts } from './drafts.mjs';
+import { mountReplacements } from './replacements.mjs';
 import { mountArrival } from './arrival.mjs';
 import { parseArrivalKey } from './arrival-crypto.mjs';
 import { mountDisputes } from './disputes.mjs';
@@ -983,7 +984,8 @@ export function createApp(options = {}) {
       db, contractAddress, address: session.address, events, pinnedReader, times: parkingTimes,
       blockTime: (hash) => blockTimes.get(hash),
     });
-    const items = mergeFeed(chainItems, reservations.items)
+    const replaced = replacementEntries(events, session.address, db.getReplacements(contractAddress, [...new Set(events.map((e) => e.auction_id))]));
+    const items = mergeFeed(chainItems, [...reservations.items, ...replaced])
       .filter((item) => !dismissed.has(item.id) && !preferences.hidden.includes(INBOX_CATEGORIES[item.kind]))
       .map((item) => ({
         ...item,
@@ -1165,6 +1167,8 @@ export function createApp(options = {}) {
       ? 'BIDPARK_ARRIVAL_KEY is not set: arrival instructions cannot be saved on this server.'
       : 'BIDPARK_ARRIVAL_KEY is not set: arrival instructions are stored unencrypted (local/demo mode only).' }),
   }));
+
+  mountReplacements(app, { db, pinnedReader, contractAddress: () => loadDeployment()?.contractAddress ?? null });
 
   mountArrival(app, { db, requireKey: settings.hosted, pinnedReader, contractAddress: () => loadDeployment()?.contractAddress ?? null });
 
