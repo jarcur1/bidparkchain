@@ -312,7 +312,26 @@ const MIGRATIONS = [
   },
   // 13: bind proof to the ownership period that was actually reviewed. Older reviews need new proof.
   (db) => db.exec('ALTER TABLE space_verifications ADD COLUMN ownership_epoch TEXT'),
-  // 14: alias keys per space for duplicate detection, and an 'appeal' audit action (the CHECK on
+  // 14: creation parameters of each indexed auction (JSON on its AuctionCreated row), so search can filter
+  //    from the index. Kept on the event row, so a reorg orphans them with the event.
+  (db) => db.exec('ALTER TABLE auction_events ADD COLUMN detail TEXT'),
+  // 15: host-verified arrival. A used token nonce is kept so a replay is refused, and the check-in
+  //    records which host verified it.
+  (db) => {
+    db.exec(`
+      CREATE TABLE arrival_token_uses (
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        nonce TEXT NOT NULL,
+        auction_id TEXT NOT NULL,
+        used_at INTEGER NOT NULL,
+        PRIMARY KEY (chain_id, contract_address, nonce)
+      );
+      ALTER TABLE arrival_checkins ADD COLUMN verified_by TEXT;
+      ALTER TABLE arrival_checkins ADD COLUMN verified_at INTEGER;
+    `);
+  },
+  // 16: alias keys per space for duplicate detection, and an 'appeal' audit action (the CHECK on
   //     verification_audit.action cannot be altered, so the append-only table is rebuilt with its rows and triggers).
   (db) => {
     db.exec(`
@@ -468,6 +487,7 @@ export class EscrowDatabase {
     // Same for private arrival details: a new space or auction with a reused id must not see the old ones.
     this.db.prepare('DELETE FROM arrival_instructions WHERE chain_id = ?').run(this.chainId);
     this.db.prepare('DELETE FROM arrival_checkins WHERE chain_id = ?').run(this.chainId);
+    this.db.prepare('DELETE FROM arrival_token_uses WHERE chain_id = ?').run(this.chainId);
     return this.db.prepare('DELETE FROM listings WHERE chain_id = ?').run(this.chainId).changes;
   }
 
@@ -703,6 +723,46 @@ export class EscrowDatabase {
     });
   }
 
+  /** Canonical AuctionCreated rows whose creation parameters are not stored yet. */
+  getCreatedWithoutDetail(contractAddress) {
+    return this.db.prepare(`
+      SELECT block_hash, log_index, auction_id FROM auction_events
+      WHERE chain_id = ? AND contract_address = ? AND canonical = 1 AND event = 'AuctionCreated' AND detail IS NULL
+    `).all(this.chainId, contractAddress.toLowerCase());
+  }
+
+  setEventDetail(contractAddress, blockHash, logIndex, detail) {
+    this.db.prepare('UPDATE auction_events SET detail = ? WHERE chain_id = ? AND contract_address = ? AND block_hash = ? AND log_index = ?')
+      .run(JSON.stringify(detail), this.chainId, contractAddress.toLowerCase(), blockHash, logIndex);
+  }
+
+  /**
+   * Auction state as of block `atBlock`, from canonical indexed events only: creation parameters (null
+   * until stored), the latest bid (bids only rise) and whether it was settled or cancelled.
+   * @returns {Map<string, {detail: object|null, highestBid: string, settled: boolean, cancelled: boolean}>}
+   */
+  getIndexedAuctions(contractAddress, atBlock) {
+    const rows = this.db.prepare(`
+      SELECT auction_id, event, amount, detail FROM auction_events
+      WHERE chain_id = ? AND contract_address = ? AND canonical = 1 AND block_number <= ?
+        AND event IN ('AuctionCreated', 'BidPlaced', 'AuctionSettled', 'AuctionCancelled', 'BookingRefunded')
+      ORDER BY block_number, log_index
+    `).all(this.chainId, contractAddress.toLowerCase(), atBlock);
+    const auctions = new Map();
+    for (const row of rows) {
+      if (row.event === 'AuctionCreated') {
+        auctions.set(row.auction_id, { detail: row.detail && JSON.parse(row.detail), highestBid: '0', settled: false, cancelled: false });
+        continue;
+      }
+      const auction = auctions.get(row.auction_id);
+      if (!auction) continue;
+      if (row.event === 'BidPlaced') auction.highestBid = row.amount;
+      else if (row.event === 'AuctionSettled') auction.settled = true;
+      else auction.cancelled = true;
+    }
+    return auctions;
+  }
+
   /** Canonical events for one auction (or all, when auctionId is omitted), in chain order. */
   getAuctionEvents(contractAddress, auctionId, { includeOrphaned = false } = {}) {
     return this.db.prepare(`
@@ -736,6 +796,17 @@ export class EscrowDatabase {
       )
       ORDER BY block_number, log_index
     `).all(this.chainId, contract, address, this.chainId, contract, address, this.chainId, contract, address);
+  }
+
+  /** Every canonical protected-booking event on this deployment, in chain order. */
+  getBookingEvents(contractAddress) {
+    return this.db.prepare(`
+      SELECT block_number, block_hash, tx_hash, log_index, event, auction_id, account, amount
+      FROM auction_events
+      WHERE chain_id = ? AND contract_address = ? AND canonical = 1
+        AND event IN ('BookingRefunded', 'LateCancellationRecorded', 'NoShowRecorded', 'DisputeOpened', 'DisputeResolved')
+      ORDER BY block_number, log_index
+    `).all(this.chainId, contractAddress.toLowerCase());
   }
 
   /** The entry ids `address` has read and dismissed on this deployment. */
@@ -1073,7 +1144,7 @@ export class EscrowDatabase {
 
   getCheckIn(contractAddress, auctionId) {
     return this.db.prepare(`
-      SELECT winner, checked_in_at, block_number FROM arrival_checkins WHERE chain_id = ? AND contract_address = ? AND auction_id = ?
+      SELECT winner, checked_in_at, block_number, verified_by, verified_at FROM arrival_checkins WHERE chain_id = ? AND contract_address = ? AND auction_id = ?
     `).get(this.chainId, contractAddress.toLowerCase(), auctionId) ?? null;
   }
 
@@ -1084,6 +1155,35 @@ export class EscrowDatabase {
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(this.chainId, contractAddress.toLowerCase(), auctionId, winner.toLowerCase(), Date.now(), blockNumber).changes > 0;
     return [this.getCheckIn(contractAddress, auctionId), created];
+  }
+
+  /**
+   * Spends an arrival token's nonce and records the host-verified check-in in one transaction.
+   * Returns { replayed: true } if the nonce was used; else { row, created } (created: first verification).
+   */
+  verifyArrivalToken(contractAddress, auctionId, { nonce, winner, host, blockNumber }) {
+    const contract = contractAddress.toLowerCase();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const now = Date.now();
+      const spent = this.db.prepare(`
+        INSERT OR IGNORE INTO arrival_token_uses (chain_id, contract_address, nonce, auction_id, used_at) VALUES (?, ?, ?, ?, ?)
+      `).run(this.chainId, contract, nonce, auctionId, now).changes > 0;
+      if (!spent) {
+        this.db.exec('ROLLBACK');
+        return { replayed: true };
+      }
+      this.recordCheckIn(contractAddress, auctionId, { winner, blockNumber });
+      const created = this.db.prepare(`
+        UPDATE arrival_checkins SET verified_by = ?, verified_at = ?
+        WHERE chain_id = ? AND contract_address = ? AND auction_id = ? AND verified_by IS NULL
+      `).run(host.toLowerCase(), now, this.chainId, contract, auctionId).changes > 0;
+      this.db.exec('COMMIT');
+      return { row: this.getCheckIn(contractAddress, auctionId), created };
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
   }
 
   close() {

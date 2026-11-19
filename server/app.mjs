@@ -9,7 +9,7 @@ import { compileEscrowContract } from '../scripts/helpers/compiler.mjs';
 import { getNetworkProfile } from '../shared/network-profiles.mjs';
 import { mountAuth, readSession } from './auth.mjs';
 import { syncIndex } from './indexer.mjs';
-import { CATEGORY_NAMES, deriveInbox, INBOX_CATEGORIES, INBOX_ID, mergeFeed, reservationEntries } from './inbox.mjs';
+import { CATEGORY_NAMES, deriveInbox, INBOX_CATEGORIES, INBOX_ID, mergeFeed, ownedAuctionIds, payoutReadyEntries, reservationEntries } from './inbox.mjs';
 import { createSettlementJob, settlementSettings } from './settlement.mjs';
 import { PRICE_NOTE, QueryError, encodeCursor, filterAndSort, matchesMetadata, parseSearchQuery } from './search.mjs';
 import { mountDrafts } from './drafts.mjs';
@@ -53,6 +53,8 @@ export function publicSettings(options = {}, env = process.env) {
     // Listing search: at most this many candidates are read from the chain per request, within this deadline.
     searchScanLimit: options.searchScanLimit ?? Number(env.BIDPARK_SEARCH_SCAN_LIMIT ?? 500),
     searchDeadlineMs: options.searchDeadlineMs ?? Number(env.BIDPARK_SEARCH_DEADLINE_MS ?? 20_000),
+    // Search answers from the event index while it is at most this many blocks behind the head.
+    searchIndexMaxLag: options.searchIndexMaxLag ?? Number(env.BIDPARK_SEARCH_INDEX_MAX_LAG ?? 50),
     // GET /api/listings reads at most this many auction ids per request; the rest follow via nextCursor.
     listingsScanLimit: options.listingsScanLimit ?? Number(env.BIDPARK_LISTINGS_SCAN_LIMIT ?? 500),
     // Wallets allowed to review host verification requests (comma-separated addresses).
@@ -608,6 +610,49 @@ export function createApp(options = {}) {
   });
 
   /**
+   * The index checkpoint search can answer at, first brought up to the head when it is behind by at most
+   * BIDPARK_SEARCH_INDEX_MAX_LAG blocks. null (read the chain directly) when the index lags further,
+   * is missing, or is ahead of the head (a reorg it has not caught up with).
+   */
+  async function usableCheckpoint(contractAddress, head) {
+    const lag = (cp) => (cp ? head.number - cp.block_number : Infinity);
+    let checkpoint = db.getCheckpoint(contractAddress);
+    if (checkpoint && checkpoint.block_hash !== head.hash && Math.abs(lag(checkpoint)) <= settings.searchIndexMaxLag) {
+      await syncIndexOnce();
+      checkpoint = db.getCheckpoint(contractAddress);
+    }
+    const behind = lag(checkpoint);
+    return behind >= 0 && behind <= settings.searchIndexMaxLag ? { number: checkpoint.block_number, hash: checkpoint.block_hash } : null;
+  }
+
+  /**
+   * Search candidates with their indexed auction state at `blockNumber`, shaped for filterAndSort.
+   * Auctions not created by then, or whose stored metadata hash differs, are left out (as on chain).
+   * null when some creation parameters are not stored yet.
+   */
+  function indexedCandidates(contractAddress, blockNumber, candidates) {
+    const state = db.getIndexedAuctions(contractAddress, blockNumber);
+    const out = [];
+    for (const candidate of candidates) {
+      const auction = state.get(candidate.id);
+      if (!auction) continue;
+      const { detail } = auction;
+      if (!detail) return null;
+      if (detail.metadataHash.toLowerCase() !== candidate.row.metadata_hash.toLowerCase()) continue;
+      out.push({
+        id: candidate.id, candidate, latitude: candidate.meta.latitude, longitude: candidate.meta.longitude,
+        minBid: ethers.formatEther(detail.minBid), highestBid: ethers.formatEther(auction.highestBid),
+        bidEnd: detail.bidEnd, parkingStart: detail.parkingStart, parkingEnd: detail.parkingEnd,
+        settled: auction.settled, cancelled: auction.cancelled, inventoryBlocked: false,
+      });
+    }
+    return out;
+  }
+
+  const INDEXED_FIELDS = ['minBid', 'highestBid', 'bidEnd', 'parkingStart', 'parkingEnd', 'settled', 'cancelled'];
+  const agreesWithIndex = (listing, indexed) => INDEXED_FIELDS.every((k) => listing[k] === indexed[k]);
+
+  /**
    * GET /api/listings/search
    * Bounded, validated discovery query (docs/listing-search.md). Every chain read of one response, and of
    * every later page of the same cursor, is pinned to one block whose number and hash are returned.
@@ -639,11 +684,18 @@ export function createApp(options = {}) {
         head = await provider.getBlock('latest');
       }
       let pinned = head;
+      // The block the event index answers at, or null to read every candidate from the chain.
+      let indexAt = null;
       if (params.cursor) {
         pinned = params.cursor.blockNumber > head?.number ? null : await provider.getBlock(params.cursor.blockNumber);
         if (pinned?.hash?.toLowerCase() !== params.cursor.blockHash.toLowerCase()) {
           return res.status(409).json({ error: 'Listings changed since this cursor was issued; start the search again' });
         }
+        const checkpoint = db.getCheckpoint(deployment.contractAddress);
+        if (checkpoint && settings.searchIndexMaxLag >= 0 && pinned.number <= checkpoint.block_number) indexAt = pinned;
+      } else if (head?.hash) {
+        indexAt = await usableCheckpoint(deployment.contractAddress, head);
+        pinned = indexAt ?? head;
       }
       if (!pinned?.hash) throw new Unavailable('Chain head unavailable');
 
@@ -655,42 +707,69 @@ export function createApp(options = {}) {
         if (!meta) { skipped++; continue; }
         if (matchesMetadata(meta, params)) candidates.push({ id, row, meta });
       }
-      if (candidates.length > settings.searchScanLimit) {
-        return res.status(422).json({ error: 'Too many listings match; narrow the area, time or filters' });
-      }
 
-      // ponytail: candidates are read from the chain per request; serve them from the event index once it
-      // tracks auction state, not only events.
       const call = async (method, args) => iface.decodeFunctionResult(method, await provider.send('eth_call', [
         { to: deployment.contractAddress, data: iface.encodeFunctionData(method, args) },
         { blockHash: pinned.hash, requireCanonical: true },
       ]));
-      const listings = [];
-      for (let i = 0; i < candidates.length; i += 16) {
-        if (Date.now() > deadline) throw new Unavailable('Listing search timed out');
-        const read = await Promise.all(candidates.slice(i, i + 16).map(async ({ id, row, meta }) => {
-          const onchain = await call('auctions', [id]);
-          if (onchain.owner === ethers.ZeroAddress || row.metadata_hash.toLowerCase() !== onchain.metadataHash.toLowerCase()) return null;
-          return listingFromRow(id, onchain, { ...meta, amenities: JSON.stringify(meta.amenities) },
-            ...withBadge(deployment.contractAddress, await readSpace(call, id)));
-        }));
-        listings.push(...read.filter(Boolean));
-      }
+      const readListings = async (list) => {
+        const out = [];
+        for (let i = 0; i < list.length; i += 16) {
+          if (Date.now() > deadline) throw new Unavailable('Listing search timed out');
+          out.push(...await Promise.all(list.slice(i, i + 16).map(async ({ id, row, meta }) => {
+            const onchain = await call('auctions', [id]);
+            if (onchain.owner === ethers.ZeroAddress || row.metadata_hash.toLowerCase() !== onchain.metadataHash.toLowerCase()) return null;
+            return listingFromRow(id, onchain, { ...meta, amenities: JSON.stringify(meta.amenities) },
+              ...withBadge(deployment.contractAddress, await readSpace(call, id)));
+          })));
+        }
+        return out;
+      };
 
       const snapshot = await readChainSnapshot(deployment, pinned);
       const chain = { ...snapshot, blockHash: pinned.hash, chainTime: params.cursor?.chainTime ?? snapshot.chainTime };
-      const matched = filterAndSort(listings, params, chain.chainTime);
       const offset = params.cursor?.offset ?? 0;
       const end = offset + params.limit;
+      // The index has no inventory-verification state; it is exact while verification is not required.
+      if (indexAt && ['active', 'ending-soon'].includes(params.status) && (await call('verifiedInventoryRequired', []))[0]) {
+        indexAt = null;
+      }
+
+      let page = null;
+      let matched;
+      if (indexAt) {
+        matched = indexedCandidates(deployment.contractAddress, pinned.number, candidates);
+        if (matched) {
+          matched = filterAndSort(matched, params, chain.chainTime);
+          // Only the returned page is read from the chain, and it must agree with the index.
+          const slice = matched.slice(offset, end);
+          const read = await readListings(slice.map((l) => l.candidate));
+          if (read.every((l, i) => l && agreesWithIndex(l, slice[i]))) {
+            page = read.map((l, i) => (slice[i].distanceKm === undefined ? l : { ...l, distanceKm: slice[i].distanceKm }));
+          } else {
+            console.warn('[BidPark Search] Index disagrees with chain state; reading candidates directly');
+          }
+        }
+      }
+      const source = page ? 'index' : 'chain';
+      if (!page) {
+        if (candidates.length > settings.searchScanLimit) {
+          return res.status(422).json({ error: 'Too many listings match; narrow the area, time or filters' });
+        }
+        matched = filterAndSort((await readListings(candidates)).filter(Boolean), params, chain.chainTime);
+        page = matched.slice(offset, end);
+      }
+
       const block = await provider.getBlock(pinned.number);
       if (block?.hash !== pinned.hash) throw new Unavailable('Chain reorganized during the read; retry');
       res.json({
-        listings: matched.slice(offset, end),
+        listings: page,
         total: matched.length,
         nextCursor: end < matched.length
           ? encodeCursor({ blockNumber: pinned.number, blockHash: pinned.hash, chainTime: chain.chainTime, offset: end, key: params.key })
           : null,
         chain,
+        source,
         skipped,
         pricing: PRICE_NOTE,
       });
@@ -975,19 +1054,34 @@ export function createApp(options = {}) {
    * categories, with read state and the index freshness so the client can say when it may be behind.
    */
   const parkingTimes = new Map();
+  const auctionSpaces = new Map();
   async function inboxFor(session, contractAddress) {
-    const events = db.getInboxEvents(contractAddress, session.address);
+    let events = db.getInboxEvents(contractAddress, session.address);
     const { read, dismissed } = db.getInboxState(contractAddress, session.address);
     const preferences = db.getInboxPreferences(session.address);
+    let pinned;
+    const pinnedOnce = () => (pinned ??= pinnedReader());
+    // A space owner also hears of booking changes on auctions another lister created on its space.
+    const bookingEvents = db.getBookingEvents(contractAddress);
+    const owned = await ownedAuctionIds({ address: session.address, bookingEvents, events, pinnedReader: pinnedOnce, spaces: auctionSpaces });
+    if (owned.length) {
+      const have = new Set(events.map((e) => `${e.block_hash}:${e.log_index}`));
+      events = [...events, ...bookingEvents.filter((e) => owned.includes(e.auction_id) && !have.has(`${e.block_hash}:${e.log_index}`))]
+        .sort((a, b) => a.block_number - b.block_number || a.log_index - b.log_index);
+    }
     await fillBlockTimes(events);
-    const chainItems = deriveInbox(events, session.address).map(({ blockHash, ...item }) => ({
+    const chainItems = deriveInbox(events, session.address, owned).map(({ blockHash, ...item }) => ({
       ...item, amount: item.amount === null ? null : ethers.formatEther(item.amount), at: blockTimes.get(blockHash) ?? null,
     }));
     const reservations = await reservationEntries({
-      db, contractAddress, address: session.address, events, pinnedReader, times: parkingTimes,
+      db, contractAddress, address: session.address, events, pinnedReader: pinnedOnce, times: parkingTimes,
       blockTime: (hash) => blockTimes.get(hash),
     });
-    const items = mergeFeed(chainItems, reservations.items)
+    const payouts = await payoutReadyEntries({
+      contractAddress, address: session.address, events, pinnedReader: pinnedOnce, times: parkingTimes,
+      blockTime: (hash) => blockTimes.get(hash),
+    });
+    const items = mergeFeed(chainItems, [...reservations.items, ...payouts.items])
       .filter((item) => !dismissed.has(item.id) && !preferences.hidden.includes(INBOX_CATEGORIES[item.kind]))
       .map((item) => ({
         ...item,
@@ -1006,7 +1100,7 @@ export function createApp(options = {}) {
         lagBlocks: lastSync?.lagBlocks ?? null,
         lastSyncAt: lastSync?.at ?? null,
         lastSyncError: lastSync?.error ?? null,
-        reservationsError: reservations.error,
+        reservationsError: reservations.error ?? payouts.error,
       },
     };
   }
@@ -1170,7 +1264,8 @@ export function createApp(options = {}) {
       : 'BIDPARK_ARRIVAL_KEY is not set: arrival instructions are stored unencrypted (local/demo mode only).' }),
   }));
 
-  mountArrival(app, { db, requireKey: settings.hosted, pinnedReader, contractAddress: () => loadDeployment()?.contractAddress ?? null });
+  mountArrival(app, {
+    db, requireKey: settings.hosted, tokenKey: parseArrivalKey(options.arrivalTokenKey ?? process.env.BIDPARK_ARRIVAL_TOKEN_KEY), pinnedReader, contractAddress: () => loadDeployment()?.contractAddress ?? null });
 
   /** GET /api/health/live: the process is up and answering. Checks no dependencies. */
   app.get('/api/health/live', (req, res) => res.json({ live: true }));

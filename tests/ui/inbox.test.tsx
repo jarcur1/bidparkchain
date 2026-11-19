@@ -1,7 +1,7 @@
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { Inbox, inboxNotice, type InboxResponse, type InboxState } from '../../src/components/Inbox';
+import { Inbox, InboxAnnouncer, inboxNotice, type InboxResponse, type InboxState } from '../../src/components/Inbox';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -103,4 +103,30 @@ it('saves category preferences and says when hidden categories leave the inbox e
 it('says when reservation entries could not be checked', () => {
   expect(inboxNotice({ data: { ...data, index: { ...index, reservationsError: 'Reservation times could not be read from the chain' } }, error: null }))
     .toBe('Reservation times could not be read from the chain, so upcoming reservation entries may be missing.');
+});
+
+it('describes a payout that is ready to claim', () => {
+  const ready = { ...data, items: [{ ...item('payout-ready:7', 'payout-ready'), amount: '0.05' }], unread: 1 };
+  act(() => root.render(<Inbox inbox={state({ data: ready })} onOpenListing={vi.fn()} />));
+  expect(host.textContent).toContain('The 0.05 ETH payout for "Garage" is ready to claim.');
+});
+
+it('announces only entries that arrive after the first load, once', () => {
+  const live = () => host.querySelector('[aria-live="polite"]')!.textContent;
+  const render = (d: InboxResponse | null) => act(() => root.render(<InboxAnnouncer inbox={{ data: d }} />));
+  render(null);
+  render(data); // first load: three existing entries, no announcement
+  expect(live()).toBe('');
+  render({ ...data }); // a poll with nothing new
+  expect(live()).toBe('');
+  const fresh = item('d', 'won');
+  render({ ...data, items: [fresh, ...data.items] });
+  expect(live()).toBe('New notification: You won "Garage" with a 0.02 ETH bid.');
+  render({ ...data, items: [fresh, ...data.items] }); // still the same entry: the message is not rebuilt
+  expect(live()).toBe('New notification: You won "Garage" with a 0.02 ETH bid.');
+  render({ ...data, items: [item('e', 'won'), item('f', 'outbid'), fresh, ...data.items] });
+  expect(live()).toBe('2 new notifications in your inbox');
+  render(null); // another account signs in: its first load is silent again
+  render(data);
+  expect(live()).toBe('');
 });
