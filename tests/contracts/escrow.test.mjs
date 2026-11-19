@@ -599,4 +599,67 @@ describe('verified inventory', () => {
     await mined(escrow.connect(bob).claimPayout(1));
     expect(await escrow.pendingReturns(bob.address)).toBe(1n);
   });
+
+  it('rolls listers, suspension, blocked dates, transfer and verification back with the chain', async () => {
+    ({ contract: escrow } = await deployEscrow(chain, true));
+    const id = await register(alice);
+    const unverified = await chain.provider.send('evm_snapshot', []);
+    await mined(escrow.setSpaceVerifier(owner.address, true));
+    await mined(escrow.setSpaceVerification(id, alice.address, 0, stall, hash));
+    const cutoff = (await timestamp()) + 600;
+    const start = cutoff + 1800;
+    const end = start + 100;
+    await mined(escrow.connect(alice).createSpaceAuction(id, hash, 1, cutoff, start, end));
+    const later = [hash, 1, cutoff, end, end + 100];
+    const bidStands = () => escrow.connect(guest).bid.staticCall(1, { value: 1 });
+    const around = async (change, check) => {
+      const snapshot = await chain.provider.send('evm_snapshot', []);
+      await change();
+      await check();
+      expect(await chain.provider.send('evm_revert', [snapshot])).toBe(true);
+    };
+
+    // A lister approved on the abandoned branch cannot list on the replacement chain.
+    await around(async () => {
+      await mined(escrow.connect(alice).setSpaceLister(id, bob.address, true));
+      await mined(escrow.connect(bob).createSpaceAuction(id, ...later));
+    }, async () => expect(await escrow.nextAuctionId()).toBe(3n));
+    expect(await escrow.isSpaceLister(id, bob.address)).toBe(false);
+    expect(await escrow.nextAuctionId()).toBe(2n);
+    await reverts(escrow.connect(bob).createSpaceAuction.staticCall(id, ...later), 'NotSpaceOwner');
+
+    // A suspension that is rolled back no longer pauses bidding.
+    await around(() => mined(escrow.setSpaceVerification(id, alice.address, 0, zero, zero)),
+      () => reverts(bidStands(), 'SpaceNotVerified'));
+    expect((await escrow.auctionInventory(1)).canAcceptBids).toBe(true);
+    await bidStands();
+
+    // A blocked window that is rolled back no longer holds the calendar.
+    await around(() => mined(escrow.connect(alice).blockSpaceWindow(id, end, end + 100)),
+      () => reverts(escrow.connect(alice).createSpaceAuction.staticCall(id, ...later), 'SpaceWindowUnavailable'));
+    expect(await escrow.spaceBlockedWindows(id)).toEqual([]);
+    await escrow.connect(alice).createSpaceAuction.staticCall(id, ...later);
+
+    // A rolled-back transfer leaves the original owner, epoch and approval in force.
+    await around(() => mined(escrow.connect(alice).transferSpace(id, bob.address)), async () => {
+      expect(await escrow.spaceOwner(id)).toBe(bob.address);
+      await reverts(bidStands(), 'SpaceNotVerified');
+    });
+    expect(await escrow.spaceOwner(id)).toBe(alice.address);
+    expect(await escrow.spaceOwnershipEpoch(id)).toBe(0n);
+    expect(await escrow.spaceVerifiedMetadata(id)).toBe(hash);
+    await reverts(escrow.connect(bob).createSpaceAuction.staticCall(id, ...later), 'NotSpaceOwner');
+    await bidStands();
+
+    // Rolling back the approval itself unverifies the space and frees its stall key for another space.
+    expect(await chain.provider.send('evm_revert', [unverified])).toBe(true);
+    expect(await escrow.spaceVerifiedMetadata(id)).toBe(zero);
+    expect(await escrow.spaceIdentity(id)).toBe(zero);
+    expect(await escrow.spaceForIdentity(stall)).toBe(0n);
+    await reverts(escrow.connect(alice).createSpaceAuction.staticCall(id, ...later), 'SpaceNotVerified');
+    const elsewhere = await register(bob);
+    await mined(escrow.setSpaceVerifier(owner.address, true));
+    await mined(escrow.setSpaceVerification(elsewhere, bob.address, 0, stall, hash));
+    expect(await escrow.spaceForIdentity(stall)).toBe(elsewhere);
+  });
 });

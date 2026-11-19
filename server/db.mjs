@@ -1045,17 +1045,17 @@ export class EscrowDatabase {
 
   /**
    * Records a space's alias keys (replacing any earlier ones for it) and returns the other hosts' spaces
-   * that share a key, as [{ spaceId, key }] with one entry per space and key.
+   * that share a key, as [{ spaceId, key, host }] with one entry per space and key. `host` is the owner
+   * recorded with that space's aliases, which a reorg or transfer may have made stale.
    */
   recordSpaceAliases(contractAddress, spaceId, host, keys) {
     const contract = contractAddress.toLowerCase();
     const owner = host.toLowerCase();
     return this.#transaction(() => {
-      this.db.prepare('DELETE FROM space_aliases WHERE chain_id = ? AND contract_address = ? AND space_id = ?')
-        .run(this.chainId, contract, spaceId);
+      this.deleteSpaceAliases(contract, spaceId);
       const insert = this.db.prepare('INSERT INTO space_aliases VALUES (?, ?, ?, ?, ?)');
       const find = this.db.prepare(`
-        SELECT space_id AS spaceId, alias_key AS key FROM space_aliases
+        SELECT space_id AS spaceId, alias_key AS key, host FROM space_aliases
         WHERE chain_id = ? AND contract_address = ? AND alias_key = ? AND space_id != ? AND host != ? ORDER BY CAST(space_id AS INTEGER)
       `);
       const matches = [];
@@ -1065,6 +1065,12 @@ export class EscrowDatabase {
       }
       return matches;
     });
+  }
+
+  /** Forgets a space's alias keys, e.g. when the space no longer belongs to the host they were recorded for. */
+  deleteSpaceAliases(contractAddress, spaceId) {
+    this.db.prepare('DELETE FROM space_aliases WHERE chain_id = ? AND contract_address = ? AND space_id = ?')
+      .run(this.chainId, contractAddress.toLowerCase(), spaceId);
   }
 
   getVerificationAudit(contractAddress, spaceId) {

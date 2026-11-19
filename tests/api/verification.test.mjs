@@ -208,3 +208,50 @@ it('warns about and flags a space at the same address under another host', async
   const history = (await call(HOST, '/api/verifications/mine')).json.verifications.find((v) => v.spaceId === '1').audit;
   expect(history.some((a) => a.actor === 'system')).toBe(false);
 });
+
+it('does not carry an approval or address alias over to the wallet a reorg hands the space id to', async () => {
+  const [A, B, C] = [5, 6, 7];
+  for (const index of [A, B, C]) cookies[index] ??= await signInCookie(url, chain.wallet(index));
+  const as = (index) => deployment.contract.connect(chain.wallet(index));
+  const spot = { ...metadata, title: 'Oak garage', address: '77 Oak Avenue', latitude: 30.31, longitude: -97.71 };
+  const spotHash = ethers.keccak256(ethers.toUtf8Bytes(JSON.stringify(validateSpotMetadata(spot).normalized)));
+  const list = async (index, spaceId) => {
+    const now = await chain.latestTimestamp();
+    await (await as(index).createSpaceAuction(spaceId, spotHash, ethers.parseEther('0.01'), now + 9000, now + 9600, now + 10200)).wait();
+    return String(Number(await deployment.contract.nextAuctionId()) - 1);
+  };
+  const badge = async (spaceId) => (await call(null, '/api/listings')).json.listings.find((l) => l.spaceId === spaceId)?.verification;
+  const systemFlags = async (spaceId) => (await call(MOD, '/api/moderation/verifications?limit=100')).json.queue
+    .find((q) => q.spaceId === spaceId)?.audit.filter((a) => a.actor === 'system') ?? [];
+
+  const snapshot = await chain.provider.send('evm_snapshot', []);
+  const spaceId = String(await deployment.contract.nextSpaceId());
+  await (await as(A).registerSpace()).wait();
+  const auctionId = await list(A, spaceId);
+  expect((await call(A, '/api/listings', { auctionId, metadata: spot })).status).toBe(201);
+  expect((await submit(A, spaceId, 'Deed for 77 Oak Avenue garage')).status).toBe(201);
+  expect((await decide(MOD, spaceId, 'approve', 'control-verified')).status).toBe(200);
+  expect(await badge(spaceId)).toBe('verified');
+
+  // The replacement chain gives the same space id to B, who never listed at A's address.
+  expect(await chain.provider.send('evm_revert', [snapshot])).toBe(true);
+  await (await as(B).registerSpace()).wait();
+  expect(await deployment.contract.spaceOwner(spaceId)).toBe(chain.wallet(B).address);
+  const flagsBefore = await systemFlags(spaceId);
+
+  // A third host at A's old address is not told it duplicates B's space, and B's space gets no flag.
+  const elsewhere = String(await deployment.contract.nextSpaceId());
+  await (await as(C).registerSpace()).wait();
+  const cAuction = await list(C, elsewhere);
+  const registered = await call(C, '/api/listings', { auctionId: cAuction, metadata: spot });
+  expect([200, 201]).toContain(registered.status); // the auction id and metadata row may match A's abandoned one
+  expect(registered.json.duplicateSpaces).toEqual([]);
+  expect(await systemFlags(spaceId)).toEqual(flagsBefore);
+
+  // A's approval is not B's: B's listing is unverified and B can ask for review of the space.
+  const bAuction = await list(B, spaceId);
+  const bSpot = await call(B, '/api/listings', { auctionId: bAuction, metadata: spot });
+  expect(bSpot.json.listing.verification).toBe('unverified');
+  expect(bSpot.json.duplicateSpaces).toEqual([{ spaceId: elsewhere, match: ['address', 'location'] }]);
+  expect((await submit(B, spaceId, 'Lease for the Oak garage, signed by B')).status).toBe(201);
+});
