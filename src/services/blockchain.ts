@@ -218,12 +218,16 @@ export async function createAuctionOnChain(
   parkingEndSec: number,
   confirmation: ConfirmationPolicy = 'mined',
   observe?: TxObserver,
+  spaceId?: string,
 ): Promise<CreateAuctionResult> {
   const metadataHash = computeMetadataHash(metadata);
   const minBidWei = parseEther(minBidEth);
 
   const args = [metadataHash, minBidWei, BigInt(bidEndSec), BigInt(parkingStartSec), BigInt(parkingEndSec)];
-  const receipt = await send(contract, 'createAuction', args, confirmation, observe);
+  // Without a space id, createAuction registers a new space for this listing.
+  const receipt = spaceId
+    ? await send(contract, 'createSpaceAuction', [BigInt(spaceId), ...args], confirmation, observe)
+    : await send(contract, 'createAuction', args, confirmation, observe);
   const tx = { hash: receipt.hash };
 
   // Parse logs for AuctionCreated(uint256 indexed id, address indexed owner)
@@ -303,6 +307,8 @@ const CONTRACT_ERROR_MESSAGES: Record<string, string> = {
   AuctionCancelledError: 'This auction was cancelled.',
   AuctionNotFound: 'This auction does not exist on the connected deployment.',
   OwnerCannotBid: 'Spot owners cannot bid on their own listing.',
+  SpaceWindowTaken: 'This space already has a listing for an overlapping parking window. Pick a window that does not overlap, or cancel the other listing first.',
+  NotSpaceOwner: 'Only the wallet that owns this parking space can list it.',
 };
 
 export function parseContractError(err: unknown): string {

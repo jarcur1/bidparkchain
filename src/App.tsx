@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityView } from './components/ActivityView';
 import { BidModal } from './components/BidModal';
-import { CreateListingModal } from './components/CreateListingModal';
+import { CreateListingModal, type OwnedSpace } from './components/CreateListingModal';
 import { DetailModal } from './components/DetailModal';
 import { CampusScenarioBanner } from './components/CampusScenarioBanner';
 import { DisclosuresBanner } from './components/DisclosuresBanner';
@@ -641,7 +641,8 @@ export const AppContent: React.FC<{
     minBidEth: string,
     bidEndSec: number,
     parkingStartSec: number,
-    parkingEndSec: number
+    parkingEndSec: number,
+    spaceId?: string
   ) => {
     if (isActionBusy) return;
     if (!config?.contractAddress || !config.abi) {
@@ -679,6 +680,7 @@ export const AppContent: React.FC<{
         parkingEndSec,
         config.confirmation,
         created.observe,
+        spaceId,
       );
       if (created.id) patchTransaction(created.id, { auctionId, registered: false });
 
@@ -1022,6 +1024,23 @@ export const AppContent: React.FC<{
     ).length;
   }, [listings, walletState.address]);
 
+  // The wallet's spaces and the windows each still holds, mirroring the contract's holdsWindow rule.
+  const ownedSpaces = useMemo<OwnedSpace[]>(() => {
+    if (!walletState.address) return [];
+    const now = getChainNowSec();
+    const addr = walletState.address.toLowerCase();
+    const spaces = new Map<string, OwnedSpace>();
+    for (const l of listings) {
+      if (l.owner.toLowerCase() !== addr) continue;
+      const space = spaces.get(l.spaceId) ?? { id: l.spaceId, title: l.title, held: [] };
+      space.title = l.title;
+      const hasBid = BigInt(l.highestBidder || 0) !== 0n;
+      if (!l.cancelled && (hasBid || l.bidEnd > now)) space.held.push({ start: l.parkingStart, end: l.parkingEnd });
+      spaces.set(l.spaceId, space);
+    }
+    return [...spaces.values()];
+  }, [listings, walletState.address]);
+
   const readSources: ReadSource[] = [
     {
       key: 'config',
@@ -1257,6 +1276,7 @@ export const AppContent: React.FC<{
         onRetryRegistration={handleRetryRegistration}
         pendingRegistration={pendingRegistration}
         isSubmitting={isActionBusy}
+        spaces={ownedSpaces}
       />
 
       {/* Wallet Management Modal */}
