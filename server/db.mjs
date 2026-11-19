@@ -225,6 +225,31 @@ const MIGRATIONS = [
       CREATE INDEX idx_host_drafts_owner ON host_drafts (chain_id, contract_address, address, updated_at);
     `);
   },
+  // 9: private arrival instructions (per space, or per auction overriding the space's) and the
+  //    winner's off-chain check-in, one per auction. Neither is ever part of a public listing.
+  (db) => {
+    db.exec(`
+      CREATE TABLE arrival_instructions (
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        scope TEXT NOT NULL CHECK (scope IN ('space', 'auction')),
+        target_id TEXT NOT NULL,
+        instructions TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (chain_id, contract_address, scope, target_id)
+      );
+      CREATE TABLE arrival_checkins (
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        auction_id TEXT NOT NULL,
+        winner TEXT NOT NULL,
+        checked_in_at INTEGER NOT NULL,
+        block_number INTEGER NOT NULL,
+        PRIMARY KEY (chain_id, contract_address, auction_id)
+      );
+    `);
+  },
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
@@ -341,6 +366,9 @@ export class EscrowDatabase {
     // The redeployed contract reuses the address and space ids, so old verification states must not carry
     // over. ponytail: the append-only audit keeps the old deployment's entries under the same space ids.
     this.db.prepare('DELETE FROM space_verifications WHERE chain_id = ?').run(this.chainId);
+    // Same for private arrival details: a new space or auction with a reused id must not see the old ones.
+    this.db.prepare('DELETE FROM arrival_instructions WHERE chain_id = ?').run(this.chainId);
+    this.db.prepare('DELETE FROM arrival_checkins WHERE chain_id = ?').run(this.chainId);
     return this.db.prepare('DELETE FROM listings WHERE chain_id = ?').run(this.chainId).changes;
   }
 
@@ -757,6 +785,45 @@ export class EscrowDatabase {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(this.chainId, contract, spaceId, action, status, actor, reason, note, now);
     });
+  }
+
+  /** Stored arrival instructions for a space or auction, or null. */
+  getArrivalInstructions(contractAddress, scope, targetId) {
+    return this.db.prepare(`
+      SELECT instructions, updated_by, updated_at FROM arrival_instructions
+      WHERE chain_id = ? AND contract_address = ? AND scope = ? AND target_id = ?
+    `).get(this.chainId, contractAddress.toLowerCase(), scope, targetId) ?? null;
+  }
+
+  /** Replaces the instructions; empty text removes them. */
+  saveArrivalInstructions(contractAddress, scope, targetId, { instructions, updatedBy }) {
+    const contract = contractAddress.toLowerCase();
+    if (!instructions) {
+      this.db.prepare('DELETE FROM arrival_instructions WHERE chain_id = ? AND contract_address = ? AND scope = ? AND target_id = ?')
+        .run(this.chainId, contract, scope, targetId);
+      return;
+    }
+    this.db.prepare(`
+      INSERT INTO arrival_instructions (chain_id, contract_address, scope, target_id, instructions, updated_by, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(chain_id, contract_address, scope, target_id) DO UPDATE SET
+        instructions = excluded.instructions, updated_by = excluded.updated_by, updated_at = excluded.updated_at
+    `).run(this.chainId, contract, scope, targetId, instructions, updatedBy.toLowerCase(), Date.now());
+  }
+
+  getCheckIn(contractAddress, auctionId) {
+    return this.db.prepare(`
+      SELECT winner, checked_in_at, block_number FROM arrival_checkins WHERE chain_id = ? AND contract_address = ? AND auction_id = ?
+    `).get(this.chainId, contractAddress.toLowerCase(), auctionId) ?? null;
+  }
+
+  /** Records the first check-in for an auction; a repeat keeps the original. Returns [row, created]. */
+  recordCheckIn(contractAddress, auctionId, { winner, blockNumber }) {
+    const created = this.db.prepare(`
+      INSERT OR IGNORE INTO arrival_checkins (chain_id, contract_address, auction_id, winner, checked_in_at, block_number)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(this.chainId, contractAddress.toLowerCase(), auctionId, winner.toLowerCase(), Date.now(), blockNumber).changes > 0;
+    return [this.getCheckIn(contractAddress, auctionId), created];
   }
 
   close() {

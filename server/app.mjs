@@ -13,6 +13,7 @@ import { deriveInbox } from './inbox.mjs';
 import { createSettlementJob, settlementSettings } from './settlement.mjs';
 import { PRICE_NOTE, QueryError, encodeCursor, filterAndSort, matchesMetadata, parseSearchQuery } from './search.mjs';
 import { mountDrafts } from './drafts.mjs';
+import { mountArrival } from './arrival.mjs';
 import { mountVerification, parseModerators, publicVerification } from './verification.mjs';
 
 let sepoliaArtifact;
@@ -970,6 +971,26 @@ export function createApp(options = {}) {
   });
 
   mountDrafts(app, { db, contractAddress: () => loadDeployment()?.contractAddress ?? null });
+
+  /**
+   * Reads for access decisions, all pinned to one block: the finalized block on Sepolia, the latest
+   * block locally. Throws when the chain or deployment is unavailable.
+   */
+  async function pinnedReader() {
+    const deployment = loadDeployment();
+    let block, iface;
+    if (profile.id === 'sepolia') {
+      ({ finalized: block, iface } = await readFinalizedDeployment(deployment));
+    } else {
+      if (!deployment?.abi || !isLocalDeployment(deployment)) throw new Error('Smart contract not deployed');
+      iface = new ethers.Interface(deployment.abi);
+      block = await provider.getBlock('latest');
+      if (!block?.hash) throw new Error('Latest block unavailable');
+    }
+    return { block, call: (method, args) => readFinalized(deployment, iface, block, method, args) };
+  }
+
+  mountArrival(app, { db, pinnedReader, contractAddress: () => loadDeployment()?.contractAddress ?? null });
 
   /** GET /api/health/live: the process is up and answering. Checks no dependencies. */
   app.get('/api/health/live', (req, res) => res.json({ live: true }));
