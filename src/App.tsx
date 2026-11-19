@@ -1382,6 +1382,8 @@ export const AppContent: React.FC<{
               if (listing) handleOpenDetailModal(listing);
               else addToast('info', 'Listing not available', `Auction #${auctionId} is not in the current listings.`);
             }}
+            deployment={config ? { chainId: config.chainId, contractAddress: config.contractAddress } : null}
+            timeZoneOf={(auctionId) => listings.find((l) => l.id === auctionId)?.timeZone}
           />
         )}
         {currentTab === 'activity' && hostSpacesKey && (

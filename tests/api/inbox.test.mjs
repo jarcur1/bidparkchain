@@ -112,7 +112,8 @@ it('drops entries whose events were orphaned by a reorg and shows the replacemen
   await chain.increaseTime(700);
   await (await deployment.contract.settle(id)).wait();
   await runtime.syncIndexOnce();
-  expect(kinds(await inbox(3))).toEqual([['won', id, '0.05']]);
+  // The auction starts within the hour, so the winner also gets reservation entries (checked separately).
+  expect(kinds(await inbox(3)).filter(([kind]) => kind === 'won' || kind === 'outbid')).toEqual([['won', id, '0.05']]);
   expect(kinds(await inbox(2))[0]).toEqual(['outbid', id, '0.02']);
   expect(kinds(await inbox(1)).filter(([, auction]) => auction === id)).toEqual([]);
 });
