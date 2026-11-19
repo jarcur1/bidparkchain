@@ -32,6 +32,7 @@ All are optional. Unknown, repeated (except `amenity`) or malformed parameters g
   "nextCursor": "eyJiIjo...",
   "chain": { "blockNumber": 42, "blockHash": "0x...", "blockTimestamp": 1767312000, "chainTime": 1767312005,
              "chainId": 31337, "contractAddress": "0x...", "deploymentBlock": 1, "deploymentBlockHash": "0x..." },
+  "source": "index",
   "skipped": 0,
   "pricing": "minBid is the opening bid and highestBid the current highest bid. Neither is a final booking price: ..."
 }
@@ -40,7 +41,8 @@ All are optional. Unknown, repeated (except `amenity`) or malformed parameters g
 - **Price is not final.** `minBid` is the opening bid and `highestBid` the current one. Bids can rise
   until `bidEnd`; what a driver pays is only known when the auction settles.
 - **One block per response.** Every contract read uses `eth_call` at `chain.blockHash` with
-  `requireCanonical` (the latest block locally, the finalized block on Sepolia), and the block is
+  `requireCanonical` (the index checkpoint when served from the index, otherwise the latest block locally
+  and the finalized block on Sepolia), and the block is
   checked again before answering.
 - **Pages share the first page's snapshot.** A cursor carries the block, chain time and offset, so
   later pages read the same block even while bids and new listings land: pages never overlap or
@@ -54,12 +56,41 @@ All are optional. Unknown, repeated (except `amenity`) or malformed parameters g
 | --- | --- |
 | 400 | Malformed query or cursor. Checked before any chain read, so it is returned even when the node is down. |
 | 409 | The cursor's block is no longer canonical. |
-| 422 | More than `BIDPARK_SEARCH_SCAN_LIMIT` (default 500) stored listings match the off-chain filters; narrow the area, time or filters. |
+| 422 | Only when reading the chain directly (`source: "chain"`): more than `BIDPARK_SEARCH_SCAN_LIMIT` (default 500) stored listings match the off-chain filters; narrow the area, time or filters. |
 | 503 | The node is unreachable, a read failed, the chain reorganized during the read, or the search passed `BIDPARK_SEARCH_DEADLINE_MS` (default 20 s). |
 
-Kind, amenities, area and text are filtered from stored metadata first; only those candidates are
-read from the chain (two calls each, 16 at a time), and each RPC call is bounded by
+Kind, amenities, area and text are filtered from stored metadata first. Each RPC call is bounded by
 `BIDPARK_RPC_TIMEOUT_MS`.
+
+## Served from the event index
+
+`source` says how the answer was built.
+
+- **`index`**: the visit, status, budget filters and the sort run on auction state projected from the event
+  index (server/indexer.mjs). Creation parameters (opening bid, bid end, parking window, metadata hash) are
+  read once per auction when it is indexed and stored on its `AuctionCreated` row (migration 14); the
+  current bid, settled and cancelled come from the later canonical events. The response is pinned to the
+  index checkpoint block, and the state used is the state at that block (events up to it), so a cursor
+  page keeps reading the first page's block. Only the returned page is read from the chain (three
+  `eth_call`s per listing at `chain.blockHash` with `requireCanonical`), and each listing must agree with
+  the indexed state.
+- **`chain`**: every candidate is read from the chain, as before. Used when:
+  - the checkpoint is more than `BIDPARK_SEARCH_INDEX_MAX_LAG` blocks (default 50) behind the head, or
+    there is no checkpoint yet. Within that lag, search first runs one indexer pass so the answer is at
+    the head. A negative value turns index serving off;
+  - `status` is `active` or `ending-soon` and the deployment requires verified inventory (the index has
+    no verification state);
+  - an indexed auction has no stored creation parameters yet (just after upgrading; the next pass fills
+    them);
+  - the page read from the chain disagrees with the index (logged as a warning).
+
+A reorg is handled by the indexer: events above the last canonical block stop counting, so the projected
+state follows them.
+
+Measured on the `austin` seed (7 listings, 25 requests each, local Hardhat node): request RPC calls and
+median latency were about the same (29 calls, about 170 to 200 ms either way), since every listing fits on
+one page. With 200 more listings registered on top (207 matching), the default query went from 629 to 68
+RPC calls and from 1315 ms to 282 ms median; `limit=5` from 629 to 23 calls and 1763 ms to 216 ms.
 
 ## `GET /api/listings` is bounded too
 
@@ -86,5 +117,3 @@ stored row yet) are still found and reported in `unindexed`.
   If permission is denied or unavailable, the destination field keeps working by hand.
 - Cards show each space's own time zone with its parking times (the viewer's zone when none is set, and the
   card says so). The arrive/depart filter is in the browser's zone, as the filter hint states.
-- Serving candidates from the event index is not done: the index stores events, not auction state, so it
-  would need a state projection in the indexer.
