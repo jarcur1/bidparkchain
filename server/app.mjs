@@ -1016,6 +1016,12 @@ export function createApp(options = {}) {
   const settlement = settlementConfig && createSettlementJob({ db, provider, profile, loadDeployment, abiFor, settings: settlementConfig });
 
   /** GET /api/settlement: keeper status, backlog and recent failures (fixed reasons only, no secrets). */
+  /** GET /api/settlement/metrics: Prometheus text; counts and timings only, no keys, hashes or addresses. */
+  app.get('/api/settlement/metrics', (req, res) => {
+    res.type('text/plain; version=0.0.4').send(settlement
+      ? settlement.metrics()
+      : '# HELP bidpark_settlement_enabled 1 when the keeper is on.\n# TYPE bidpark_settlement_enabled gauge\nbidpark_settlement_enabled 0\n');
+  });
   app.get('/api/settlement', (req, res) => res.json(settlement ? settlement.status() : { enabled: false }));
 
   /** On-chain owner of a space (the zero address when it does not exist). Throws when it can't be read. */
