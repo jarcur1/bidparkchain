@@ -18,7 +18,11 @@ import { WalletModal } from '../src/components/WalletModal';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-let server: { session: { address: string; chainId: number; expiresAt: number } | null; calls: string[] };
+let server: {
+  session: { address: string; chainId: number; expiresAt: number } | null;
+  calls: string[];
+  profile: { role: string; displayName: string } | null;
+};
 let current: SessionContextValue;
 let root: Root;
 let host: HTMLDivElement;
@@ -27,7 +31,7 @@ const render = () => act(() => root.render(<SessionProvider><Probe /></SessionPr
 const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 
 beforeEach(() => {
-  server = { session: null, calls: [] };
+  server = { session: null, calls: [], profile: null };
   wallet.walletState = { address: alice.address, chainId: 31337, isReady: true, isConnecting: false };
   wallet.signer = alice;
   vi.stubGlobal('fetch', vi.fn(async (input: string, init?: RequestInit) => {
@@ -41,6 +45,11 @@ beforeEach(() => {
       return Response.json(server.session);
     }
     if (input === '/api/auth/logout') { server.session = null; return Response.json({ signedOut: true }); }
+    if (input === '/api/profile' && init?.method === 'POST') {
+      server.profile = JSON.parse(String(init.body));
+      return Response.json({ profile: server.profile });
+    }
+    if (input === '/api/profile') return Response.json({ profile: server.profile });
     throw new Error(`Unexpected fetch ${input}`);
   }));
   host = document.createElement('div');
@@ -117,4 +126,25 @@ it('signs in and out from the wallet dialog, explaining what signing proves', as
   await settle();
   expect(button('Sign in with this wallet')).toBeTruthy();
   expect(server.session).toBeNull();
+});
+
+it('saves a minimal profile once signed in, and loads it back', async () => {
+  server.profile = null;
+  act(() => root.render(<SessionProvider><WalletModal isOpen onClose={() => {}} /></SessionProvider>));
+  await settle();
+  expect(document.querySelector('.profile-editor')).toBeNull();
+  const button = (name: string) => [...document.querySelectorAll('button')].find((b) => b.textContent === name)!;
+  await act(async () => { button('Sign in with this wallet').click(); });
+  await settle();
+  const select = document.querySelector('.profile-editor select') as HTMLSelectElement;
+  expect(select.value).toBe('driver');
+  expect(document.body.textContent).toContain('does not verify your identity or any parking space');
+  await act(async () => {
+    select.value = 'host';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await act(async () => { button('Save profile').click(); });
+  await settle();
+  expect(server.profile).toEqual({ role: 'host', displayName: '' });
+  expect(document.querySelector('.profile-editor [role="status"]')?.textContent).toContain('Profile saved');
 });

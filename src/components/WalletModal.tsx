@@ -14,13 +14,16 @@ import { DEMO_ACCOUNTS } from '../utils/constants';
 import { formatBalance, shortenAddress } from '../utils/formatters';
 import { webProfile } from '../utils/networkProfile';
 import { Dialog } from './Dialog';
+import { ProfileEditor } from './ProfileEditor';
 
 interface WalletModalProps {
   isOpen: boolean;
   onClose: () => void;
+  /** The action waiting on a connected wallet, e.g. "list a spot". */
+  continueLabel?: string;
 }
 
-export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => {
+export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose, continueLabel }) => {
   const {
     walletState,
     connectLocal,
@@ -74,6 +77,12 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
             <X size={18} />
           </button>
         </div>
+
+        {continueLabel && (
+          <p className="wallet-continue-note" role="status">
+            Connect a wallet to {continueLabel}. You'll go straight back to it once the wallet is ready.
+          </p>
+        )}
 
         {/* Current active account card */}
         <div className="wallet-active-card">
@@ -162,6 +171,7 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
           {session && (
             <p role="status">Signed in as <code>{shortenAddress(session.address, 6)}</code></p>
           )}
+          {session && <ProfileEditor address={session.address} />}
           {signInError && <p role="alert">{signInError}</p>}
           {session ? (
             <button type="button" className="read-status-retry" onClick={() => void signOut()}>

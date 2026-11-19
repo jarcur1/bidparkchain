@@ -112,3 +112,20 @@ it('validates the address and stores only token hashes', async () => {
   expect(stored).not.toContain(token);
   expect(stored.every((hash) => /^[0-9a-f]{64}$/.test(hash))).toBe(true);
 });
+
+it('keeps a minimal driver/host profile for the signed-in wallet only', async () => {
+  expect((await call('/api/profile')).status).toBe(401);
+  expect((await call('/api/profile', { body: { role: 'host' } })).status).toBe(401);
+  const cookie = await signIn();
+  expect((await call('/api/profile', { cookie })).json).toEqual({ profile: null });
+  expect((await call('/api/profile', { cookie, body: { role: 'owner' } })).status).toBe(400);
+  expect((await call('/api/profile', { cookie, body: { role: 'host', displayName: 'x'.repeat(41) } })).status).toBe(400);
+  const saved = await call('/api/profile', { cookie, body: { role: 'both', displayName: '  Sam  ' } });
+  expect(saved.json).toEqual({ profile: { role: 'both', displayName: 'Sam' } });
+  expect((await call('/api/profile', { cookie })).json.profile).toEqual({ role: 'both', displayName: 'Sam' });
+
+  // Another wallet starts with its own empty profile.
+  const { nonce, message } = await requestNonce(stranger);
+  const other = await call('/api/auth/verify', { body: { nonce, signature: await stranger.signMessage(message) } });
+  expect((await call('/api/profile', { cookie: cookieFrom(other.setCookie) })).json).toEqual({ profile: null });
+});

@@ -4,6 +4,7 @@ import { ethers } from 'ethers';
 export const NONCE_TTL_MS = 5 * 60_000;
 export const SESSION_TTL_MS = 12 * 60 * 60_000;
 export const SESSION_COOKIE = 'bidpark_session';
+export const PROFILE_ROLES = ['driver', 'host', 'both'];
 
 /** The page origin a request came from: the browser's Origin header, else the Host it addressed. */
 export function requestOrigin(req) {
@@ -117,5 +118,27 @@ export function mountAuth(app, db, chainId) {
     if (session) db.revokeSession(session.tokenHash);
     res.setHeader('Set-Cookie', sessionCookie(req, '', 0));
     res.json({ signedOut: true });
+  });
+
+  // Profiles belong to the signed-in wallet only; there is no way to read or write someone else's.
+  app.get('/api/profile', (req, res) => {
+    const session = readSession(db, req);
+    if (!session) return res.status(401).json({ error: 'Not signed in' });
+    const row = db.getProfile(session.address);
+    res.json({ profile: row ? { role: row.role, displayName: row.display_name } : null });
+  });
+
+  app.post('/api/profile', (req, res) => {
+    const session = readSession(db, req);
+    if (!session) return res.status(401).json({ error: 'Not signed in' });
+    const { role, displayName = '' } = req.body ?? {};
+    if (!PROFILE_ROLES.includes(role)) {
+      return res.status(400).json({ error: `Role must be one of: ${PROFILE_ROLES.join(', ')}` });
+    }
+    if (typeof displayName !== 'string' || displayName.trim().length > 40) {
+      return res.status(400).json({ error: 'Display name must be at most 40 characters' });
+    }
+    db.saveProfile(session.address, { role, displayName: displayName.trim() });
+    res.json({ profile: { role, displayName: displayName.trim() } });
   });
 }
