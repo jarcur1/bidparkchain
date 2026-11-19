@@ -2,8 +2,8 @@ import type { AuctionStatusFilter, FilterState, Listing, SortOption, SpotKindFil
 import { distanceKm } from '../../shared/geo.js';
 import { AUSTIN_PRESET_LOCATIONS } from './constants';
 
-// Client-side discovery over the listings already loaded. Bounded and geographic server queries
-// arrive with the availability API (#16); until then every filter runs on the loaded snapshot.
+// Discovery filters. The marketplace sends them to GET /api/listings/search (searchQuery) and falls
+// back to discoverListings on the loaded snapshot while that answer is pending or unavailable.
 
 export const DEFAULT_FILTERS: FilterState = {
   search: '',
@@ -170,6 +170,38 @@ export function discoverListings(
     }
   });
   return { listings: out, distances };
+}
+
+export const SEARCH_PAGE_SIZE = 50;
+
+/**
+ * The server query for the filters, with the same semantics as discoverListings: invalid time or
+ * budget ranges are left out, and distance sort without a destination falls back to ending soon.
+ */
+export function searchQuery(f: FilterState, destination: Place | null): string {
+  const errors = validateFilters(f);
+  const p = new URLSearchParams();
+  if (f.search.trim()) p.set('q', f.search.trim());
+  if (f.kind !== 'all') p.set('kind', f.kind);
+  if (f.status !== 'all') p.set('status', f.status);
+  if (!errors.time) {
+    const arrive = localToEpoch(f.arrive);
+    const depart = localToEpoch(f.depart);
+    if (arrive !== null) p.set('arrive', String(arrive));
+    if (depart !== null) p.set('depart', String(depart));
+  }
+  if (!errors.price) {
+    if (f.minPrice !== '') p.set('minPrice', f.minPrice);
+    if (f.maxPrice !== '') p.set('maxPrice', f.maxPrice);
+  }
+  for (const a of f.amenities) p.append('amenity', a);
+  if (destination) {
+    p.set('near', `${destination.latitude.toFixed(6)},${destination.longitude.toFixed(6)}`);
+    if (f.radiusKm) p.set('radiusKm', f.radiusKm);
+  }
+  p.set('sort', f.sortBy === 'distance' && !destination ? 'ending-soon' : f.sortBy);
+  p.set('limit', String(SEARCH_PAGE_SIZE));
+  return p.toString();
 }
 
 /** Human-readable list of the active constraints, for chips and the no-results state. */

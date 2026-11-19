@@ -18,9 +18,13 @@ test('discovery filters work by keyboard on a narrow screen and survive a reload
   const cards = page.getByRole('article', { name: /^Listing: / });
   await expect(cards).toHaveCount(7);
 
-  // Destination: a preset landmark, filtered and labelled by straight-line distance.
+  // Destination: a preset landmark, filtered and labelled by straight-line distance, answered by the server.
   await page.getByLabel('Destination').fill('Rainey Street District');
+  const searched = page.waitForResponse((r) => r.url().includes('/api/listings/search') && r.url().includes('radiusKm=0.5'));
   await page.getByLabel('Maximum distance').selectOption('0.5');
+  const answer = await (await searched).json();
+  expect(answer.listings.map((l) => l.title)).toEqual([RAINEY]);
+  expect(answer.chain.blockHash).toMatch(/^0x[0-9a-f]{64}$/);
   await expect(cards).toHaveCount(1);
   const rainey = page.getByRole('article', { name: `Listing: ${RAINEY}`, exact: true });
   await expect(rainey).toContainText(/\d+ m straight-line from Rainey Street District/);
@@ -71,4 +75,16 @@ test('discovery filters work by keyboard on a narrow screen and survive a reload
   await page.getByRole('button', { name: 'Reset all filters' }).click();
   await expect(cards).toHaveCount(7);
   await expect(page).toHaveURL(stack.webUrl.endsWith('/') ? stack.webUrl : `${stack.webUrl}/`);
+});
+
+test('discovery keeps filtering the loaded listings when the search service fails', async ({ page, stack }) => {
+  await page.route('**/api/listings/search**', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"down"}' }));
+  await page.goto(stack.webUrl);
+  await page.getByTitle('Cards view only').click();
+  const cards = page.getByRole('article', { name: /^Listing: / });
+  await expect(cards).toHaveCount(7);
+  await page.getByLabel('Destination').fill('Rainey Street District');
+  await page.getByLabel('Maximum distance').selectOption('0.5');
+  await expect(cards).toHaveCount(1);
+  await expect(page.getByRole('article', { name: `Listing: ${RAINEY}`, exact: true })).toBeVisible();
 });

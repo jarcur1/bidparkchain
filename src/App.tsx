@@ -15,6 +15,7 @@ import {
   filtersFromSearch,
   filtersToSearch,
   resolveDestination,
+  searchQuery,
 } from './utils/discovery';
 import { Footer } from './components/Footer';
 import { Header } from './components/Header';
@@ -25,7 +26,7 @@ import { Toast } from './components/Toast';
 import { WalletModal } from './components/WalletModal';
 import { useWallet, WalletProvider } from './context/WalletContext';
 import { SessionProvider, useSession } from './context/SessionContext';
-import { createListingRecord, fetchConfig, fetchListings, stageListingMetadata } from './services/api';
+import { ApiError, createListingRecord, fetchConfig, fetchListings, searchListings, stageListingMetadata } from './services/api';
 import type { TxObserver } from './services/blockchain';
 import { patchTransaction, readTransactions, recordTransaction, staleTransactionsFor, transactionsFor, type TxKind, type TxRecord } from './utils/txStore';
 import { TransactionCenter } from './components/TransactionCenter';
@@ -52,6 +53,7 @@ import type {
   FilterState,
   Listing,
   ListingsResponse,
+  SearchListing,
   SpotMetadata,
   ToastMessage,
   UnindexedAuction,
@@ -952,6 +954,55 @@ export const AppContent: React.FC<{
     [listings, filters, destination]
   );
 
+  // The server answers the same filters with bounded, block-pinned pages. Until its answer for the
+  // current query and deployment arrives (or if it fails), the loaded snapshot is filtered locally.
+  const searchKey = searchQuery(filters, destination);
+  const [serverSearch, setServerSearch] = useState<{
+    key: string; deployment: string | null; listings: SearchListing[]; total: number; nextCursor: string | null; loadingMore: boolean;
+  } | null>(null);
+  const [searchNonce, setSearchNonce] = useState(0);
+  const snapshotBlock = listingsView.chain?.blockNumber;
+  const listingsDeployment = listingsView.deployment;
+  useEffect(() => {
+    if (snapshotBlock === undefined) return;
+    let live = true;
+    const timer = setTimeout(() => {
+      searchListings(searchKey)
+        .then((r) => {
+          if (!live) return;
+          const deployment = r.chain ? deploymentKey(r.chain) : null;
+          setServerSearch(deployment === listingsDeployment
+            ? { key: searchKey, deployment, listings: r.listings, total: r.total, nextCursor: r.nextCursor, loadingMore: false }
+            : null);
+        })
+        .catch(() => { if (live) setServerSearch(null); });
+    }, 150);
+    return () => { live = false; clearTimeout(timer); };
+  }, [searchKey, snapshotBlock, listingsDeployment, searchNonce]);
+  const serverResult = serverSearch?.key === searchKey && serverSearch.deployment === listingsDeployment ? serverSearch : null;
+  const shownListings: Listing[] = serverResult ? serverResult.listings : filteredListings;
+  const shownDistances = useMemo(
+    () => serverResult
+      ? new Map(serverResult.listings.flatMap((l) => (l.distanceKm === undefined ? [] : [[l.id, l.distanceKm] as const])))
+      : distances,
+    [serverResult, distances]
+  );
+  const loadMoreResults = useCallback(async () => {
+    const current = serverSearch;
+    if (!current?.nextCursor || current.loadingMore) return;
+    setServerSearch({ ...current, loadingMore: true });
+    try {
+      const page = await searchListings(current.key, current.nextCursor);
+      setServerSearch((s) => s?.key === current.key && s.nextCursor === current.nextCursor
+        ? { ...s, listings: [...s.listings, ...page.listings], nextCursor: page.nextCursor, loadingMore: false }
+        : s);
+    } catch (err) {
+      // A cursor whose block was replaced starts the search again from the first page.
+      if (err instanceof ApiError && err.status === 409) setSearchNonce((n) => n + 1);
+      setServerSearch((s) => (s === null ? s : { ...s, loadingMore: false }));
+    }
+  }, [serverSearch]);
+
   // Compute active bids count for badge
   const activeBidsCount = useMemo(() => {
     if (!walletState.address) return 0;
@@ -1111,7 +1162,7 @@ export const AppContent: React.FC<{
               destination={destination}
               amenityChoices={amenityOptions(listings, filters.amenities)}
               totalSpots={listings.length}
-              filteredCount={filteredListings.length}
+              filteredCount={serverResult ? serverResult.total : filteredListings.length}
               listingsStatus={listingsView.read.status}
               viewMode={viewMode}
               onViewModeChange={setViewMode}
@@ -1123,7 +1174,7 @@ export const AppContent: React.FC<{
               {(viewMode === 'split' || viewMode === 'cards') && (
                 <div className="layout-cards-column">
                   <SpotGrid
-                    listings={filteredListings}
+                    listings={shownListings}
                     status={listingsView.read.status}
                     error={listingsView.read.error}
                     onRetry={() => void retrySource('Listings', loadListings)}
@@ -1135,8 +1186,13 @@ export const AppContent: React.FC<{
                     onSettle={handleSettleListing}
                     onResetFilters={() => setFilters(DEFAULT_FILTERS)}
                     activeFilters={describeFilters(filters, destination)}
-                    distances={distances}
+                    distances={shownDistances}
                     destinationLabel={destination?.label ?? null}
+                    more={serverResult && {
+                      remaining: serverResult.total - serverResult.listings.length,
+                      loading: serverResult.loadingMore,
+                      onLoad: () => void loadMoreResults(),
+                    }}
                   />
                 </div>
               )}
@@ -1145,7 +1201,7 @@ export const AppContent: React.FC<{
               {(viewMode === 'split' || viewMode === 'map') && (
                 <div className="layout-map-column">
                   <ParkingMap
-                    listings={filteredListings}
+                    listings={shownListings}
                     currentAddress={walletState.address}
                     selectedListingId={selectedListingId}
                     onSelectListing={handleSelectListing}
