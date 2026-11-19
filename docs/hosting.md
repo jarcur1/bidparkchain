@@ -35,6 +35,7 @@ Hosted mode is on whenever `BIDPARK_ALLOWED_ORIGINS` is set:
 
 These apply in every mode:
 - Writes to listing details need a signed-in wallet that owns the auction (#11).
+- Host verification review is limited to the wallets in `BIDPARK_MODERATORS`; see [host verification](host-verification.md).
 - Bodies are capped at 100 KB, URLs at 2,048 characters, and query strings are parsed flat.
 - Every RPC call times out after `BIDPARK_RPC_TIMEOUT_MS` (10 s).
 - Responses carry `nosniff`, `no-referrer`, `DENY` framing and `no-store`. The API gets a `default-src 'none'` CSP, and the web app a CSP limited to its own scripts, Google Fonts and https images.

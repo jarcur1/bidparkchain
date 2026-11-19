@@ -20,6 +20,8 @@ export interface Listing extends SpotMetadata {
   /** IANA time zone name of the space's location; empty when its owner has not set one. */
   timeZone: string;
   owner: string;
+  /** 'verified' only when a moderator approved the current owner's proof of control over the space. */
+  verification?: 'verified' | 'unverified';
   minBid: string;
   highestBid: string;
   highestBidder: string;

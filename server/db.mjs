@@ -158,7 +158,40 @@ const MIGRATIONS = [
       CREATE INDEX idx_events_account ON auction_events (chain_id, contract_address, account);
     `);
   },
-  // 6: settlement jobs, one per auction the keeper has acted on. `tx_hash` is recorded before the
+  // 6: host space-control verification. One current state per space with the host's private evidence
+  //    (never returned by public endpoints), and an audit log that triggers keep append-only.
+  (db) => {
+    db.exec(`
+      CREATE TABLE space_verifications (
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        space_id TEXT NOT NULL,
+        host TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected', 'suspended')),
+        evidence TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (chain_id, contract_address, space_id)
+      );
+      CREATE TABLE verification_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        space_id TEXT NOT NULL,
+        action TEXT NOT NULL CHECK (action IN ('submit', 'approve', 'reject', 'revoke', 'report')),
+        status TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        note TEXT NOT NULL DEFAULT '',
+        at INTEGER NOT NULL
+      );
+      CREATE INDEX idx_audit_space ON verification_audit (chain_id, contract_address, space_id);
+      CREATE TRIGGER verification_audit_no_update BEFORE UPDATE ON verification_audit
+        BEGIN SELECT RAISE(ABORT, 'verification_audit is append-only'); END;
+      CREATE TRIGGER verification_audit_no_delete BEFORE DELETE ON verification_audit
+        BEGIN SELECT RAISE(ABORT, 'verification_audit is append-only'); END;
+    `);
+  },
+  // 7: settlement jobs, one per auction the keeper has acted on. `tx_hash` is recorded before the
   //    next attempt may run, so a restart checks that transaction instead of sending a second one.
   (db) => {
     db.exec(`
@@ -289,6 +322,9 @@ export class EscrowDatabase {
   resetLocalDemo() {
     if (this.chainId !== LOCAL_CHAIN_ID) throw new Error('Demo reset is only allowed on the local chain.');
     this.db.prepare('DELETE FROM staged_metadata WHERE chain_id = ?').run(this.chainId);
+    // The redeployed contract reuses the address and space ids, so old verification states must not carry
+    // over. ponytail: the append-only audit keeps the old deployment's entries under the same space ids.
+    this.db.prepare('DELETE FROM space_verifications WHERE chain_id = ?').run(this.chainId);
     return this.db.prepare('DELETE FROM listings WHERE chain_id = ?').run(this.chainId).changes;
   }
 
@@ -611,6 +647,65 @@ export class EscrowDatabase {
       WHERE chain_id = ? AND contract_address = ? AND status = 'failed' ORDER BY updated_at DESC LIMIT ?
     `).all(this.chainId, contract, failures);
     return { counts, recentFailures };
+  }
+
+  /** A space's current verification state, including its private evidence, or null. */
+  getVerification(contractAddress, spaceId) {
+    return this.db.prepare('SELECT * FROM space_verifications WHERE chain_id = ? AND contract_address = ? AND space_id = ?')
+      .get(this.chainId, contractAddress.toLowerCase(), spaceId) || null;
+  }
+
+  /** Current states for every space a host has requested verification for. */
+  getHostVerifications(contractAddress, host) {
+    return this.db.prepare('SELECT * FROM space_verifications WHERE chain_id = ? AND contract_address = ? AND host = ?')
+      .all(this.chainId, contractAddress.toLowerCase(), host);
+  }
+
+  /** Every space with a request or a report, newest activity first, with its current state if any. */
+  getModerationQueue(contractAddress) {
+    return this.db.prepare(`
+      SELECT a.space_id, MAX(a.at) AS last_at, v.host, v.status, v.evidence, v.updated_at
+      FROM verification_audit a
+      LEFT JOIN space_verifications v
+        ON v.chain_id = a.chain_id AND v.contract_address = a.contract_address AND v.space_id = a.space_id
+      WHERE a.chain_id = ? AND a.contract_address = ?
+      GROUP BY a.space_id ORDER BY last_at DESC
+    `).all(this.chainId, contractAddress.toLowerCase());
+  }
+
+  getVerificationAudit(contractAddress, spaceId) {
+    return this.db.prepare(`
+      SELECT action, status, actor, reason, note, at FROM verification_audit
+      WHERE chain_id = ? AND contract_address = ? AND space_id = ? ORDER BY id
+    `).all(this.chainId, contractAddress.toLowerCase(), spaceId);
+  }
+
+  /**
+   * Appends an audit entry and, in the same transaction, moves the space to `status`. `evidence` replaces
+   * the stored evidence when given; `null` clears it. A report changes no state (pass no status change).
+   */
+  recordVerification(contractAddress, spaceId, { action, status, actor, reason, note = '', host, evidence }) {
+    const contract = contractAddress.toLowerCase();
+    const now = Date.now();
+    this.#transaction(() => {
+      if (action === 'submit') {
+        this.db.prepare(`
+          INSERT INTO space_verifications (chain_id, contract_address, space_id, host, status, evidence, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(chain_id, contract_address, space_id) DO UPDATE SET
+            host = excluded.host, status = excluded.status, evidence = excluded.evidence, updated_at = excluded.updated_at
+        `).run(this.chainId, contract, spaceId, host, status, evidence, now);
+      } else if (action !== 'report') {
+        this.db.prepare(`
+          UPDATE space_verifications SET status = ?, evidence = CASE WHEN ? THEN '' ELSE evidence END, updated_at = ?
+          WHERE chain_id = ? AND contract_address = ? AND space_id = ?
+        `).run(status, evidence === null ? 1 : 0, now, this.chainId, contract, spaceId);
+      }
+      this.db.prepare(`
+        INSERT INTO verification_audit (chain_id, contract_address, space_id, action, status, actor, reason, note, at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(this.chainId, contract, spaceId, action, status, actor, reason, note, now);
+    });
   }
 
   close() {
