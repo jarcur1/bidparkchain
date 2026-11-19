@@ -9,6 +9,7 @@ import {
   X,
 } from 'lucide-react';
 import { useWallet } from '../context/WalletContext';
+import { useSession } from '../context/SessionContext';
 import { DEMO_ACCOUNTS } from '../utils/constants';
 import { formatBalance, shortenAddress } from '../utils/formatters';
 import { webProfile } from '../utils/networkProfile';
@@ -29,6 +30,7 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
     balanceRead,
   } = useWallet();
 
+  const { session, isSigningIn, error: signInError, signIn, signOut } = useSession();
   const [copiedAddr, setCopiedAddr] = useState(false);
 
   if (!isOpen) return null;
@@ -113,6 +115,41 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
                 Switch Network
               </button>
             </div>
+          )}
+        </div>
+
+        {/* App sign-in (EIP-4361): proves wallet control only */}
+        <div className="wallet-section" role="group" aria-labelledby="wallet-signin-title">
+          <div className="section-title-row">
+            <span id="wallet-signin-title" className="section-label">App sign-in</span>
+            <span className="section-note">
+              {session ? `Signed in until ${new Date(session.expiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'Not signed in'}
+            </span>
+          </div>
+          <p className="section-note">
+            Signing a message proves you control this wallet address. It moves no funds and does not verify that you
+            control any parking space.
+          </p>
+          {session && (
+            <p role="status">Signed in as <code>{shortenAddress(session.address, 6)}</code></p>
+          )}
+          {signInError && <p role="alert">{signInError}</p>}
+          {session ? (
+            <button type="button" className="read-status-retry" onClick={() => void signOut()}>
+              Sign out
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="read-status-retry"
+              onClick={() => void signIn()}
+              disabled={!walletState.isReady || isSigningIn}
+            >
+              {isSigningIn ? 'Waiting for signature…' : 'Sign in with this wallet'}
+            </button>
+          )}
+          {!session && !walletState.isReady && (
+            <p className="section-note">Connect a wallet on {webProfile.networkName} first.</p>
           )}
         </div>
 

@@ -8,10 +8,13 @@ const bob = new Wallet('0x' + '22'.repeat(32));
 const wallet = {
   walletState: { address: alice.address as string | null, chainId: 31337, isReady: true, isConnecting: false },
   signer: alice as unknown,
+  wrongChain: false,
+  balanceRead: { status: 'success', lastSuccessAt: 0, error: null },
 };
 vi.mock('../src/context/WalletContext', () => ({ useWallet: () => wallet }));
 
 import { SessionProvider, useSession, type SessionContextValue } from '../src/context/SessionContext';
+import { WalletModal } from '../src/components/WalletModal';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -99,4 +102,19 @@ it('stops presenting a session once it expires', async () => {
   } finally {
     vi.useRealTimers();
   }
+});
+
+it('signs in and out from the wallet dialog, explaining what signing proves', async () => {
+  act(() => root.render(<SessionProvider><WalletModal isOpen onClose={() => {}} /></SessionProvider>));
+  await settle();
+  const button = (name: string) => [...document.querySelectorAll('button')].find((b) => b.textContent === name)!;
+  expect(document.body.textContent).toContain('does not verify that you control any parking space');
+  expect(document.body.textContent).toContain('Not signed in');
+  await act(async () => { button('Sign in with this wallet').click(); });
+  await settle();
+  expect(document.querySelector('[role="status"]')?.textContent).toContain('Signed in as');
+  await act(async () => { button('Sign out').click(); });
+  await settle();
+  expect(button('Sign in with this wallet')).toBeTruthy();
+  expect(server.session).toBeNull();
 });
