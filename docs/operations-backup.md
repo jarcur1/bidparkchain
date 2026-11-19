@@ -15,7 +15,7 @@ npm run backup                     # BIDPARK_DATA_DIR, default ./data
   - the database copy
   - `deployment.json`
   - `manifest.json`: schema version, listing count, SHA-256 of the copy, and deployment identity (profile, chain id, contract address, deployment transaction and block). It also records the event index checkpoint (block number and hash, or null if nothing has been indexed yet). After a restore, the indexer resumes from that checkpoint and re-checks it against the chain, so a reorg since the backup is handled like any other.
-- **Access.** Backup directories are created owner-only (0700, files 0600). Windows ignores these modes, so keep backups on a location only the operator account can read. They contain session hashes and profile data.
+- **Access.** Backup directories are created owner-only (0700, files 0600). Windows ignores these modes, so keep backups on a location only the operator account can read. They contain session hashes, profile data and hosts' private verification evidence ([host verification](host-verification.md)).
 - **Retention.** The newest 14 backups are kept and older ones are pruned. Change this with `BIDPARK_BACKUP_KEEP`.
 - **Targets for a hosted pilot:**
 
