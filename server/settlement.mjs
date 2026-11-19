@@ -102,14 +102,24 @@ export function createSettlementJob({ db, provider, profile, loadDeployment, abi
     }
     if (job?.status === 'failed' && job.next_attempt_at > now()) return true;
 
+    let txHash = null;
     try {
-      const tx = await contract.settle(id);
-      save({ status: 'sent', txHash: tx.hash, attempts: attempts + 1, error: null, nextAttemptAt: null });
-      log({ event: 'sent', auctionId: id, attempts: attempts + 1, txHash: tx.hash });
+      // Sign first and record the hash before broadcasting, so a crash or a lost RPC response after
+      // the node accepted it still leaves a transaction to check rather than a reason to send again.
+      const signed = await signer.signTransaction(await signer.populateTransaction(await contract.settle.populateTransaction(id)));
+      txHash = ethers.Transaction.from(signed).hash;
+      save({ status: 'sent', txHash, attempts: attempts + 1, error: null, nextAttemptAt: null });
+      await provider.broadcastTransaction(signed);
+      log({ event: 'sent', auctionId: id, attempts: attempts + 1, txHash });
     } catch (error) {
       const reason = reasonOf(contract, error);
       // Someone settled it first (or our clock is ahead of the chain's): not a failure.
       if (reason === 'AlreadySettled' || reason === 'AuctionNotEnded') return reason === 'AlreadySettled';
+      // The node may have accepted it before the connection failed: keep it as sent and check it next pass.
+      if (txHash && ['NETWORK_ERROR', 'TIMEOUT', 'SERVER_ERROR'].includes(reason)) {
+        log({ event: 'send_unconfirmed', auctionId: id, reason, txHash });
+        return true;
+      }
       attempts += 1;
       save({ status: 'failed', attempts, error: reason, nextAttemptAt: now() + Math.min(retryBaseMs * 2 ** (attempts - 1), retryMaxMs) });
       log({ event: 'failed', auctionId: id, attempts, reason });
