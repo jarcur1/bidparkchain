@@ -60,6 +60,9 @@ const mockListings = vi.mocked(fetchListings);
 const mockRefund = vi.mocked(fetchPendingReturns);
 
 const configFor = (contractAddress: string, deploymentBlockHash = '0xhash1'): Config => ({
+  profile: 'local',
+  confirmation: 'mined',
+  explorerUrl: null,
   chainId: 31337,
   contractAddress,
   abi: [],

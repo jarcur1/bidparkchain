@@ -1,15 +1,12 @@
+import { createRequire } from "node:module";
 import { defineConfig } from "hardhat/config";
+import { SOLIDITY_VERSION, SOLIDITY_SETTINGS } from "./scripts/helpers/compiler.mjs";
 
 export default defineConfig({
   solidity: {
-    version: "0.8.28",
-    settings: {
-      evmVersion: "shanghai",
-      optimizer: {
-        enabled: true,
-        runs: 200,
-      },
-    },
+    version: SOLIDITY_VERSION,
+    path: createRequire(import.meta.url).resolve("solc/soljson.js"),
+    settings: SOLIDITY_SETTINGS,
   },
   networks: {
     hardhat: {

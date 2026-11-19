@@ -22,6 +22,7 @@ import {
   shortenAddress,
 } from '../utils/formatters';
 import { getChainNowSec } from '../utils/eligibility';
+import { webProfile } from '../utils/networkProfile';
 
 interface ActivityViewProps {
   currentAddress: string | null;
@@ -59,7 +60,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
           <Warehouse size={40} className="unconnected-icon" />
           <h2 className="unconnected-title">Connect Wallet for Activity</h2>
           <p className="unconnected-text">
-            Connect a local test wallet or browser wallet to view your active bids, claimable outbid refunds, and confirmed parking reservations.
+            Connect {webProfile.id === 'local' ? 'a local test wallet or browser wallet' : 'a browser wallet'} to view your active bids, claimable outbid refunds, and confirmed parking reservations.
           </p>
         </div>
       </div>

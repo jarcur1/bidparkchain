@@ -103,6 +103,9 @@ import { READ_OK, readSucceeded } from '../src/utils/readState';
 // ---------------------------------------------------------------------------
 
 const config: Config = {
+  profile: 'local',
+  confirmation: 'mined',
+  explorerUrl: null,
   chainId: 31337,
   contractAddress: CONTRACT,
   abi: [],
@@ -285,7 +288,7 @@ describe('open bid dialog stays synchronized with chain listing state', () => {
     await click(submitButton());
 
     expect(placeBid).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(placeBid).mock.calls[0].slice(1)).toEqual(['1', '0.1']);
+    expect(vi.mocked(placeBid).mock.calls[0].slice(1)).toEqual(['1', '0.1', 'mined']);
     expect(bidDialog()).toBeNull();
   });
 

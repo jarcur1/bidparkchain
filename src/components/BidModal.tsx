@@ -11,6 +11,7 @@ import { useWallet } from '../context/WalletContext';
 import type { Listing } from '../types';
 import { getBidEligibility, getChainNowSec, getMinimumBidWei } from '../utils/eligibility';
 import { formatBalance, formatEth } from '../utils/formatters';
+import { webProfile } from '../utils/networkProfile';
 import { Dialog } from './Dialog';
 
 interface BidModalProps {
@@ -82,12 +83,14 @@ export const BidModal: React.FC<BidModalProps> = ({
     }
 
     if (wrongChain) {
-      setLocalError('Please switch to Hardhat Local (Chain 31337) to submit bids.');
+      setLocalError(`Please switch to ${webProfile.networkName} (Chain ${webProfile.chainId}) to submit bids.`);
       return;
     }
 
     if (!walletState.address) {
-      setLocalError('Wallet not connected. Connect a test or browser wallet.');
+      setLocalError(import.meta.env.VITE_BIDPARK_PROFILE !== 'sepolia'
+        ? 'Wallet not connected. Connect a test or browser wallet.'
+        : 'Wallet not connected. Connect a browser wallet.');
       return;
     }
 

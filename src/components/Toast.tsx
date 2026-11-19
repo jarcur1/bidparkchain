@@ -2,13 +2,15 @@ import React, { useEffect } from 'react';
 import { AlertCircle, CheckCircle2, Info, X } from 'lucide-react';
 import type { ToastMessage } from '../types';
 import { shortenAddress } from '../utils/formatters';
+import { webProfile } from '../utils/networkProfile';
 
 interface ToastProps {
   toasts: ToastMessage[];
   onDismiss: (id: string) => void;
+  explorerUrl?: string | null;
 }
 
-export const Toast: React.FC<ToastProps> = ({ toasts, onDismiss }) => {
+export const Toast: React.FC<ToastProps> = ({ toasts, onDismiss, explorerUrl }) => {
   useEffect(() => {
     if (toasts.length === 0) return;
     const latest = toasts[toasts.length - 1];
@@ -44,7 +46,11 @@ export const Toast: React.FC<ToastProps> = ({ toasts, onDismiss }) => {
               {toast.txHash && (
                 <div className="toast-tx-hash">
                   <span>Tx Hash:</span>
-                  <code>{shortenAddress(toast.txHash, 8)}</code>
+                  {explorerUrl && explorerUrl === webProfile.explorerUrl && /^0x[0-9a-fA-F]{64}$/.test(toast.txHash) ? (
+                    <a href={`${explorerUrl}/tx/${toast.txHash}`} target="_blank" rel="noopener noreferrer">
+                      <code>{shortenAddress(toast.txHash, 8)}</code>
+                    </a>
+                  ) : <code>{shortenAddress(toast.txHash, 8)}</code>}
                 </div>
               )}
             </div>

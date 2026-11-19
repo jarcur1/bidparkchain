@@ -1,4 +1,5 @@
-import type { ChainSnapshot, Config, Listing, ListingsResponse, SpotMetadata } from '../types';
+import type { ChainSnapshot, Config, DeploymentIdentity, Listing, ListingsResponse, SpotMetadata } from '../types';
+import { webProfile } from '../utils/networkProfile';
 
 export class ApiError extends Error {
   status: number;
@@ -29,6 +30,12 @@ export async function fetchConfig(): Promise<Config> {
     throw new ApiError(msg, res.status);
   }
   const data: unknown = await res.json();
+  if (!data || typeof data !== 'object' ||
+      !('profile' in data) || data.profile !== webProfile.id ||
+      !('chainId' in data) || data.chainId !== webProfile.chainId ||
+      !('confirmation' in data) || data.confirmation !== webProfile.confirmation) {
+    throw new ApiError('API network configuration does not match this application build.', res.status);
+  }
   return data as Config;
 }
 
@@ -49,7 +56,8 @@ export async function fetchListings(): Promise<ListingsResponse> {
 
 export async function createListingRecord(
   auctionId: string,
-  metadata: SpotMetadata
+  metadata: SpotMetadata,
+  deployment?: DeploymentIdentity,
 ): Promise<Listing> {
   const res = await fetch('/api/listings', {
     method: 'POST',
@@ -59,6 +67,7 @@ export async function createListingRecord(
     body: JSON.stringify({
       auctionId,
       metadata,
+      ...(deployment === undefined ? {} : { deployment }),
     }),
   });
 

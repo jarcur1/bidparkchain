@@ -18,6 +18,7 @@ vi.mock('ethers', async (original) => {
 });
 
 const config: Config = {
+  profile: 'local', confirmation: 'mined', explorerUrl: null,
   chainId: 31337, contractAddress: '0x0000000000000000000000000000000000000001', abi: [],
   currency: 'ETH', networkName: 'Hardhat Local', deploymentBlock: 1, deploymentBlockHash: '0xdeploy',
   demoMnemonic: 'test test test test test test test test test test test junk', demoAccountIndex: 1,
