@@ -205,11 +205,11 @@ export function writeDeployment(dataDir, deployment) {
  * Runs scripts/deploy.mjs (compile, deploy, seed) against an owned chain and data directory.
  * @returns {Promise<{ code: number, output: string }>}
  */
-export async function runDeployScript({ rpcUrl, dataDir }) {
+export async function runDeployScript({ rpcUrl, dataDir, env = {} }) {
   return await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ['scripts/deploy.mjs'], {
       cwd: ROOT_DIR,
-      env: { ...process.env, RPC_URL: rpcUrl, BIDPARK_DATA_DIR: dataDir },
+      env: { ...process.env, ...env, RPC_URL: rpcUrl, BIDPARK_DATA_DIR: dataDir },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';

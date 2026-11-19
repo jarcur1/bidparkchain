@@ -15,6 +15,8 @@ npm run dev
 
 Open **http://127.0.0.1:5173**. The launcher starts the local Hardhat chain (31337), compiles Solidity using the installed solc package, deploys and seeds seven auctions, starts the SQLite-backed API, and starts Vite. No wallet extension, RPC subscription, or hosted database is required. Stop all three services with Ctrl+C.
 
+For the class demo, set `BIDPARK_SCENARIO=campus-baseline` or `campus-expansion` to seed a fictional campus instead of the Austin samples; see [class demo scenarios](docs/class-demo-scenarios.md).
+
 Ports 5173, 3001, and 8545 must be available. Services bind to loopback; this is not a deployment configuration.
 
 ## Try it
