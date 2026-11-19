@@ -21,6 +21,8 @@ interface SpotGridProps {
   /** Straight-line distance (km) from the chosen destination, by listing id. */
   distances?: Map<string, number>;
   destinationLabel?: string | null;
+  /** Matches beyond the loaded page, and how to load the next page. */
+  more?: { remaining: number; loading: boolean; onLoad: () => void } | null;
 }
 
 export const SpotGrid: React.FC<SpotGridProps> = ({
@@ -38,6 +40,7 @@ export const SpotGrid: React.FC<SpotGridProps> = ({
   activeFilters = [],
   distances,
   destinationLabel = null,
+  more = null,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -143,6 +146,11 @@ export const SpotGrid: React.FC<SpotGridProps> = ({
           }
         />
       ))}
+      {more && more.remaining > 0 && (
+        <button type="button" className="btn-empty-reset" onClick={more.onLoad} disabled={more.loading}>
+          {more.loading ? 'Loading…' : `Show ${more.remaining} more`}
+        </button>
+      )}
     </div>
   );
 };

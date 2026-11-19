@@ -38,6 +38,7 @@ These apply in every mode:
 - Host verification review is limited to the wallets in `BIDPARK_MODERATORS`; see [host verification](host-verification.md).
 - Bodies are capped at 100 KB, URLs at 2,048 characters, and query strings are parsed flat.
 - Every RPC call times out after `BIDPARK_RPC_TIMEOUT_MS` (10 s).
+- `GET /api/listings/search` returns at most 50 listings a page, reads at most `BIDPARK_SEARCH_SCAN_LIMIT` (500) candidates from the chain (422 beyond that), and gives up after `BIDPARK_SEARCH_DEADLINE_MS` (20 s) with 503. See [listing search](listing-search.md).
 - Responses carry `nosniff`, `no-referrer`, `DENY` framing and `no-store`. The API gets a `default-src 'none'` CSP, and the web app a CSP limited to its own scripts, Google Fonts and https images.
 - With `BIDPARK_TRUST_PROXY=loopback`, client IPs come from Caddy and the session cookie is marked `Secure`.
 
