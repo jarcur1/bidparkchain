@@ -135,7 +135,9 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
 
   // 3. Settleable auctions (Bidding ended, not settled yet, anyone can settle)
   const settleableAuctions = listings.filter(
-    (l) => l.bidEnd <= now && !l.settled && !l.cancelled
+    (l) => l.bidEnd <= now && !l.settled && !l.cancelled &&
+      // A protected winner past parking start can only expire (detail view), not settle.
+      !(l.booking?.protected && parseFloat(l.highestBid) > 0 && now >= l.parkingStart)
   );
 
   // 4. Hosted spots (You are the owner)
