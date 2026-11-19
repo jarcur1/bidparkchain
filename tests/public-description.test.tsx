@@ -290,3 +290,40 @@ describe('detail modal', () => {
     expect(dialog.textContent).toContain('Level driveway with good lighting.');
   });
 });
+
+describe('parking space selection', () => {
+  const spaces = [{ id: '4', title: 'Back driveway', held: [{ start: 1_900_000_000, end: 1_900_003_600 }] }];
+  const chooseSpace = (id: string) => {
+    const select = q<HTMLSelectElement>('#parking-space');
+    act(() => {
+      select.value = id;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  };
+
+  it('offers no space picker until the wallet owns a space, and then lists a new space by default', async () => {
+    const { onSubmitCreate } = renderCreate();
+    expect(document.querySelector('#parking-space')).toBeNull();
+    act(() => root.unmount());
+    root = createRoot(container);
+    const next = renderCreate({ spaces });
+    expect(q<HTMLSelectElement>('#parking-space').value).toBe('');
+    fillForm();
+    submitForm();
+    await act(async () => button('Confirm and Deploy Auction').click());
+    expect(next.onSubmitCreate.mock.calls[0][5]).toBeUndefined();
+    expect(onSubmitCreate).not.toHaveBeenCalled();
+  });
+
+  it('shows the chosen space calendar and submits its id, and choosing it invalidates an earlier preview', async () => {
+    const { onSubmitCreate } = renderCreate({ spaces });
+    fillForm();
+    submitForm();
+    chooseSpace('4');
+    expect(document.querySelector('[data-testid="submission-preview"]')).toBeNull();
+    expect(q('#parking-space-calendar').textContent).toMatch(/^Reserved: .+ to .+overlapping window/);
+    submitForm();
+    await act(async () => button('Confirm and Deploy Auction').click());
+    expect(onSubmitCreate.mock.calls[0][5]).toBe('4');
+  });
+});

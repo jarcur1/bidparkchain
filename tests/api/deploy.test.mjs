@@ -107,3 +107,26 @@ it('deploys, resumes and reseeds only the owned chain and temp data directory', 
     expect(dataFingerprint(repoData)).toEqual(before);
   }
 }, 180_000);
+
+it('redeploys instead of reusing a recorded local contract whose code no longer matches the source', async () => {
+  const dataDir = scope.tempDir();
+  const chain = await scope.startChain();
+  const deploy = async () => {
+    const result = await runDeployScript({ rpcUrl: chain.rpcUrl, dataDir });
+    expect(result.code, result.output).toBe(0);
+    return result.output;
+  };
+  const address = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'deployment.json'), 'utf8')).contractAddress;
+  try {
+    await deploy();
+    const old = address();
+    // Stand-in for a contract deployed from an older version of the source.
+    const code = await chain.provider.getCode(old);
+    await chain.provider.send('hardhat_setCode', [old, `${code}00`]);
+    expect(await deploy()).toContain('Deploying new ParkingAuctionEscrow');
+    expect(address()).not.toBe(old);
+    expect(await deploy()).toContain('Reusing deployment');
+  } finally {
+    chain.provider.destroy();
+  }
+});
