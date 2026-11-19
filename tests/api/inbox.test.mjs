@@ -134,3 +134,25 @@ it('only reports an outbid when the wallet held the highest bid', () => {
     ['outbid', '1', '1', 2],
   ]);
 });
+
+it('tells a protected-booking winner when the bid is credited back, and lists the booking state', async () => {
+  const now = await chain.latestTimestamp();
+  const id = (await deployment.contract.nextAuctionId()).toString();
+  const start = now + 600 + 2 * 86400;
+  await (await deployment.contract.createProtectedAuction(0, ethers.id(`spot-${id}`), parse('0.01'), now + 600, start, start + 3600)).wait();
+  runtime.db.upsertListing({
+    contractAddress: deployment.address, auctionId: id, metadataHash: ethers.id(`spot-${id}`),
+    title: 'Protected driveway', address: '2 Maple St', neighborhood: 'Downtown', latitude: 1, longitude: 1,
+    description: 'Covered spot', image: '', kind: 'driveway', amenities: [],
+  });
+  await bid(3, id, '0.04');
+  await chain.increaseTime(700);
+  await (await deployment.contract.hostCancelBooking(id)).wait();
+  await runtime.syncIndexOnce();
+  expect(kinds(await inbox(3))[0]).toEqual(['booking-refund', id, '0.04']);
+  const { listings } = await (await fetch(`${url}/api/listings`)).json();
+  expect(listings.find((l) => l.id === id).booking).toEqual({
+    protected: true, outcome: 'host-cancelled', lateCancelled: false, noShowRecorded: false, disputeReporter: null,
+  });
+  expect(listings.find((l) => l.id !== id).booking).toMatchObject({ protected: false, outcome: 'none' });
+});

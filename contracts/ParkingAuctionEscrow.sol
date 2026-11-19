@@ -82,7 +82,8 @@ contract ParkingAuctionEscrow {
     mapping(uint256 => Booking) public bookings;
 
     /// Deployer; may only add or remove resolvers. It holds no funds and cannot decide disputes itself.
-    address public immutable resolverAdmin;
+    /// Plain storage, not immutable: deploy.mjs matches deployed code against the compiled runtime.
+    address public resolverAdmin;
     mapping(address => bool) public resolvers;
 
     // Custom errors
