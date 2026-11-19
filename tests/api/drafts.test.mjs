@@ -80,7 +80,7 @@ it('accepts only https or safe local photo references and well-formed fields', a
     expect(res.json.error).toContain('Photo');
   }
   expect((await call(HOST, '/api/drafts', { method: 'POST', body: { ...draft, image: '/images/driveway.jpg' } })).status).toBe(201);
-  for (const bad of [{ cutoff: 'tomorrow' }, { minBidEth: '-1' }, { spaceId: '0' }, { kind: 'rooftop' }, { name: '' }, { kind: 'other' }, { amenities: 'x' }]) {
+  for (const bad of [{ cutoff: 'tomorrow' }, { minBidEth: '-1' }, { spaceId: '0' }, { spotKind: 'rooftop' }, { name: '' }, { kind: 'other' }, { amenities: 'x' }]) {
     expect((await call(HOST, '/api/drafts', { method: 'POST', body: { ...draft, ...bad } })).status, JSON.stringify(bad)).toBe(400);
   }
   expect((await call(HOST, '/api/drafts', { method: 'POST', body: { ...draft, description: 'x'.repeat(2001) } })).status).toBe(400);

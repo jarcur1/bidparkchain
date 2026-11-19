@@ -70,6 +70,18 @@ Visibility:
 - When the keeper is on, `/api/health/ready` adds a `settlement` check: `not run yet`, `last settlement run failed`, or `keeper is out of funds`.
 - Every send, confirmation and failure is logged as one JSON line with `component: "settlement"`, the auction id, the attempt count, the reason and the transaction hash. Alert on repeated `failed` lines or a `pending` count that keeps growing. For `INSUFFICIENT_FUNDS`, top up the keeper address with Sepolia ETH; retries resume on their own. For `NETWORK_ERROR` or `TIMEOUT`, check the RPC provider. Either way, users can still settle manually.
 
+## Host workspace
+
+The My Activity tab holds a host workspace for a connected wallet:
+
+- **Spaces.** Spaces the wallet owns or may list on (approved lister), read from contract events and state, with held windows, blocked windows and verification status. Owners can set the IANA time zone, approve or revoke listers, block or unblock dates and transfer the space; each is a wallet transaction shown in the transaction center.
+- **Drafts and templates.** Saved on the server per signed-in wallet (`/api/drafts`, migration 8), private to that wallet, at most 50 each. They hold form text, a photo reference and wall-clock dates, never a signature or a secret. They are included in backups.
+- **Photos.** A photo is only a reference: an https URL or a local path starting with `/`. There is no upload and no storage service, so the host keeps the image online. An empty or unreachable photo falls back to the default illustrative photo.
+- **Scheduling.** Cutoff, start and end are entered as wall-clock times in the space's time zone (the browser's zone while none is set), converted to UTC seconds, and checked against held and blocked windows before signing. The contract rechecks at signing and remains the authority.
+- **Reports and moderation.** A signed-in wallet can report a listing from its detail dialog. Moderators page through the queue 25 at a time (`/api/moderation/verifications?limit&offset`).
+
+Published auction metadata is immutable; relisting a space starts a new draft and a new auction.
+
 ## First deployment
 
 1. Create a `bidpark` user and `/var/lib/bidpark` (mode 700). Install Node 24 and Caddy.

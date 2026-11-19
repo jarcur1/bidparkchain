@@ -22,6 +22,7 @@ interface QueueItem {
   evidence: string;
   audit: AuditEntry[];
 }
+const PAGE_SIZE = 25;
 type ModeratorAction = 'approve' | 'reject' | 'revoke';
 
 async function request<T>(route: string, body?: unknown): Promise<T> {
@@ -60,7 +61,7 @@ export function useVerifications(account: string | null): VerificationState {
   return { ...data, error, reload };
 }
 
-const STATUS_TEXT: Record<VerificationStatus | 'unverified', string> = {
+export const STATUS_TEXT: Record<VerificationStatus | 'unverified', string> = {
   unverified: 'Not verified',
   pending: 'Pending review',
   approved: 'Verified',
@@ -160,11 +161,15 @@ export const ModerationPanel: React.FC = () => {
   const [reasons, setReasons] = useState<Record<string, string[]>>({});
   const [choice, setChoice] = useState<Record<string, { reason?: string; note?: string }>>({});
   const [message, setMessage] = useState<string | null>(null);
-  const load = useCallback(async () => {
+  const [page, setPage] = useState<{ total: number; nextOffset: number | null }>({ total: 0, nextOffset: null });
+  // Loads the first page, or appends the page at `offset`; a decision reloads only what was already shown.
+  const load = useCallback(async (offset = 0, limit = PAGE_SIZE) => {
     try {
-      const data = await request<{ queue: QueueItem[]; reasons: Record<string, string[]> }>('/api/moderation/verifications');
-      setQueue(data.queue);
+      const data = await request<{ queue: QueueItem[]; reasons: Record<string, string[]>; total: number; nextOffset: number | null }>(
+        `/api/moderation/verifications?limit=${limit}&offset=${offset}`);
+      setQueue((q) => (offset === 0 ? data.queue : [...q, ...data.queue.filter((n) => !q.some((x) => x.spaceId === n.spaceId))]));
       setReasons(data.reasons);
+      setPage({ total: data.total, nextOffset: data.nextOffset });
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
     }
@@ -179,7 +184,7 @@ export const ModerationPanel: React.FC = () => {
         action, reason: picked.reason ?? reasons[action]?.[0], note: picked.note ?? '',
       });
       setMessage(`Space #${spaceId}: ${action} recorded.`);
-      await load();
+      await load(0, Math.max(PAGE_SIZE, queue.length));
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
     }
@@ -192,7 +197,7 @@ export const ModerationPanel: React.FC = () => {
     <section className="activity-section" aria-labelledby="moderation-title" data-testid="moderation">
       <div className="activity-section-header">
         <h2 id="moderation-title" className="activity-section-title">Moderation queue</h2>
-        <button type="button" className="btn-table-action" onClick={() => void load()}>Refresh</button>
+        <button type="button" className="btn-table-action" onClick={() => void load(0, Math.max(PAGE_SIZE, queue.length))}>Refresh</button>
       </div>
       {message && <p className="activity-empty-text" role="status">{message}</p>}
       {queue.length === 0 && <p className="activity-empty-text">No verification requests or reports.</p>}
@@ -234,6 +239,10 @@ export const ModerationPanel: React.FC = () => {
           </li>
         ))}
       </ul>
+      {queue.length > 0 && <p className="activity-empty-text" data-testid="moderation-count">Showing {queue.length} of {page.total}.</p>}
+      {page.nextOffset !== null && (
+        <button type="button" className="btn-table-action" onClick={() => void load(page.nextOffset ?? 0)}>Load more</button>
+      )}
     </section>
   );
 };

@@ -63,6 +63,8 @@ export interface OwnedSpace {
   id: string;
   title: string;
   held: { start: number; end: number }[];
+  /** True when the wallet may list on the space only as an approved lister. */
+  lister?: boolean;
 }
 
 interface CreateListingModalProps {
@@ -561,7 +563,7 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
                     <option value="">New space</option>
                     {spaces.map((space) => (
                       <option key={space.id} value={space.id}>
-                        Space #{space.id}: {space.title}
+                        Space #{space.id}: {space.title}{space.lister ? ' (approved lister)' : ''}
                       </option>
                     ))}
                   </select>

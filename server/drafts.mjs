@@ -15,10 +15,12 @@ const localTime = (v) => v === '' || (typeof v === 'string' && LOCAL_TIME.test(v
 const FIELDS = {
   title: text(120), address: text(200), neighborhood: text(100), description: text(2000),
   image: (v) => typeof v === 'string' && (v === '' || (v.length <= 1000 && isValidImageUrl(v))),
-  kind: (v) => v === '' || KINDS.has(v),
+  spotKind: (v) => v === '' || KINDS.has(v),
   amenities: (v) => Array.isArray(v) && v.length <= 20 && v.every(text(40)),
   minBidEth: (v) => typeof v === 'string' && (v === '' || /^\d{1,6}(\.\d{1,18})?$/.test(v)),
   spaceId: (v) => typeof v === 'string' && (v === '' || /^[1-9]\d{0,77}$/.test(v)),
+  latitude: (v) => Number.isFinite(v) && Math.abs(v) <= 90,
+  longitude: (v) => Number.isFinite(v) && Math.abs(v) <= 180,
   cutoff: localTime, start: localTime, end: localTime,
 };
 

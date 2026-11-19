@@ -27,6 +27,7 @@ import { getBidEligibility, getChainNowSec } from '../utils/eligibility';
 import { downloadReservationIcs } from '../utils/calendar';
 import { BidHistory } from './BidHistory';
 import { Dialog } from './Dialog';
+import { ReportSpace } from './ReportSpace';
 
 interface DetailModalProps {
   listing: Listing | null;
@@ -39,6 +40,8 @@ interface DetailModalProps {
   onCancel: (listing: Listing) => void;
   onClaimPayout: (listing: Listing) => void;
   isActionBusy: boolean;
+  /** Whether the viewer has an API session; reporting needs one. */
+  signedIn?: boolean;
 }
 
 export const DetailModal: React.FC<DetailModalProps> = ({
@@ -52,6 +55,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
   onCancel,
   onClaimPayout,
   isActionBusy,
+  signedIn = false,
 }) => {
   const [copiedHash, setCopiedHash] = useState(false);
   const [timeRemaining, setTimeRemaining] = useState(() =>
@@ -366,6 +370,8 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                     <span>Host Payout Claimed</span>
                   </div>
                 )}
+
+                {!isOwner && <ReportSpace spaceId={listing.spaceId} signedIn={signedIn} />}
 
                 {isOwner && status.isBiddable && (
                   <p className="owner-notice">
