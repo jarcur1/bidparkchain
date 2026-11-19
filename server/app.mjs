@@ -19,6 +19,41 @@ const ALLOWED_ORIGINS = new Set([
   'http://localhost:3001',
 ]);
 
+/**
+ * Settings for a public deployment. Setting BIDPARK_ALLOWED_ORIGINS (exact origins, comma-separated)
+ * turns on hosted mode: only those origins get CORS, cross-origin writes are refused, and writes are
+ * rate-limited per client. Local development keeps its loopback defaults when it is unset.
+ */
+export function publicSettings(options = {}, env = process.env) {
+  const configured = options.allowedOrigins ??
+    (env.BIDPARK_ALLOWED_ORIGINS ? env.BIDPARK_ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean) : null);
+  for (const origin of configured ?? []) {
+    let url;
+    try { url = new URL(origin); } catch { throw new Error(`Invalid allowed origin: ${origin}`); }
+    const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
+    if (url.origin !== origin || (url.protocol !== 'https:' && !(loopback && url.protocol === 'http:'))) {
+      throw new Error(`Allowed origins must be exact https:// origins (or loopback http://): ${origin}`);
+    }
+  }
+  const hosted = Boolean(configured);
+  return {
+    hosted,
+    allowedOrigins: hosted ? new Set(configured) : ALLOWED_ORIGINS,
+    writesPerMinute: options.writesPerMinute ?? Number(env.BIDPARK_WRITES_PER_MINUTE ?? (hosted ? 60 : 0)),
+    trustProxy: options.trustProxy ?? env.BIDPARK_TRUST_PROXY ?? false,
+    rpcTimeoutMs: options.rpcTimeoutMs ?? Number(env.BIDPARK_RPC_TIMEOUT_MS ?? 10_000),
+  };
+}
+
+const MAX_URL_LENGTH = 2048;
+const API_CSP = "default-src 'none'; frame-ancestors 'none'";
+/** Policy for the built web app: its own scripts only, OSM tiles and listing photos over https, Google Fonts. */
+export const WEB_CSP = [
+  "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src https://fonts.gstatic.com", "img-src 'self' data: https:", "connect-src 'self'",
+  "object-src 'none'", "base-uri 'none'", "form-action 'self'", "frame-ancestors 'none'",
+].join('; ');
+
 const MAX_UINT256 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffn;
 
 /**
@@ -98,20 +133,72 @@ export function createApp(options = {}) {
   if (supplied || !options.dbPath) assertProfileDirectory(runtime);
   const db = new EscrowDatabase(options.dbPath ?? runtime.dbPath, { chainId: profile.chainId });
 
-  const provider = new ethers.JsonRpcProvider(rpcUrl, {
+  const settings = publicSettings(options);
+  // Every RPC call is bounded, so a stalled node cannot hold requests open indefinitely.
+  const rpcRequest = new ethers.FetchRequest(rpcUrl);
+  rpcRequest.timeout = settings.rpcTimeoutMs;
+  const provider = new ethers.JsonRpcProvider(rpcRequest, {
     chainId: profile.chainId,
     name: profile.id,
   }, { cacheTimeout: -1 });
 
   const app = express();
+  app.disable('x-powered-by');
+  app.set('query parser', 'simple');
+  // Behind a TLS-terminating reverse proxy, this makes req.protocol/req.ip reflect the real client,
+  // so the session cookie is marked Secure and write limits apply per client.
+  if (settings.trustProxy) app.set('trust proxy', settings.trustProxy);
 
-  // Local JSON body parser with bounded payload size
+  app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Security-Policy', req.path.startsWith('/api') ? API_CSP : WEB_CSP);
+    if (req.originalUrl.length > MAX_URL_LENGTH) {
+      res.status(414).json({ error: 'Request URL is too long' });
+      return;
+    }
+    next();
+  });
+
+  // Hosted mode: browsers always send Origin on writes, so a write from another site is refused.
+  const isWrite = (req) => !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
+  app.use((req, res, next) => {
+    if (settings.hosted && isWrite(req) && req.headers.origin && !settings.allowedOrigins.has(req.headers.origin)) {
+      res.status(403).json({ error: 'Origin not allowed' });
+      return;
+    }
+    next();
+  });
+
+  // ponytail: in-memory fixed-window write limit per client IP; use a shared store if the API is scaled out.
+  const writeWindows = new Map();
+  app.use((req, res, next) => {
+    if (!settings.writesPerMinute || !isWrite(req)) return next();
+    const now = Date.now();
+    const key = req.ip ?? 'unknown';
+    const window = writeWindows.get(key);
+    if (!window || window.resetAt <= now) {
+      if (writeWindows.size > 10_000) writeWindows.clear();
+      writeWindows.set(key, { count: 1, resetAt: now + 60_000 });
+      return next();
+    }
+    if (++window.count > settings.writesPerMinute) {
+      res.setHeader('Retry-After', String(Math.ceil((window.resetAt - now) / 1000)));
+      res.status(429).json({ error: 'Too many requests; try again shortly' });
+      return;
+    }
+    next();
+  });
+
+  // JSON body parser with bounded payload size
   app.use(express.json({ limit: '100kb' }));
 
-  // Strict loopback CORS headers (no wildcards)
+  // Exact-origin CORS headers (no wildcards)
   app.use((req, res, next) => {
     const origin = req.headers.origin;
-    if (origin && ALLOWED_ORIGINS.has(origin)) {
+    if (origin && settings.allowedOrigins.has(origin)) {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -623,6 +710,52 @@ export function createApp(options = {}) {
         event: e.event, account: e.account, amount: e.amount === null ? null : ethers.formatEther(e.amount),
         blockNumber: e.block_number, blockHash: e.block_hash, txHash: e.tx_hash, logIndex: e.log_index,
       })),
+    });
+  });
+
+  /** GET /api/health/live: the process is up and answering. Checks no dependencies. */
+  app.get('/api/health/live', (req, res) => res.json({ live: true }));
+
+  /**
+   * GET /api/health/ready: the dependencies a request needs are usable. Each check is 'ok' or a fixed,
+   * redacted reason (never an upstream error, which could contain an RPC URL or token). 503 until all
+   * pass. Index freshness is only checked when a maximum lag is configured.
+   */
+  const maxIndexLag = options.maxIndexLag ?? (process.env.BIDPARK_MAX_INDEX_LAG === undefined
+    ? undefined : Number(process.env.BIDPARK_MAX_INDEX_LAG));
+  app.get('/api/health/ready', async (req, res) => {
+    const checks = {};
+    const unready = (reason) => Object.assign(new Error(reason), { reason });
+    const check = async (name, probe) => {
+      let timer;
+      try {
+        await Promise.race([probe(), new Promise((_, reject) => { timer = setTimeout(() => reject(unready('timed out')), 5000); })]);
+        checks[name] = 'ok';
+      } catch (error) {
+        checks[name] = error?.reason ?? 'failed';
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    const deployment = loadDeployment();
+    await check('database', async () => db.db.prepare('SELECT 1').get());
+    await check('chain', async () => {
+      if (Number(await provider.send('eth_chainId', [])) !== profile.chainId) throw unready('unexpected chain');
+    });
+    await check('contract', async () => {
+      if (!deployment?.contractAddress) throw unready('no deployment configured');
+      if ((await provider.getCode(deployment.contractAddress)) === '0x') throw unready('no contract code at the deployment address');
+    });
+    if (maxIndexLag !== undefined) {
+      await check('index', async () => {
+        if (!lastSync || lastSync.lagBlocks === null || lastSync.lagBlocks === undefined) throw unready('not indexed yet');
+        if (lastSync.error) throw unready('last index sync failed');
+        if (lastSync.lagBlocks > maxIndexLag) throw unready(`index is ${lastSync.lagBlocks} blocks behind`);
+      });
+    }
+    const ready = Object.values(checks).every((value) => value === 'ok');
+    res.status(ready ? 200 : 503).json({
+      ready, profile: profile.id, chainId: profile.chainId, contractAddress: deployment?.contractAddress ?? null, checks,
     });
   });
 

@@ -1,0 +1,8 @@
+# Staging reverse proxy: Caddy obtains and renews the HTTPS certificate automatically.
+# Replace the host name, then: sudo cp deploy/Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
+staging.bidpark.example {
+	encode zstd gzip
+	# One upstream serves both the web app and /api; there is no /rpc route.
+	reverse_proxy 127.0.0.1:3001
+	header Strict-Transport-Security "max-age=31536000"
+}
