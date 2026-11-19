@@ -123,6 +123,26 @@ it('never sends twice for an auction across a restart, and resends only after a 
   first.db.close();
 });
 
+it('keeps a broadcast whose RPC response was lost as sent instead of sending again', async () => {
+  const id = await createAuction();
+  await bid(1, id, '0.02');
+  await chain.increaseTime(700);
+  const k = await keeper();
+  const keeperAddress = chain.wallet(9).address;
+  const nonce = await chain.provider.getTransactionCount(keeperAddress);
+  chain.provider.broadcastTransaction = async function (signed) {
+    delete this.broadcastTransaction;
+    await this.broadcastTransaction(signed);
+    throw Object.assign(new Error('socket hang up'), { code: 'NETWORK_ERROR' });
+  };
+  expect(await k.run()).toMatchObject({ pending: 1 });
+  expect(k.get(id)).toMatchObject({ status: 'sent', attempts: 1, last_error: null });
+  expect(await k.run()).toMatchObject({ pending: 0 });
+  expect(k.get(id).status).toBe('confirmed');
+  expect(await chain.provider.getTransactionCount(keeperAddress)).toBe(nonce + 1);
+  k.db.close();
+});
+
 it('backs off with a redacted reason while the keeper cannot pay, then recovers once funded', async () => {
   const id = await createAuction();
   await bid(1, id, '0.02');
