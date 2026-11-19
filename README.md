@@ -87,7 +87,7 @@ Use **Connect Wallet** to choose an account with Enter or Space, **List a Spot**
 | Path | Purpose |
 | --- | --- |
 | `src/` | React/TypeScript interface, Leaflet map, ethers wallet integration |
-| `contracts/ParkingAuctionEscrow.sol` | Auctions, pull refunds, settlement, time-locked owner payout |
+| `contracts/ParkingAuctionEscrow.sol` | Parking spaces and their calendars, auctions, pull refunds, settlement, time-locked owner payout |
 | `server/` | Express API and Node's native SQLite metadata storage |
 | `shared/` | Shared types and canonical metadata normalization |
 | `scripts/deploy.mjs` | Local Solidity compilation, deployment, seeded listings |
@@ -103,7 +103,7 @@ Listing records are keyed by chain id, contract address and auction id, and keep
 
 The local Hardhat chain is **in memory**. Stopping and restarting it resets auctions, balances, and reservations. A fresh local deployment explicitly resets that local chain's listings, keeping deployment history, and recreates the samples. Persistent profiles never reset listings. SQLite persistence supports API restarts while the same chain remains running; it does not make blockchain state persistent.
 
-For separate service terminals, run `npm run chain`, then `npm run deploy`, then `npm run api` and `npm run web`. Re-running deployment against the same active chain reuses the deployment.
+For separate service terminals, run `npm run chain`, then `npm run deploy`, then `npm run api` and `npm run web`. Re-running deployment against the same active chain reuses the deployment, unless the contract source changed since; then it deploys and seeds a new one.
 
 If a resumed demo auction can no longer accept its initial bid, deployment reports the skipped bid and finishes seeding the remaining listings without replacing the existing auction. Subsequent runs report the degraded seed status without retrying the skipped bid.
 
