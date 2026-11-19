@@ -15,6 +15,8 @@ export interface DraftFields {
   start: string;
   end: string;
   amenities?: string[];
+  /** Id of the auction this draft would replace; the new auction links back to it. */
+  replaces?: string;
 }
 export type DraftKind = 'draft' | 'template';
 export interface SavedDraft extends Partial<DraftFields> {
@@ -52,3 +54,6 @@ export const saveArrival = (scope: 'auctions' | 'spaces', id: string, instructio
   call<{ saved: boolean }>(`/api/${scope}/${id}/arrival`, 'POST', { instructions });
 export const checkInArrival = async (auctionId: string) =>
   (await call<{ checkIn: ArrivalCheckIn }>(`/api/auctions/${auctionId}/check-in`, 'POST', {})).checkIn;
+
+export const linkReplacement = (originalId: string, replacementId: string) =>
+  call<{ linked: true }>(`/api/auctions/${originalId}/replacement`, 'POST', { replacementId });

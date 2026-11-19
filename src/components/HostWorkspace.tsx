@@ -9,6 +9,8 @@ import { formatDateTime } from '../utils/formatters';
 import { getChainNowSec } from '../utils/eligibility';
 import { MIN_BID_LEAD } from '../utils/booking';
 import { findConflicts, isValidZone, parseSchedule, zonedToEpoch, type Span } from '../utils/schedule';
+import { changePath } from '../utils/replacement';
+import type { BookingAction } from '../utils/booking';
 import { STATUS_TEXT, type HostVerification } from './Verification';
 
 const browserZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -35,12 +37,19 @@ interface Props {
   verifications: HostVerification[];
   isActionBusy: boolean;
   onSpaceAction: (action: SpaceAction, label: string) => Promise<boolean>;
-  onPublish: (metadata: SpotMetadata, minBidEth: string, bidEnd: number, start: number, end: number, spaceId?: string, protectedBooking?: boolean) => Promise<void>;
+  onPublish: (metadata: SpotMetadata, minBidEth: string, bidEnd: number, start: number, end: number, spaceId?: string, protectedBooking?: boolean, replaces?: string) => Promise<void>;
+  account: string | null;
+  /** A listing the host chose to change; shown with its options until dismissed. */
+  changeTarget: Listing | null;
+  onChangeDone: () => void;
+  onBookingAction: (listing: Listing, action: BookingAction) => Promise<void>;
+  onCancelListing: (listing: Listing) => Promise<void>;
   onSignIn: () => void;
 }
 
 export const HostWorkspace: React.FC<Props> = ({
   signedIn, spaces, spacesError, listings, verifications, isActionBusy, onSpaceAction, onPublish, onSignIn,
+  account, changeTarget, onChangeDone, onBookingAction, onCancelListing,
 }) => {
   const [form, setForm] = useState<DraftFields>(EMPTY);
   const [editing, setEditing] = useState<{ id: number | null; name: string; kind: DraftKind }>({ id: null, name: '', kind: 'draft' });
@@ -106,6 +115,15 @@ export const HostWorkspace: React.FC<Props> = ({
     } : { spaceId }, false);
     setMessage(`Relisting space #${spaceId}: choose new dates and a minimum bid. Past bids and results are not copied.`);
   }
+  function startReplacement(listing: Listing) {
+    setEditing({ id: null, name: `Replacement for #${listing.id}`, kind: 'draft' });
+    fill({
+      title: listing.title, address: listing.address, neighborhood: listing.neighborhood, description: listing.description,
+      image: listing.image, spotKind: listing.kind, latitude: listing.latitude, longitude: listing.longitude,
+      spaceId: listing.spaceId, replaces: listing.id,
+    }, false);
+    setMessage(`Replacement draft for auction #${listing.id} is ready below: change what needs changing, set new dates and a minimum bid, then sign.`);
+  }
   function load(draft: SavedDraft, asNew: boolean) {
     const { id: _id, kind, name, updatedAt: _u, ...fields } = draft;
     fill(fields, !asNew);
@@ -138,8 +156,9 @@ export const HostWorkspace: React.FC<Props> = ({
   async function publish() {
     if (problem || !parsed.schedule || !validation.normalized) return;
     try {
-      await onPublish(validation.normalized, form.minBidEth, parsed.schedule.bidEnd, parsed.schedule.start, parsed.schedule.end, form.spaceId || undefined, protectedBooking);
+      await onPublish(validation.normalized, form.minBidEth, parsed.schedule.bidEnd, parsed.schedule.start, parsed.schedule.end, form.spaceId || undefined, protectedBooking, form.replaces || undefined);
       setProtectedBooking(false);
+      setForm((f) => ({ ...f, replaces: '' }));
       setMessage('Auction created.');
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
@@ -156,6 +175,31 @@ export const HostWorkspace: React.FC<Props> = ({
       </div>
       {spacesError && <p className="activity-empty-text" role="alert">Could not read your spaces: {spacesError}</p>}
       {message && <p className="activity-empty-text" role="status">{message}</p>}
+
+      {changeTarget && (() => {
+        const path = changePath(changeTarget, account, nowSec);
+        return (
+          <div className="workspace-conflicts" role="region" aria-label={`Change auction ${changeTarget.id}`} data-testid="change-after-bids">
+            <strong>Change "{changeTarget.title}" (auction #{changeTarget.id})</strong>
+            <p>
+              Published listing details cannot be edited, because bidders agreed to them.
+              {path.hasBids ? ' This auction already has a bid, so a change is material: it must be published as a new auction that links back to this one, and the bidders here are told.'
+                : ' It has no bids yet, so you can cancel it and publish the corrected listing.'}
+            </p>
+            <p data-testid="change-consequence">{path.consequence}</p>
+            <div className="verification-form">
+              {path.action === 'cancel' && (
+                <button type="button" className="btn-table-action" disabled={isActionBusy} onClick={() => void onCancelListing(changeTarget)}>Cancel auction #{changeTarget.id}</button>
+              )}
+              {path.action === 'hostCancelBooking' && (
+                <button type="button" className="btn-table-action" disabled={isActionBusy} onClick={() => void onBookingAction(changeTarget, 'hostCancelBooking')}>Withdraw booking and refund winner</button>
+              )}
+              <button type="button" className="btn-table-action" onClick={() => startReplacement(changeTarget)}>Prefill replacement draft</button>
+              <button type="button" className="btn-table-action" onClick={onChangeDone}>Dismiss</button>
+            </div>
+          </div>
+        );
+      })()}
 
       <h3 className="workspace-heading">Your spaces</h3>
       {spaces.length === 0 && <p className="activity-empty-text">No spaces yet. Listing a spot creates your first space, or ask a space owner to approve this wallet as a lister.</p>}
@@ -264,12 +308,14 @@ export const HostWorkspace: React.FC<Props> = ({
         {parsed.error && (form.cutoff || form.start || form.end) && <p role="alert" className="workspace-conflicts" data-testid="schedule-error">{parsed.error}</p>}
         {space && !conflicts.length && parsed.schedule && <p role="status" data-testid="schedule-clear">No conflicts with held or blocked windows. The contract checks again when you sign.</p>}
 
+        {form.replaces && <p role="status" data-testid="replaces-note">This listing replaces auction #{form.replaces}. After you sign, bidders on that auction get an inbox entry pointing here.</p>}
         {parsed.schedule && (
           <dl className="workspace-preview" data-testid="snapshot-preview" aria-label="Public listing snapshot">
             <dt>Public snapshot</dt><dd>{metadata.title || '(no title)'} at {metadata.address}</dd>
             <dt>Bidding closes</dt><dd>{when(parsed.schedule.bidEnd)} ({new Date(parsed.schedule.bidEnd * 1000).toISOString()})</dd>
             <dt>Parking</dt><dd>{when(parsed.schedule.start)} to {when(parsed.schedule.end)} ({Math.round((parsed.schedule.end - parsed.schedule.start) / 360) / 10} h)</dd>
             <dt>Minimum bid</dt><dd>{form.minBidEth} ETH</dd>
+            {form.replaces && <><dt>Replaces</dt><dd>Auction #{form.replaces}</dd></>}
             <dt>Booking</dt><dd>{protectedBooking ? 'Protected booking' : 'Standard booking'}</dd>
           </dl>
         )}
