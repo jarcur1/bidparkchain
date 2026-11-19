@@ -15,17 +15,15 @@ npm run dev
 
 Open **http://127.0.0.1:5173**. The launcher starts the local Hardhat chain (31337), compiles Solidity using the installed solc package, deploys and seeds seven auctions, starts the SQLite-backed API, and starts Vite. No wallet extension, RPC subscription, or hosted database is required. Stop all three services with Ctrl+C.
 
-For the class demo, set `BIDPARK_SCENARIO=campus-baseline` or `campus-expansion` to seed a fictional campus instead of the Austin samples; see [class demo scenarios](docs/class-demo-scenarios.md).
-
 Ports 5173, 3001, and 8545 must be available. Services bind to loopback; this is not a deployment configuration.
 
 ## Classroom demo
 
 What if one more dorm made good commuter parking so scarce that students started auctioning it off? BidPark uses that premise for an **unofficial, LSU-inspired classroom parody**. The dorm expansion is fictional, not a finding about LSU construction or parking supply. Listings, bids, and winning reservations are illustrative; no real money changes hands and no actual parking or access is provided.
 
-For class, use the default local profile: run `npm ci` ahead of time, then `npm run dev` and open the loopback URL above. In **Connect Wallet**, choose a built-in **local test wallet**. The auction and listing cards work without a browser wallet, public testnet, campus login, third-party data feed, or real student or vehicle information. If map tiles or listing photos are unavailable offline, use the cards view.
+Run `npm ci` ahead of time. Start with `BIDPARK_SCENARIO=campus-baseline npm run dev`, then stop it and run `BIDPARK_SCENARIO=campus-expansion npm run dev` to show what changed. In PowerShell, set `$env:BIDPARK_SCENARIO = 'campus-baseline'` (or `'campus-expansion'`) before running `npm run dev`. Leaving the variable unset shows the Austin sample listings, not the classroom scenarios.
 
-The current seed uses illustrative Austin listings to exercise the auction. The fictional campus scenarios and presenter walkthrough are tracked in the [classroom demo milestone](https://github.com/jarcur1/bidparkchain/milestone/4).
+Open the loopback URL above and select a built-in **local test wallet** under **Connect Wallet**. No wallet extension, public testnet, or external data feed is needed. Use **Cards** if the map does not load. See the [scenario setup](docs/class-demo-scenarios.md) and [presenter walkthrough](docs/class-demo-presenter.md).
 
 ## Try it
 

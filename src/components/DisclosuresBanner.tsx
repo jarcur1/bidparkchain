@@ -30,23 +30,6 @@ export const DisclosuresBanner: React.FC = () => {
     );
   }
 
-  if (webProfile.id === 'local') {
-    return (
-      <aside className="disclosure-banner prototype-banner" aria-label="Classroom demo">
-        <div className="banner-content">
-          <Info className="banner-icon" size={16} aria-hidden="true" />
-          <div className="banner-text">
-            <span className="banner-tag">Classroom Parody</span>
-            <span>
-              What if a new dorm left so few good commuter spots that students started auctioning them off?{' '}
-              <strong>Unofficial LSU-inspired simulation.</strong> Fictional listings and simulated bids only. No real money, bookings, or parking rights.
-            </span>
-          </div>
-        </div>
-      </aside>
-    );
-  }
-
   if (dismissed) return null;
 
   return (
@@ -54,9 +37,13 @@ export const DisclosuresBanner: React.FC = () => {
       <div className="banner-content">
         <Info className="banner-icon" size={16} />
         <div className="banner-text">
-          <span className="banner-tag">Testnet Rehearsal</span>
+          <span className="banner-tag">{webProfile.id === 'local' ? 'Local Prototype' : 'Testnet Rehearsal'}</span>
           <span>
-            This is an illustrative testnet rehearsal, not a real booking. No parking or physical access is provided. Only faucet-funded Sepolia test ETH is used; it is test currency, not payment for parking.
+            {webProfile.id === 'local' ? (
+              <>Operating on local Hardhat chain. <strong>ETH has no monetary value.</strong> All bids are secured in Solidity escrow until settled. Host seller receives funds <em>only after parking end window</em> (no dispute protection claim). Sample listings are for local demonstration.</>
+            ) : (
+              <>This is an illustrative testnet rehearsal, not a real booking. No parking or physical access is provided. Only faucet-funded Sepolia test ETH is used; it is test currency, not payment for parking.</>
+            )}
           </span>
         </div>
       </div>
