@@ -13,6 +13,7 @@ import {
   Zap,
 } from 'lucide-react';
 import type { Listing } from '../types';
+import { canClaimPayout } from '../utils/booking';
 import type { ReadState } from '../utils/readState';
 import {
   formatDateTime,
@@ -660,8 +661,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
             {hostedSpots.map((listing) => {
               const hasBids = parseFloat(listing.highestBid) > 0;
               const canCancel = !hasBids && !listing.settled && !listing.cancelled;
-              const canClaim =
-                listing.settled && hasBids && !listing.payoutClaimed && now >= listing.parkingEnd;
+              const canClaim = canClaimPayout(listing, now);
               const status = getListingStatus(listing);
 
               return (

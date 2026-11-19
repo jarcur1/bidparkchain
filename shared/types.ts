@@ -32,6 +32,18 @@ export interface Listing extends SpotMetadata {
   cancelled: boolean;
   payoutClaimed: boolean;
   metadataHash: string;
+  /** Protected-booking state (docs/booking-policy.md); null on a deployment without it. */
+  booking?: BookingState | null;
+}
+
+export interface BookingState {
+  /** Created with createProtectedAuction; false means the version 1 rules apply. */
+  protected: boolean;
+  outcome: 'none' | 'winner-cancelled' | 'host-cancelled' | 'expired' | 'dispute-upheld' | 'dispute-expired' | 'host-paid';
+  lateCancelled: boolean;
+  noShowRecorded: boolean;
+  /** Wallet that opened the seller-failure report still awaiting a decision, or null. */
+  disputeReporter: string | null;
 }
 
 export interface Config {

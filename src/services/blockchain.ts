@@ -14,6 +14,7 @@ import {
 } from 'ethers';
 import { normalizeMetadata } from '../../shared/metadata.js';
 import type { SpotMetadata } from '../types';
+import type { BookingAction } from '../utils/booking';
 
 export function computeMetadataHash(metadata: SpotMetadata): string {
   const normalized = normalizeMetadata(metadata);
@@ -219,13 +220,17 @@ export async function createAuctionOnChain(
   confirmation: ConfirmationPolicy = 'mined',
   observe?: TxObserver,
   spaceId?: string,
+  protectedBooking = false,
 ): Promise<CreateAuctionResult> {
   const metadataHash = computeMetadataHash(metadata);
   const minBidWei = parseEther(minBidEth);
 
   const args = [metadataHash, minBidWei, BigInt(bidEndSec), BigInt(parkingStartSec), BigInt(parkingEndSec)];
   // Without a space id, createAuction registers a new space for this listing.
-  const receipt = spaceId
+  // A protected booking uses spaceId 0 to register a new space, like createAuction.
+  const receipt = protectedBooking
+    ? await send(contract, 'createProtectedAuction', [BigInt(spaceId ?? 0), ...args], confirmation, observe)
+    : spaceId
     ? await send(contract, 'createSpaceAuction', [BigInt(spaceId), ...args], confirmation, observe)
     : await send(contract, 'createAuction', args, confirmation, observe);
   const tx = { hash: receipt.hash };
@@ -299,7 +304,32 @@ export async function claimPayout(
   return send(contract, 'claimPayout', [BigInt(auctionId)], confirmation, observe);
 }
 
+/** Sends one protected-booking transaction (docs/booking-policy.md). */
+export async function sendBookingAction(
+  contract: Contract,
+  auctionId: string,
+  action: BookingAction,
+  reference: string,
+  confirmation: ConfirmationPolicy = 'mined',
+  observe?: TxObserver,
+): Promise<TransactionReceipt> {
+  const id = BigInt(auctionId);
+  if (action === 'reportSellerFailure') return send(contract, action, [id, reference], confirmation, observe);
+  if (action === 'upholdDispute' || action === 'denyDispute') {
+    return send(contract, 'resolveDispute', [id, action === 'upholdDispute', reference], confirmation, observe);
+  }
+  return send(contract, action, [id], confirmation, observe);
+}
+
 const CONTRACT_ERROR_MESSAGES: Record<string, string> = {
+  TooEarly: 'That action is not open yet for this booking. Check its deadlines.',
+  TooLate: 'The deadline for that action has passed on-chain.',
+  NotResolver: 'Only a resolver the operator authorized can decide seller-failure reports.',
+  ResolverIsParty: 'A resolver cannot decide a report on a booking they are part of.',
+  BookingFinalized: 'This booking already has a final outcome.',
+  DisputeOpen: 'A seller-failure report is open: the payout is held until it is decided or expires.',
+  NotWinner: 'Only the winning bidder (or, for a report, the host) can do that.',
+  AlreadyRecorded: 'That was already recorded for this booking.',
   BidTooLow: 'Another bid reached or passed your amount first. Your input was kept; raise it above the new highest bid.',
   AuctionEnded: 'Bidding closed on-chain before your bid was mined.',
   AlreadySettled: 'This auction was already settled.',
