@@ -1,4 +1,5 @@
 import type { AuctionStatusFilter, FilterState, Listing, SortOption, SpotKindFilter } from '../types';
+import { distanceKm } from '../../shared/geo.js';
 import { AUSTIN_PRESET_LOCATIONS } from './constants';
 
 // Client-side discovery over the listings already loaded. Bounded and geographic server queries
@@ -32,14 +33,7 @@ export function listingPrice(listing: Listing): number {
   return highest > 0 ? highest : parseFloat(listing.minBid);
 }
 
-/** Great-circle distance in km. */
-export function distanceKm(a: { latitude: number; longitude: number }, b: { latitude: number; longitude: number }): number {
-  const rad = Math.PI / 180;
-  const dLat = (b.latitude - a.latitude) * rad;
-  const dLon = (b.longitude - a.longitude) * rad;
-  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.latitude * rad) * Math.cos(b.latitude * rad) * Math.sin(dLon / 2) ** 2;
-  return 2 * 6371 * Math.asin(Math.min(1, Math.sqrt(h)));
-}
+export { distanceKm } from '../../shared/geo.js';
 
 export function formatDistance(km: number): string {
   return km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`;

@@ -1,0 +1,179 @@
+import path from 'node:path';
+import { once } from 'node:events';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { ethers } from 'ethers';
+import { createApp } from '../../server/app.mjs';
+import { validateSpotMetadata } from '../../shared/validation.js';
+import { createScope, deployEscrow, findFreePort, writeDeployment } from '../support/owned-env.mjs';
+import { signInCookie } from '../support/auth.mjs';
+
+const base = {
+  address: '123 Main Street', neighborhood: 'Downtown', description: 'A secure parking space.', image: '/images/garage.jpg',
+};
+const SPOTS = {
+  garage: { ...base, title: 'Downtown garage', latitude: 30.2672, longitude: -97.7431, kind: 'garage', amenities: ['Covered', 'Lighting'] },
+  driveway: { ...base, title: 'Rainey driveway', latitude: 30.2600, longitude: -97.7400, kind: 'driveway', amenities: ['EV charging'] },
+  overnight: { ...base, title: 'North covered lot', latitude: 30.4000, longitude: -97.9000, kind: 'covered', amenities: ['Covered'] },
+  cancelled: { ...base, title: 'Closed garage', latitude: 30.2680, longitude: -97.7430, kind: 'garage', amenities: ['Covered'] },
+  broken: { ...base, title: 'Broken row', latitude: 30.2690, longitude: -97.7420, kind: 'garage', amenities: [] },
+};
+const hash = (value) => ethers.keccak256(ethers.toUtf8Bytes(JSON.stringify(validateSpotMetadata(value).normalized)));
+const H = 3600;
+
+describe('GET /api/listings/search', () => {
+  let scope, chain, deployment, deploymentPath, runtime, server, url, cookie, t0, dbPath;
+  const ids = {};
+  const close = async (srv, rt) => {
+    if (srv) await new Promise((resolve) => srv.close(resolve));
+    rt?.db.close();
+    rt?.provider.destroy();
+  };
+  async function listen(app) {
+    const srv = app.listen(0, '127.0.0.1');
+    await once(srv, 'listening');
+    return { srv, url: `http://127.0.0.1:${srv.address().port}` };
+  }
+  async function search(query = '', at = url) {
+    const response = await fetch(`${at}/api/listings/search${query ? `?${query}` : ''}`);
+    const json = await response.json();
+    if (response.status >= 400) expect(json).toEqual({ error: expect.any(String) });
+    return { status: response.status, json };
+  }
+  const idsOf = (json) => json.listings.map((l) => l.id);
+  async function list(name, minBid, bidEnd, start, end) {
+    const id = (await deployment.contract.nextAuctionId()).toString();
+    await (await deployment.contract.createAuction(hash(SPOTS[name]), ethers.parseEther(minBid), t0 + bidEnd, t0 + start, t0 + end)).wait();
+    const res = await fetch(`${url}/api/listings`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ auctionId: id, metadata: SPOTS[name] }),
+    });
+    expect(res.status).toBe(201);
+    ids[name] = id;
+  }
+
+  beforeAll(async () => {
+    scope = await createScope('api-search');
+    chain = await scope.startChain();
+    deployment = await deployEscrow(chain);
+    const dataDir = scope.tempDir();
+    deploymentPath = writeDeployment(dataDir, deployment);
+    dbPath = path.join(dataDir, 'bidpark.db');
+    runtime = createApp({ dbPath, deploymentPath, rpcUrl: chain.rpcUrl });
+    ({ srv: server, url } = await listen(runtime.app));
+    cookie = await signInCookie(url, chain.wallet(0));
+    t0 = await chain.latestTimestamp();
+    await list('garage', '0.01', H, H, 3 * H);
+    await list('driveway', '0.02', H / 3, 2 * H, 4 * H);
+    await list('overnight', '0.005', 2 * H, 20 * H, 32 * H);
+    await list('cancelled', '0.01', H, H, 3 * H);
+    await list('broken', '0.01', H, H, 3 * H);
+    await (await deployment.contract.cancel(ids.cancelled)).wait();
+    runtime.db.db.prepare("UPDATE listings SET amenities = 'not json' WHERE auction_id = ?").run(ids.broken);
+  });
+  afterAll(async () => {
+    try {
+      await close(server, runtime);
+    } finally {
+      chain?.provider.destroy();
+      await scope?.close();
+    }
+  });
+
+  it('rejects malformed queries with 400 before touching the chain', async () => {
+    const bad = [
+      'color=red', 'kind=garage&kind=covered', 'kind=boat', 'arrive=abc', 'arrive=200&depart=100', 'arrive=100&depart=100',
+      'radiusKm=2', 'near=30.2', 'near=91,0&radiusKm=1', 'near=30,-97&radiusKm=0', 'near=30,-97&radiusKm=101',
+      'bbox=1,2,3', 'bbox=30.3,-97,30.2,-96', 'maxPrice=-1', 'maxPrice=1e3', 'minPrice=2&maxPrice=1',
+      'sort=distance', 'sort=random', 'status=open', 'limit=0', 'limit=51', 'limit=2.5', 'cursor=!!', 'cursor=e30',
+      `q=${'x'.repeat(101)}`, `amenity=${'y'.repeat(41)}`, Array.from({ length: 11 }, (_, i) => `amenity=a${i}`).join('&'),
+    ];
+    for (const query of bad) expect((await search(query)).status, query).toBe(400);
+  });
+
+  it('answers 503 for an outage and still 400 for a malformed query', async () => {
+    const dead = createApp({ dbPath: path.join(scope.tempDir(), 'dead.db'), deploymentPath, rpcUrl: `http://127.0.0.1:${await findFreePort()}`, rpcTimeoutMs: 2000 });
+    const { srv, url: deadUrl } = await listen(dead.app);
+    try {
+      expect(await search('', deadUrl)).toEqual({ status: 503, json: { error: expect.any(String) } });
+      expect((await search('limit=0', deadUrl)).status).toBe(400);
+    } finally {
+      await close(srv, dead);
+    }
+  });
+
+  it('pins the response to one block, states price semantics and skips malformed stored rows', async () => {
+    const { status, json } = await search();
+    expect(status).toBe(200);
+    const head = await chain.provider.getBlock('latest');
+    expect(json.chain).toMatchObject({ blockNumber: head.number, blockHash: head.hash, contractAddress: deployment.address });
+    expect(json.pricing).toMatch(/neither is a final booking price/i);
+    expect(json.skipped).toBe(1);
+    expect(idsOf(json)).not.toContain(ids.broken);
+    expect(json.total).toBe(4);
+  });
+
+  it('only returns windows that cover the whole visit, including edges and overnight', async () => {
+    const q = (a, d) => search(`arrive=${t0 + a}&depart=${t0 + d}`).then((r) => idsOf(r.json));
+    expect(await q(1.5 * H, 2.5 * H)).toEqual(expect.arrayContaining([ids.garage, ids.cancelled]));
+    expect(await q(1.5 * H, 2.5 * H)).not.toContain(ids.driveway);
+    // Ending exactly at the window end is covered; starting exactly at it is the next window's.
+    expect(await q(2.5 * H, 3 * H)).toContain(ids.garage);
+    expect(await q(3 * H, 3.5 * H)).toEqual([ids.driveway]);
+    expect(await q(22 * H, 31 * H)).toEqual([ids.overnight]);
+    expect(await q(19 * H, 21 * H)).toEqual([]);
+    expect(await search(`arrive=${t0 + 2 * H}`).then((r) => idsOf(r.json).sort())).toEqual([ids.cancelled, ids.driveway, ids.garage].sort());
+  });
+
+  it('filters by area, kind, amenities, budget and availability, with distance sort', async () => {
+    const near = `near=${SPOTS.garage.latitude},${SPOTS.garage.longitude}`;
+    const within = await search(`${near}&radiusKm=2&sort=distance`);
+    expect(idsOf(within.json)).toEqual([ids.garage, ids.cancelled, ids.driveway]);
+    expect(within.json.listings[0].distanceKm).toBe(0);
+    expect(idsOf((await search('bbox=30.39,-97.91,30.41,-97.89')).json)).toEqual([ids.overnight]);
+    expect(idsOf((await search('kind=driveway')).json)).toEqual([ids.driveway]);
+    expect(idsOf((await search('amenity=Covered&amenity=Lighting')).json)).toEqual([ids.garage]);
+    expect(idsOf((await search('maxPrice=0.01&sort=price-asc')).json)).toEqual([ids.overnight, ids.garage, ids.cancelled]);
+    expect(idsOf((await search('status=active&kind=garage')).json)).toEqual([ids.garage]);
+    expect(idsOf((await search('q=rainey')).json)).toEqual([ids.driveway]);
+  });
+
+  it('keeps cursor pages on the first page\'s block while listings change, then expires the cursor on a reorg', async () => {
+    const first = await search('limit=2&sort=price-asc');
+    expect(first.json.total).toBe(4);
+    expect(first.json.nextCursor).toEqual(expect.any(String));
+    // A bid moves the cheapest listing to the top price and a new listing appears.
+    await (await deployment.contract.connect(chain.wallet(1)).bid(ids.overnight, { value: ethers.parseEther('1') })).wait();
+    const snap = await chain.provider.send('evm_snapshot', []);
+    await list('garage', '0.001', H, H, 3 * H);
+    const second = await search(`limit=2&sort=price-asc&cursor=${first.json.nextCursor}`);
+    expect(second.status).toBe(200);
+    expect(second.json.chain).toEqual(first.json.chain);
+    expect(second.json.nextCursor).toBeNull();
+    const pages = [...idsOf(first.json), ...idsOf(second.json)];
+    expect(new Set(pages).size).toBe(4);
+    expect(pages[0]).toBe(ids.overnight);
+
+    expect((await search(`limit=2&sort=price-desc&cursor=${first.json.nextCursor}`)).status).toBe(400);
+    const fresh = await search('sort=price-asc');
+    expect(fresh.json.listings.at(-1).id).toBe(ids.overnight);
+    expect(fresh.json.listings[0].id).toBe(ids.garage);
+
+    // Replacing the pinned block with a different one makes the cursor stale, not silently wrong.
+    const pinned = await search('limit=1&sort=newest');
+    await chain.provider.send('evm_revert', [snap]);
+    await chain.provider.send('evm_mine', []);
+    await chain.provider.send('evm_mine', []);
+    expect((await search(`limit=1&sort=newest&cursor=${pinned.json.nextCursor}`)).status).toBe(409);
+  });
+
+  it('refuses queries that would read more candidates than the scan limit', async () => {
+    const small = createApp({ dbPath, deploymentPath, rpcUrl: chain.rpcUrl, searchScanLimit: 1 });
+    const { srv, url: smallUrl } = await listen(small.app);
+    try {
+      expect((await search('', smallUrl)).status).toBe(422);
+      expect((await search('kind=driveway', smallUrl)).status).toBe(200);
+    } finally {
+      await close(srv, small);
+    }
+  });
+});

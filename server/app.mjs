@@ -10,6 +10,7 @@ import { getNetworkProfile } from '../shared/network-profiles.mjs';
 import { mountAuth, readSession } from './auth.mjs';
 import { syncIndex } from './indexer.mjs';
 import { deriveInbox } from './inbox.mjs';
+import { PRICE_NOTE, QueryError, encodeCursor, filterAndSort, matchesMetadata, parseSearchQuery } from './search.mjs';
 
 let sepoliaArtifact;
 
@@ -43,6 +44,9 @@ export function publicSettings(options = {}, env = process.env) {
     writesPerMinute: options.writesPerMinute ?? Number(env.BIDPARK_WRITES_PER_MINUTE ?? (hosted ? 60 : 0)),
     trustProxy: options.trustProxy ?? env.BIDPARK_TRUST_PROXY ?? false,
     rpcTimeoutMs: options.rpcTimeoutMs ?? Number(env.BIDPARK_RPC_TIMEOUT_MS ?? 10_000),
+    // Listing search: at most this many candidates are read from the chain per request, within this deadline.
+    searchScanLimit: options.searchScanLimit ?? Number(env.BIDPARK_SEARCH_SCAN_LIMIT ?? 500),
+    searchDeadlineMs: options.searchDeadlineMs ?? Number(env.BIDPARK_SEARCH_DEADLINE_MS ?? 20_000),
   };
 }
 
@@ -97,6 +101,24 @@ function listingFromRow(id, onchain, row, spaceId) {
     amenities: JSON.parse(row.amenities),
   };
 }
+
+/** Stored metadata of a listing row, or null when the row is malformed (it is skipped, not a 503). */
+function rowMetadata(row) {
+  try {
+    const amenities = JSON.parse(row.amenities);
+    const meta = { ...row, latitude: Number(row.latitude), longitude: Number(row.longitude), amenities };
+    const strings = [row.title, row.address, row.neighborhood, row.description, row.kind];
+    if (!Array.isArray(amenities) || !amenities.every((a) => typeof a === 'string') ||
+        !strings.every((v) => typeof v === 'string') ||
+        !Number.isFinite(meta.latitude) || !Number.isFinite(meta.longitude)) return null;
+    return meta;
+  } catch {
+    return null;
+  }
+}
+
+/** A failure that is the chain's, not the query's: the route answers 503 with its message. */
+class Unavailable extends Error {}
 
 /**
  * Creates and configures the Express API application.
@@ -499,6 +521,98 @@ export function createApp(options = {}) {
       res.json({ listings: built.listings, unindexed: built.unindexed, chain });
     } catch (err) {
       next(err);
+    }
+  });
+
+  /**
+   * GET /api/listings/search
+   * Bounded, validated discovery query (docs/listing-search.md). Every chain read of one response, and of
+   * every later page of the same cursor, is pinned to one block whose number and hash are returned.
+   * 400 malformed query, 409 the cursor's block is no longer canonical, 422 too many candidates, 503 outage.
+   */
+  app.get('/api/listings/search', async (req, res, next) => {
+    let params;
+    try {
+      params = parseSearchQuery(req.query);
+    } catch (err) {
+      if (err instanceof QueryError) return res.status(400).json({ error: err.message });
+      return next(err);
+    }
+    const deployment = loadDeployment();
+    if (profile.id !== 'sepolia' && (!deployment || !deployment.abi)) {
+      return res.json({ listings: [], total: 0, nextCursor: null, chain: null, skipped: 0, pricing: PRICE_NOTE });
+    }
+    if (profile.id !== 'sepolia' && !isLocalDeployment(deployment)) {
+      return res.status(503).json({ error: 'Blockchain service unavailable' });
+    }
+    const deadline = Date.now() + settings.searchDeadlineMs;
+    try {
+      let iface;
+      let head;
+      if (profile.id === 'sepolia') {
+        ({ finalized: head, iface } = await readFinalizedDeployment(deployment));
+      } else {
+        iface = new ethers.Interface(deployment.abi);
+        head = await provider.getBlock('latest');
+      }
+      let pinned = head;
+      if (params.cursor) {
+        pinned = params.cursor.blockNumber > head?.number ? null : await provider.getBlock(params.cursor.blockNumber);
+        if (pinned?.hash?.toLowerCase() !== params.cursor.blockHash.toLowerCase()) {
+          return res.status(409).json({ error: 'Listings changed since this cursor was issued; start the search again' });
+        }
+      }
+      if (!pinned?.hash) throw new Unavailable('Chain head unavailable');
+
+      let skipped = 0;
+      const candidates = [];
+      for (const row of db.getAllListings(deployment.contractAddress)) {
+        const id = canonicalizeAuctionId(row.auction_id);
+        const meta = id && rowMetadata(row);
+        if (!meta) { skipped++; continue; }
+        if (matchesMetadata(meta, params)) candidates.push({ id, row, meta });
+      }
+      if (candidates.length > settings.searchScanLimit) {
+        return res.status(422).json({ error: 'Too many listings match; narrow the area, time or filters' });
+      }
+
+      // ponytail: candidates are read from the chain per request; serve them from the event index once it
+      // tracks auction state, not only events.
+      const call = async (method, args) => iface.decodeFunctionResult(method, await provider.send('eth_call', [
+        { to: deployment.contractAddress, data: iface.encodeFunctionData(method, args) },
+        { blockHash: pinned.hash, requireCanonical: true },
+      ]));
+      const listings = [];
+      for (let i = 0; i < candidates.length; i += 16) {
+        if (Date.now() > deadline) throw new Unavailable('Listing search timed out');
+        const read = await Promise.all(candidates.slice(i, i + 16).map(async ({ id, row, meta }) => {
+          const onchain = await call('auctions', [id]);
+          if (onchain.owner === ethers.ZeroAddress || row.metadata_hash.toLowerCase() !== onchain.metadataHash.toLowerCase()) return null;
+          const [spaceId] = await call('auctionSpace', [id]);
+          return listingFromRow(id, onchain, { ...meta, amenities: JSON.stringify(meta.amenities) }, spaceId);
+        }));
+        listings.push(...read.filter(Boolean));
+      }
+
+      const snapshot = await readChainSnapshot(deployment, pinned);
+      const chain = { ...snapshot, blockHash: pinned.hash, chainTime: params.cursor?.chainTime ?? snapshot.chainTime };
+      const matched = filterAndSort(listings, params, chain.chainTime);
+      const offset = params.cursor?.offset ?? 0;
+      const end = offset + params.limit;
+      const block = await provider.getBlock(pinned.number);
+      if (block?.hash !== pinned.hash) throw new Unavailable('Chain reorganized during the read; retry');
+      res.json({
+        listings: matched.slice(offset, end),
+        total: matched.length,
+        nextCursor: end < matched.length
+          ? encodeCursor({ blockNumber: pinned.number, blockHash: pinned.hash, chainTime: chain.chainTime, offset: end, key: params.key })
+          : null,
+        chain,
+        skipped,
+        pricing: PRICE_NOTE,
+      });
+    } catch (err) {
+      res.status(503).json({ error: err instanceof Unavailable ? err.message : 'Blockchain service unavailable' });
     }
   });
 
