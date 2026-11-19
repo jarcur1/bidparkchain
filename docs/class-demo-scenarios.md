@@ -49,6 +49,41 @@ The only planned change is that the fictional residence-hall expansion takes ove
 
 `tests/api/campus-scenarios.test.mjs` checks these counts against both seeds through the API.
 
+## Scenario comparison
+
+```sh
+npm run demo -- compare
+```
+
+prints the near/far counts straight from the fixtures, with no chain needed:
+
+| | Baseline | Expansion |
+| --- | --- | --- |
+| Near campus spots (fixture count) | 4 | 1 |
+| Farther-away spots (fixture count) | 3 | 3 |
+| Opening bid, near / far | 0.03 / 0.01 ETH | 0.03 / 0.01 ETH |
+
+The only planned change is the residence hall taking N2, N3 and N4.
+
+### Scripted commuter example
+
+With a campus scenario running, play out the same four example commuters (Accounts #1 to #4) and then refresh the app:
+
+```sh
+npm run demo -- commuters
+```
+
+The script follows one fixed rule, in commuter order. Take a free near spot at its opening bid. If none is free, outbid whoever leads N1 by 0.01 ETH. Anyone outbid then takes the next farther-away spot at its opening bid. Bidding closes, every auction with a bid is settled, and the winners are read back from the chain.
+
+| Commuter | Baseline result | Expansion result |
+| --- | --- | --- |
+| Commuter 1 | N1, near, 0.03 | F1, far, 0.01 |
+| Commuter 2 | N2, near, 0.03 | F2, far, 0.01 |
+| Commuter 3 | N3, near, 0.03 | F3, far, 0.01 |
+| Commuter 4 | N4, near, 0.03 | N1, near, 0.06 |
+
+The spot counts come from the fixtures. The bid amounts come from the script's 0.01 ETH raise, which is one illustrative choice. They are not a prediction and do not show that scarcity sets any particular price. Different bidders or rules would give different amounts. Restart `npm run dev` before running it again. `tests/api/scenario-comparison.test.mjs` checks this table against both seeds.
+
 ## Auction walkthrough
 
 Simulated roles, all built-in local test wallets (no wallet extension or public network):
