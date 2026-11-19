@@ -625,7 +625,7 @@ export const AppContent: React.FC<{
         throw new Error('Transaction submitted; finality not established. Check the explorer before bidding again.');
       }
       if (err instanceof BidPreflightError) throw err;
-      const msg = parseContractError(err);
+      const msg = parseContractError(err, config?.abi);
       addToast('error', 'Bid Submission Failed', msg);
       // The chain may have moved (competing bid, cutoff); refresh so the open dialog shows current state.
       void loadListings();
@@ -723,7 +723,7 @@ export const AppContent: React.FC<{
         reportUnknown(err);
         throw new Error('Transaction submitted; finality not established. Check the explorer before creating another auction.');
       }
-      const msg = parseContractError(err);
+      const msg = parseContractError(err, config?.abi);
       addToast('error', 'Listing Notice', msg);
       throw new Error(msg);
     } finally {
@@ -819,7 +819,7 @@ export const AppContent: React.FC<{
         reportUnknown(err);
         return;
       }
-      const msg = parseContractError(err);
+      const msg = parseContractError(err, config?.abi);
       addToast('error', 'Refund Withdrawal Failed', msg);
     } finally {
       setIsActionBusy(false);
@@ -854,7 +854,7 @@ export const AppContent: React.FC<{
         reportUnknown(err);
         return;
       }
-      const msg = parseContractError(err);
+      const msg = parseContractError(err, config?.abi);
       addToast('error', 'Settlement Failed', msg);
     } finally {
       setIsActionBusy(false);
@@ -890,7 +890,7 @@ export const AppContent: React.FC<{
         reportUnknown(err);
         return;
       }
-      const msg = parseContractError(err);
+      const msg = parseContractError(err, config?.abi);
       addToast('error', 'Cancellation Failed', msg);
     } finally {
       setIsActionBusy(false);
@@ -925,7 +925,7 @@ export const AppContent: React.FC<{
         reportUnknown(err);
         return;
       }
-      const msg = parseContractError(err);
+      const msg = parseContractError(err, config?.abi);
       addToast('error', 'Payout Claim Failed', msg);
     } finally {
       setIsActionBusy(false);
