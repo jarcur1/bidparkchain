@@ -114,7 +114,7 @@ async function main() {
 
   // Compile Solidity contract with Shanghai target
   console.log('[BidPark Deploy] Compiling contracts/ParkingAuctionEscrow.sol (solc, EVM: shanghai)...');
-  const { abi, bytecode } = compileEscrowContract();
+  const { abi, bytecode, runtimeBytecode } = compileEscrowContract();
 
   // Check for existing valid deployment (idempotence)
   let existingDeployment = null;
@@ -140,7 +140,9 @@ async function main() {
     existingDeployment &&
     existingDeployment.contractAddress &&
     existingDeployment.deploymentTxHash &&
-    (await hasDeployedCode(existingDeployment.contractAddress, provider))
+    (await hasDeployedCode(existingDeployment.contractAddress, provider)) &&
+    // A contract built from older source keeps its old ABI and storage; never reuse it with the new one.
+    (await provider.getCode(existingDeployment.contractAddress)).toLowerCase() === runtimeBytecode.toLowerCase()
   ) {
     // Verify that the deployment transaction exists in the current node instance
     const deployedTx = await provider.getTransaction(existingDeployment.deploymentTxHash);
