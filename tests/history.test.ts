@@ -34,6 +34,8 @@ describe('history rows', () => {
   });
   it('searches by id, title, address and state, and filters by state', () => {
     expect(filterHistory(rows, '#1').map((r) => r.auctionId)).toEqual(['1']);
+    const many = [...rows, ...['10', '11', '21'].map((id) => ({ ...rows[0], auctionId: id }))];
+    expect(filterHistory(many, '#1').map((r) => r.auctionId)).toEqual(['1']);
     expect(filterHistory(rows, 'spot 2').map((r) => r.auctionId)).toEqual(['2']);
     expect(filterHistory(rows, 'outbid').map((r) => r.auctionId)).toEqual(['1']);
     expect(filterHistory(rows, '', 'upcoming').map((r) => r.auctionId)).toEqual(['2']);
