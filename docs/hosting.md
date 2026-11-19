@@ -78,10 +78,22 @@ The My Activity tab holds a host workspace for a connected wallet:
 - **Drafts and templates.** Saved on the server per signed-in wallet (`/api/drafts`, migration 8), private to that wallet, at most 50 each. They hold form text, a photo reference and wall-clock dates, never a signature or a secret. They are included in backups.
   The browser clears the open editor when the connected wallet, deployment, or app sign-in changes. Saved copies remain available to their owner.
 - **Photos.** A photo is only a reference: an https URL or a local path starting with `/`. There is no upload and no storage service, so the host keeps the image online. An empty or unreachable photo falls back to the default illustrative photo.
-- **Scheduling.** Cutoff, start and end are entered as wall-clock times in the space's time zone (the browser's zone while none is set), converted to UTC seconds, and checked against held and blocked windows before signing. The contract rechecks at signing and remains the authority.
+- **Scheduling.** Cutoff, start and end are entered as wall-clock times in the space's time zone (the browser's zone while none is set), converted to UTC seconds, and checked against held and blocked windows before signing. The contract rechecks at signing and remains the authority. The quick "List a Spot" dialog uses the same explicit dates, zone and conflict check (it starts with a default window an hour out).
+- **Autosave.** While signed in, the quick listing form saves one private draft named "Autosaved listing" about 1.5 seconds after the last change, shows `Unsaved changes`, `Saving`, `Draft saved.` or a failure, and restores it after a reload or sign-in. Without a session nothing is saved and the form says so. Making the listing deletes the draft.
 - **Reports and moderation.** A signed-in wallet can report a listing from its detail dialog. Moderators page through the queue 25 at a time (`/api/moderation/verifications?limit&offset`).
 
 Published auction metadata is immutable; relisting a space starts a new draft and a new auction.
+
+## Arrival instruction encryption
+
+Private arrival instructions are encrypted at rest with AES-256-GCM (`node:crypto`). The key is `BIDPARK_ARRIVAL_KEY`: 32 random bytes as 64 hex characters (or base64). An invalid value stops the API at startup.
+
+- **Hosted mode** (`BIDPARK_ALLOWED_ORIGINS` set) refuses to save instructions while the key is unset (HTTP 503).
+- **Local and demo mode** keep working without a key and store the text unencrypted. `GET /api/settings` reports `arrivalEncryption: "off"` with a note, or `"aes-256-gcm"`. It never returns the key.
+- **Existing rows.** Rows saved before the key was set are plaintext (migration 11 adds an `encrypted` flag, default 0). Start the API once with the key set and it encrypts them in place; a repeat start finds none.
+- **Binding.** Each value is authenticated with its chain, contract, scope and id, so a value copied to another row fails to decrypt.
+- **Keep the key apart from backups.** The database and its backups then hold only ciphertext. SQLite may leave old plaintext in free pages of a file that held plaintext rows, so run `VACUUM` once after enabling the key, and treat backups taken before that as plaintext.
+- **Losing the key** makes stored instructions unreadable; hosts must enter them again. There is no key rotation yet: to change the key, decrypt with the old one and re-save with the new one.
 
 ## First deployment
 

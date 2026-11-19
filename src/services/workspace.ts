@@ -14,6 +14,7 @@ export interface DraftFields {
   cutoff: string;
   start: string;
   end: string;
+  amenities?: string[];
 }
 export type DraftKind = 'draft' | 'template';
 export interface SavedDraft extends Partial<DraftFields> {

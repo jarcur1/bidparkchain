@@ -1134,6 +1134,9 @@ export const AppContent: React.FC<{
     for (const space of spaces.values()) {
       space.title = listings.find((l) => l.spaceId === space.id)?.title ?? space.title;
       space.held = heldWindows(listings, space.id, now);
+      const chainSpace = hostSpaces.find((h) => h.id === space.id);
+      space.timeZone = chainSpace?.timeZone ?? '';
+      space.blocked = chainSpace?.blocked ?? [];
     }
     return [...spaces.values()].sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
   }, [listings, hostSpaces, walletState.address]);
