@@ -9,6 +9,7 @@ import { compileEscrowContract } from '../scripts/helpers/compiler.mjs';
 import { getNetworkProfile } from '../shared/network-profiles.mjs';
 import { mountAuth, readSession } from './auth.mjs';
 import { syncIndex } from './indexer.mjs';
+import { deriveInbox } from './inbox.mjs';
 
 let sepoliaArtifact;
 
@@ -711,6 +712,65 @@ export function createApp(options = {}) {
         blockNumber: e.block_number, blockHash: e.block_hash, txHash: e.tx_hash, logIndex: e.log_index,
       })),
     });
+  });
+
+  /**
+   * The signed-in wallet's inbox on the deployment this API serves, built from canonical indexed events
+   * only, with its read state and the index freshness so the client can say when it may be behind.
+   */
+  function inboxFor(session, contractAddress) {
+    const read = db.getInboxReads(contractAddress, session.address);
+    const items = deriveInbox(db.getInboxEvents(contractAddress, session.address), session.address).map((item) => ({
+      ...item,
+      amount: item.amount === null ? null : ethers.formatEther(item.amount),
+      title: item.auctionId ? db.getListing(item.auctionId, contractAddress)?.title ?? null : null,
+      read: read.has(item.id),
+    }));
+    const checkpoint = db.getCheckpoint(contractAddress);
+    return {
+      items,
+      unread: items.filter((item) => !item.read).length,
+      index: {
+        indexedBlock: checkpoint?.block_number ?? null,
+        headBlock: lastSync?.headBlock ?? null,
+        lagBlocks: lastSync?.lagBlocks ?? null,
+        lastSyncAt: lastSync?.at ?? null,
+        lastSyncError: lastSync?.error ?? null,
+      },
+    };
+  }
+
+  function inboxDeployment(req, res) {
+    const session = readSession(db, req);
+    if (!session) {
+      res.status(401).json({ error: 'Sign in with your wallet to see your inbox' });
+      return null;
+    }
+    const deployment = loadDeployment();
+    if (!deployment?.contractAddress) {
+      res.status(503).json({ error: 'Smart contract not deployed' });
+      return null;
+    }
+    return { session, contractAddress: deployment.contractAddress };
+  }
+
+  /** GET /api/inbox: outbid, win, refund and payout entries for the signed-in wallet. */
+  app.get('/api/inbox', (req, res) => {
+    const scope = inboxDeployment(req, res);
+    if (scope) res.json(inboxFor(scope.session, scope.contractAddress));
+  });
+
+  /** POST /api/inbox/read { ids }: marks the signed-in wallet's entries read and returns the inbox. */
+  app.post('/api/inbox/read', (req, res) => {
+    const scope = inboxDeployment(req, res);
+    if (!scope) return;
+    const ids = req.body?.ids;
+    if (!Array.isArray(ids) || ids.length > 500 || !ids.every((id) => typeof id === 'string' && /^0x[0-9a-f]{64}:\d{1,6}$/.test(id))) {
+      res.status(400).json({ error: 'ids must be a list of at most 500 inbox entry ids' });
+      return;
+    }
+    db.markInboxRead(scope.contractAddress, scope.session.address, ids);
+    res.json(inboxFor(scope.session, scope.contractAddress));
   });
 
   /** GET /api/health/live: the process is up and answering. Checks no dependencies. */
