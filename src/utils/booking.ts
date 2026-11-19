@@ -102,3 +102,7 @@ export const BOOKING_ACTION_LABELS: Record<BookingAction, string> = {
   denyDispute: 'Resolver: deny report',
   expireDispute: 'Expire report and refund winner',
 };
+
+// Arrival windows; they mirror server/arrival.mjs. Instructions show from 1 hour before parking, check-in from 15 minutes.
+export const ARRIVAL_OPENS_BEFORE = 60 * 60;
+export const CHECK_IN_OPENS_BEFORE = 15 * 60;

@@ -29,6 +29,7 @@ import { downloadReservationIcs } from '../utils/calendar';
 import { BidHistory } from './BidHistory';
 import { Dialog } from './Dialog';
 import { ReportSpace } from './ReportSpace';
+import { ArrivalPanel } from './ArrivalPanel';
 import { DisputeRecord, MIN_REVIEW_TEXT, REVIEW_ACTIONS } from './Disputes';
 
 interface DetailModalProps {
@@ -409,6 +410,8 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                     {signedIn && booking && listing.booking?.disputeReporter && <DisputeRecord auctionId={listing.id} refreshKey={listing.booking.disputeReporter} />}
                   </div>
                 )}
+
+                <ArrivalPanel listing={listing} currentAddress={currentAddress} signedIn={signedIn} />
 
                 {isOwner && status.isBiddable && (
                   <p className="owner-notice">

@@ -385,7 +385,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                         <span>Simulated record only</span>
                       </div>
                       <p className="pass-inst-text">
-                        The test contract records <code>{shortenAddress(currentAddress, 6)}</code> as the winner. This is not a parking permit and does not grant access to any real space.
+                        The test contract records <code>{shortenAddress(currentAddress, 6)}</code> as the winner. This is not a parking permit and does not grant access to any real space. Private arrival instructions and check-in, if the host added any, are under View Full Details.
                       </p>
                     </div>
 

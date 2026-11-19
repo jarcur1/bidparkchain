@@ -39,3 +39,15 @@ export const saveDraft = async (id: number | null, kind: DraftKind, name: string
 export const deleteDraft = (id: number) => call<{ deleted: true }>(`/api/drafts/${id}`, 'DELETE');
 export const reportSpace = (spaceId: string, reason: string, note: string) =>
   call<{ reported: true }>(`/api/spaces/${spaceId}/report`, 'POST', { reason, note });
+
+export interface ArrivalCheckIn { winner: string; checkedInAt: number; blockNumber: number }
+interface StoredInstructions { instructions: string; updatedAt: number }
+export type ArrivalView =
+  | { role: 'host'; spaceId: string; checkIn: ArrivalCheckIn | null; auction: StoredInstructions | null; space: StoredInstructions | null }
+  | { role: 'winner'; checkIn: ArrivalCheckIn | null; instructions: string | null };
+
+export const getArrival = (auctionId: string) => call<ArrivalView>(`/api/auctions/${auctionId}/arrival`, 'GET');
+export const saveArrival = (scope: 'auctions' | 'spaces', id: string, instructions: string) =>
+  call<{ saved: boolean }>(`/api/${scope}/${id}/arrival`, 'POST', { instructions });
+export const checkInArrival = async (auctionId: string) =>
+  (await call<{ checkIn: ArrivalCheckIn }>(`/api/auctions/${auctionId}/check-in`, 'POST', {})).checkIn;
