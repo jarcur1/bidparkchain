@@ -121,3 +121,38 @@ test('a host manages a space, saves a draft, schedules in the space time zone, a
   await mine.getByRole('button', { name: 'Transfer space' }).click();
   await expect.poll(() => escrow.spaceOwner(spaceId)).toBe(chain.wallet(NEW_OWNER).address);
 });
+
+test('sign-out and wallet changes clear the private editor without deleting saved drafts', async ({ page, stack }) => {
+  await page.goto(stack.webUrl);
+  await signIn(page, HOST);
+  await page.getByRole('button', { name: 'My Activity' }).click();
+  const workspace = page.getByTestId('host-workspace');
+  const draftName = 'Private overnight plan';
+  const draftTitle = 'Private driveway draft';
+  const saved = workspace.getByTestId('draft-list').getByRole('listitem').filter({ hasText: draftName });
+  const name = workspace.getByLabel('Draft name');
+  const title = workspace.getByLabel('Title', { exact: true });
+  await name.fill(draftName);
+  await title.fill(draftTitle);
+  await workspace.getByRole('button', { name: 'Save draft', exact: true }).click();
+  await saved.getByRole('button', { name: 'Open', exact: true }).click();
+  await title.fill('Unsaved private edit');
+
+  const wallet = page.getByRole('dialog', { name: 'Connect & Switch Wallet' });
+  await page.getByRole('banner').getByTitle('Switch local test account or connect browser wallet').click();
+  await wallet.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await wallet.getByRole('button', { name: 'Close dialog' }).click();
+  await expect(name).toHaveValue('');
+  await expect(title).toHaveValue('');
+  await expect(saved).toHaveCount(0);
+
+  await signIn(page, LISTER);
+  await expect(name).toHaveValue('');
+  await expect(title).toHaveValue('');
+  await expect(saved).toHaveCount(0);
+
+  await signIn(page, HOST);
+  await expect(title).toHaveValue('');
+  await saved.getByRole('button', { name: 'Open', exact: true }).click();
+  await expect(title).toHaveValue(draftTitle);
+});
