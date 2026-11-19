@@ -39,7 +39,12 @@ export function settlementSettings(options = {}, env = process.env, profile) {
   const intervalMs = options.intervalMs ?? Number(env.BIDPARK_SETTLEMENT_INTERVAL_MS ?? 30_000);
   if (!Number.isFinite(intervalMs) || intervalMs < 1000) throw new Error('BIDPARK_SETTLEMENT_INTERVAL_MS must be at least 1000');
   return { wallet, intervalMs, retryBaseMs: options.retryBaseMs ?? 30_000, retryMaxMs: options.retryMaxMs ?? 15 * 60_000,
-    dropAfterMs: options.dropAfterMs ?? 5 * 60_000, now: options.now ?? Date.now };
+    dropAfterMs: options.dropAfterMs ?? 5 * 60_000, now: options.now ?? Date.now,
+    // Stuck-transaction replacement: after replaceAfterMs pending, resend the same nonce with fees raised by
+    // bumpPercent (nodes demand at least 10%), never above maxFeePerGasWei, for at most maxAttempts sends.
+    replaceAfterMs: options.replaceAfterMs ?? 2 * 60_000, bumpPercent: options.bumpPercent ?? 20,
+    maxFeePerGasWei: options.maxFeePerGasWei ?? BigInt(Math.round(Number(env.BIDPARK_KEEPER_MAX_FEE_GWEI ?? 100) * 1e9)),
+    maxAttempts: options.maxAttempts ?? 5 };
 }
 
 /** A fixed, secret-free reason: the contract error name, or the ethers error code. Never a message. */
@@ -64,10 +69,11 @@ const log = (fields) => console.log(JSON.stringify({ component: 'settlement', ..
  * retryMaxMs). A job is confirmed once the auction is settled at the profile's confirmation depth.
  */
 export function createSettlementJob({ db, provider, profile, loadDeployment, abiFor, settings }) {
-  const { wallet, retryBaseMs, retryMaxMs, dropAfterMs, now } = settings;
+  const { wallet, retryBaseMs, retryMaxMs, dropAfterMs, now, replaceAfterMs = 2 * 60_000, bumpPercent = 20, maxFeePerGasWei = 100n * 10n ** 9n, maxAttempts = 5 } = settings;
   const signer = wallet.connect(provider);
   let running = null;
   let lastRun = null;
+  const totals = { sent: 0, replaced: 0, failed: 0, runFailures: 0 };
 
   // Contract outcome (enum index) that completes each protected action.
   const DONE_OUTCOME = { expire: 3, expireDispute: 5 };
@@ -122,9 +128,12 @@ export function createSettlementJob({ db, provider, profile, loadDeployment, abi
     if (job?.status === 'sent' && job.tx_hash) {
       const receipt = await provider.getTransactionReceipt(job.tx_hash);
       // Still pending, or too recent to call dropped: never send a second transaction.
-      if (!receipt && (await provider.getTransaction(job.tx_hash) || now() - job.updated_at < dropAfterMs)) return true;
+      const pendingTx = receipt ? null : await provider.getTransaction(job.tx_hash);
+      if (pendingTx && now() - job.updated_at >= replaceAfterMs && attempts < maxAttempts) await replace(contract, id, action, job, pendingTx, save);
+      if (!receipt && (pendingTx || now() - job.updated_at < dropAfterMs)) return true;
       const error = !receipt ? 'DROPPED' : receipt.status === 0 ? 'REVERTED' : 'REORGED';
       save({ status: 'failed', error, nextAttemptAt: now() + Math.min(retryBaseMs * 2 ** (attempts - 1), retryMaxMs) });
+      totals.failed += 1;
       log({ event: 'failed', auctionId: id, attempts, reason: error, txHash: job.tx_hash });
       return true;
     }
@@ -138,11 +147,12 @@ export function createSettlementJob({ db, provider, profile, loadDeployment, abi
       txHash = ethers.Transaction.from(signed).hash;
       save({ status: 'sent', txHash, attempts: attempts + 1, error: null, nextAttemptAt: null });
       await provider.broadcastTransaction(signed);
+      totals.sent += 1;
       log({ event: 'sent', auctionId: id, attempts: attempts + 1, txHash });
     } catch (error) {
       const reason = reasonOf(contract, error);
       // Someone settled it first (or our clock is ahead of the chain's): not a failure.
-      if (['AlreadySettled', 'BookingFinalized', 'NoOpenDispute'].includes(reason)) return true;
+      if (['AlreadySettled', 'BookingFinalized', 'NoOpenDispute', 'NONCE_EXPIRED'].includes(reason)) return true;
       if (['AuctionNotEnded', 'TooEarly', 'TooLate'].includes(reason)) return false;
       // The node may have accepted it before the connection failed: keep it as sent and check it next pass.
       if (txHash && ['NETWORK_ERROR', 'TIMEOUT', 'SERVER_ERROR'].includes(reason)) {
@@ -151,9 +161,45 @@ export function createSettlementJob({ db, provider, profile, loadDeployment, abi
       }
       attempts += 1;
       save({ status: 'failed', attempts, error: reason, nextAttemptAt: now() + Math.min(retryBaseMs * 2 ** (attempts - 1), retryMaxMs) });
+      totals.failed += 1;
       log({ event: 'failed', auctionId: id, attempts, reason });
     }
     return true;
+  }
+
+  /**
+   * Replaces a transaction stuck in the mempool: same nonce and gas limit, both fees raised by
+   * bumpPercent and clamped to maxFeePerGasWei. The new hash is stored before broadcasting, like a
+   * first send. If the cap leaves no room for a valid bump (nodes reject under 10%), it logs and waits.
+   */
+  async function replace(contract, id, action, job, stuck, save) {
+    const bump = (fee) => (fee * BigInt(100 + bumpPercent) + 99n) / 100n;
+    const oldMax = stuck.maxFeePerGas ?? stuck.gasPrice;
+    const maxFee = bump(oldMax) > maxFeePerGasWei ? maxFeePerGasWei : bump(oldMax);
+    if (maxFee * 100n < oldMax * 110n) {
+      log({ event: 'replace_capped', auctionId: id, attempts: job.attempts, txHash: job.tx_hash });
+      return;
+    }
+    const tip = stuck.maxPriorityFeePerGas == null ? maxFee : bump(stuck.maxPriorityFeePerGas);
+    let txHash = null;
+    try {
+      const request = await contract[action].populateTransaction(id);
+      const signed = await signer.signTransaction({
+        to: request.to, data: request.data, type: 2, chainId: stuck.chainId, nonce: stuck.nonce, gasLimit: stuck.gasLimit,
+        maxFeePerGas: maxFee, maxPriorityFeePerGas: tip > maxFee ? maxFee : tip,
+      });
+      txHash = ethers.Transaction.from(signed).hash;
+      save({ status: 'sent', txHash, attempts: job.attempts + 1, error: null, nextAttemptAt: null });
+      job.attempts += 1;
+      job.tx_hash = txHash;
+      job.updated_at = now();
+      await provider.broadcastTransaction(signed);
+      totals.replaced += 1;
+      log({ event: 'replaced', auctionId: id, attempts: job.attempts, txHash, replaced: stuck.hash, maxFeePerGas: maxFee.toString() });
+    } catch (error) {
+      // Typically the original mined first (nonce too low) or the node refused the bump: the next pass sees which.
+      log({ event: 'replace_failed', auctionId: id, attempts: job.attempts, reason: reasonOf(contract, error), txHash });
+    }
   }
 
   function runOnce() {
@@ -177,11 +223,36 @@ export function createSettlementJob({ db, provider, profile, loadDeployment, abi
       lastRun = { at: now(), error: null, pending };
       return lastRun;
     })().catch((error) => {
+      totals.runFailures += 1;
       lastRun = { at: now(), error: reasonOf(null, error), pending: lastRun?.pending ?? null };
       log({ event: 'run_failed', reason: lastRun.error });
       return lastRun;
     }).finally(() => { running = null; });
     return running;
+  }
+
+  /** Prometheus text exposition of backlog, attempts, failures and lag. Counters restart with the process. */
+  function metrics() {
+    const deployment = loadDeployment();
+    const m = deployment?.contractAddress ? db.getSettlementMetrics(deployment.contractAddress) : { counts: {}, attempts: 0, oldestUnconfirmedAt: null };
+    const out = [];
+    const add = (name, type, help, samples) => {
+      out.push(`# HELP ${name} ${help}`, `# TYPE ${name} ${type}`);
+      for (const [labels, value] of samples) out.push(`${name}${labels} ${value}`);
+    };
+    add('bidpark_settlement_jobs', 'gauge', 'Settlement jobs by state.',
+      ['sent', 'confirmed', 'failed', 'cancelled'].map((s) => [`{state="${s}"}`, m.counts[s] ?? 0]));
+    add('bidpark_settlement_job_attempts', 'gauge', 'Transactions sent across all jobs, replacements included.', [['', m.attempts]]);
+    add('bidpark_settlement_pending', 'gauge', 'Auctions the last pass left unfinished.', [['', lastRun?.pending ?? 0]]);
+    add('bidpark_settlement_sent_total', 'counter', 'Settlement transactions sent by this process.', [['', totals.sent]]);
+    add('bidpark_settlement_replaced_total', 'counter', 'Stuck transactions replaced with higher fees by this process.', [['', totals.replaced]]);
+    add('bidpark_settlement_failures_total', 'counter', 'Failed settlement attempts recorded by this process.', [['', totals.failed]]);
+    add('bidpark_settlement_run_failures_total', 'counter', 'Passes that failed outright, such as an RPC outage.', [['', totals.runFailures]]);
+    add('bidpark_settlement_last_run_timestamp_seconds', 'gauge', 'Unix time of the last pass, 0 if none.', [['', lastRun ? Math.floor(lastRun.at / 1000) : 0]]);
+    add('bidpark_settlement_last_run_ok', 'gauge', '1 when the last pass succeeded.', [['', lastRun && !lastRun.error ? 1 : 0]]);
+    add('bidpark_settlement_lag_seconds', 'gauge', 'Age of the oldest job not yet confirmed, 0 if none.',
+      [['', m.oldestUnconfirmedAt === null ? 0 : Math.max(0, Math.floor((now() - m.oldestUnconfirmedAt) / 1000))]]);
+    return `${out.join('\n')}\n`;
   }
 
   function status() {
@@ -203,5 +274,5 @@ export function createSettlementJob({ db, provider, profile, loadDeployment, abi
     };
   }
 
-  return { runOnce, done: () => running ?? Promise.resolve(), status, lastRun: () => lastRun };
+  return { runOnce, metrics, done: () => running ?? Promise.resolve(), status, lastRun: () => lastRun };
 }

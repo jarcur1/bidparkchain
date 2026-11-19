@@ -56,10 +56,12 @@ An optional keeper in the API process settles auctions whose bidding has closed,
 | `BIDPARK_SETTLEMENT=1` | Turn the keeper on. Anything else, or unset, leaves it off. |
 | `BIDPARK_KEEPER_KEY` | Private key of a dedicated, lightly funded keeper account. Required on Sepolia. The API refuses to start with a public demo account key, or with the deployer key if `BIDPARK_SEPOLIA_DEPLOYER_KEY` is also set. On the local profile it falls back to the demo deployer (account 0). |
 | `BIDPARK_SETTLEMENT_INTERVAL_MS` | Time between passes, 30 s by default (minimum 1 s). |
+| `BIDPARK_KEEPER_MAX_FEE_GWEI` | Ceiling for the keeper's `maxFeePerGas` when it replaces a stuck transaction, 100 by default. |
 
 How it works:
 - **What it settles.** Candidates come from the event index: auctions with at least one bid and no indexed settlement or cancellation. It reads each one's live state first and calls `settle` only when bidding has closed and it is still unsettled. Auctions without bids are left alone, so the host can still cancel them. Protected bookings follow the contract: it settles before parking starts, calls `expire` (refunding the winner) for one still unsettled after parking starts, and calls `expireDispute` (refunding the winner) for a report still open at the end of its 72-hour resolution window. Candidates also include auctions with a report that has no decision or refund yet. A report inside its window is a dispute hold: the keeper sends nothing and a resolver decides. It never claims host payouts or resolves reports. The job row records which action it performed. The keeper relies on the indexer job, so keep `BIDPARK_INDEX_INTERVAL_MS` above 0.
 - **One transaction per auction.** Each attempt is stored in `settlement_jobs` (auction, status, transaction hash, attempts, last error, next retry). The keeper signs the transaction and records its hash before broadcasting it, so a crash or a lost RPC response still leaves a transaction to check. After a restart it checks the stored transaction instead of sending again. It sends again only once that transaction has reverted, been reorged out, or been missing from the node for 5 minutes.
+- **Stuck transactions.** A transaction still pending after 2 minutes is replaced: same nonce and gas limit, `maxFeePerGas` and priority fee raised by 20% (nodes reject less than 10%), clamped to `BIDPARK_KEEPER_MAX_FEE_GWEI`. The new hash is stored before broadcasting. At most 5 transactions are sent per job this way; if the cap leaves no room for a valid bump the keeper logs `replace_capped` and keeps waiting. If the original mines first, the replacement fails with a nonce error and the job confirms normally. Each replacement is one `replaced` log line.
 - **Races and reorgs.** If someone settles first, including in the same block, the result counts as success (`AlreadySettled` is not a failure). If a reorg undoes a settlement, the auction becomes a candidate again and is settled again.
 - **Confirmation.** A job is `confirmed` once the auction reads as settled at the profile's confirmation depth: the latest block locally, the finalized block on Sepolia. Until then it counts as pending.
 - **Failures.** A failed attempt (unfunded keeper, RPC outage, revert) is retried with exponential backoff: 30 s, doubling, capped at 15 minutes. Reasons are fixed codes such as `INSUFFICIENT_FUNDS`, `NETWORK_ERROR`, `TIMEOUT` or a contract error name, never an upstream message.
@@ -69,6 +71,21 @@ Visibility:
 - `GET /api/settlement` returns `{ enabled: false }` when off. When on, it returns the keeper address (to fund it), interval, confirmation policy, last run time and error, pending count, job counts by status, and the 10 most recent failing jobs (auction, attempts, reason, next retry). It never returns keys or RPC URLs.
 - When the keeper is on, `/api/health/ready` adds a `settlement` check: `not run yet`, `last settlement run failed`, or `keeper is out of funds`.
 - Every send, confirmation and failure is logged as one JSON line with `component: "settlement"`, the auction id, the attempt count, the reason and the transaction hash. Alert on repeated `failed` lines or a `pending` count that keeps growing. For `INSUFFICIENT_FUNDS`, top up the keeper address with Sepolia ETH; retries resume on their own. For `NETWORK_ERROR` or `TIMEOUT`, check the RPC provider. Either way, users can still settle manually.
+
+### Settlement metrics
+
+`GET /api/settlement/metrics` returns Prometheus text (`text/plain; version=0.0.4`). It carries only counts and timings, no keys, addresses or hashes, and returns `bidpark_settlement_enabled 0` when the keeper is off. Counters (`*_total`) restart with the process; the gauges come from the database.
+
+| Metric | Meaning |
+| --- | --- |
+| `bidpark_settlement_jobs{state}` | Jobs by state: `sent`, `confirmed`, `failed`, `cancelled`. |
+| `bidpark_settlement_job_attempts` | Transactions sent across all jobs, replacements included. |
+| `bidpark_settlement_pending` | Auctions the last pass left unfinished. |
+| `bidpark_settlement_sent_total`, `_replaced_total`, `_failures_total`, `_run_failures_total` | Sends, fee-bump replacements, failed attempts and failed passes since start. |
+| `bidpark_settlement_last_run_timestamp_seconds`, `_last_run_ok` | When the last pass ran (0 before the first) and whether it succeeded. |
+| `bidpark_settlement_lag_seconds` | Age of the oldest job that is still `sent` or `failed`, 0 if none. |
+
+Scrape it from the private network only, or keep it behind the reverse proxy; it is as public as `/api/settlement`. A sample alert rule is in [operations-backup.md](operations-backup.md#settlement-keeper-alerts).
 
 ## Host workspace
 

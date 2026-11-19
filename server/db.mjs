@@ -781,6 +781,18 @@ export class EscrowDatabase {
     return { counts, recentFailures };
   }
 
+  /** Gauges for the metrics endpoint: jobs by status, total attempts, and when the oldest unconfirmed job last moved. */
+  getSettlementMetrics(contractAddress) {
+    const contract = contractAddress.toLowerCase();
+    const { counts } = this.getSettlementSummary(contract, { failures: 0 });
+    const row = this.db.prepare(`
+      SELECT COALESCE(SUM(attempts), 0) AS attempts,
+        MIN(CASE WHEN status IN ('sent', 'failed') THEN updated_at END) AS oldest
+      FROM settlement_jobs WHERE chain_id = ? AND contract_address = ?
+    `).get(this.chainId, contract);
+    return { counts, attempts: row.attempts, oldestUnconfirmedAt: row.oldest };
+  }
+
   /** A space's current verification state, including its private evidence, or null. */
   getVerification(contractAddress, spaceId) {
     return this.db.prepare('SELECT * FROM space_verifications WHERE chain_id = ? AND contract_address = ? AND space_id = ?')
