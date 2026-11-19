@@ -1,6 +1,9 @@
 import { test, expect } from './fixtures.mjs';
 
-// No transactions: these only open dialogs, so sharing the Austin stack with other specs is harmless.
+// The campus-baseline stack is never advanced past its deadlines (the Austin stack is, by the
+// marketplace spec), so a spot is always open. These tests only open dialogs and send no transactions.
+test.use({ scenario: 'campus-baseline' });
+
 test('returns users to the bid or listing they started after connecting a wallet', async ({ page, stack }) => {
   await page.goto(stack.webUrl);
   const wallets = page.getByRole('dialog', { name: 'Connect & Switch Wallet' });
