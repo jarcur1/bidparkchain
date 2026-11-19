@@ -3,7 +3,7 @@ import type { TxUpdate } from '../services/blockchain';
 
 export type VerificationStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
 export interface AuditEntry {
-  action: 'submit' | 'approve' | 'reject' | 'revoke' | 'report';
+  action: 'submit' | 'approve' | 'reject' | 'revoke' | 'report' | 'appeal';
   status: string;
   actor: string;
   reason: string;
@@ -88,6 +88,7 @@ const History: React.FC<{ audit: AuditEntry[]; showActor?: boolean }> = ({ audit
  */
 export const HostVerificationPanel: React.FC<{ spaces: { id: string; title: string }[]; state: VerificationState }> = ({ spaces, state }) => {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [appeals, setAppeals] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   if (spaces.length === 0) return null;
@@ -100,6 +101,21 @@ export const HostVerificationPanel: React.FC<{ spaces: { id: string; title: stri
       setDrafts((d) => ({ ...d, [spaceId]: '' }));
       await state.reload();
       setMessage(`Verification requested for space #${spaceId}.`);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function appeal(spaceId: string) {
+    setBusy(spaceId);
+    setMessage(null);
+    try {
+      await request(`/api/spaces/${spaceId}/appeal`, { note: appeals[spaceId] ?? '' });
+      setAppeals((a) => ({ ...a, [spaceId]: '' }));
+      await state.reload();
+      setMessage(`Appeal sent to moderators for space #${spaceId}.`);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
     } finally {
@@ -145,6 +161,26 @@ export const HostVerificationPanel: React.FC<{ spaces: { id: string; title: stri
                   Request verification
                 </button>
               </div>
+              {(status === 'rejected' || status === 'suspended') && v?.audit.filter((e) => e.action !== 'report').at(-1)?.action !== 'appeal' && (
+                <div className="verification-form">
+                  <label htmlFor={`verification-appeal-${space.id}`}>Appeal note for the moderators</label>
+                  <textarea
+                    id={`verification-appeal-${space.id}`}
+                    rows={2}
+                    maxLength={500}
+                    value={appeals[space.id] ?? ''}
+                    onChange={(e) => setAppeals((a) => ({ ...a, [space.id]: e.target.value }))}
+                  />
+                  <button
+                    type="button"
+                    className="btn-table-action"
+                    disabled={busy !== null || (appeals[space.id] ?? '').trim().length < 10}
+                    onClick={() => void appeal(space.id)}
+                  >
+                    Send appeal
+                  </button>
+                </div>
+              )}
               {v && v.audit.length > 0 && <History audit={v.audit} />}
             </li>
           );

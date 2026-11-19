@@ -29,6 +29,24 @@ async function findCanonicalAncestor(db, provider, contract, belowOrAt) {
 }
 
 /**
+ * Stores the creation parameters search filters on (fixed once an auction exists) on each indexed
+ * AuctionCreated row that lacks them, read at block `at` (the checkpoint, so the event is canonical there).
+ * Rows left without them (a crash midway) are filled on the next pass.
+ */
+async function storeCreationDetails({ db, provider, address, iface, at }) {
+  for (const row of db.getCreatedWithoutDetail(address)) {
+    const data = await provider.send('eth_call', [
+      { to: address, data: iface.encodeFunctionData('auctions', [row.auction_id]) }, { blockHash: at },
+    ]);
+    const a = iface.decodeFunctionResult('auctions', data);
+    db.setEventDetail(address, row.block_hash, row.log_index, {
+      minBid: a.minBid.toString(), bidEnd: Number(a.bidEnd), parkingStart: Number(a.parkingStart),
+      parkingEnd: Number(a.parkingEnd), metadataHash: a.metadataHash,
+    });
+  }
+}
+
+/**
  * Brings the event index for one deployment up to the confirmed head and returns its freshness.
  * Restartable and idempotent: it resumes from the stored checkpoint, and re-ingesting a log is a
  * no-op. If the checkpoint's block is no longer canonical (a reorg), every event above the last
@@ -80,6 +98,7 @@ export async function syncIndex({ db, provider, address, abi, fromBlock, confirm
     next = to + 1;
   }
   const final = db.getCheckpoint(contract);
+  if (final) await storeCreationDetails({ db, provider, address, iface, at: final.block_hash });
   return {
     added,
     orphaned,

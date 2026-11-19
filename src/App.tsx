@@ -33,7 +33,7 @@ import { ApiError, createListingRecord, fetchConfig, fetchListings, searchListin
 import type { TxObserver } from './services/blockchain';
 import { patchTransaction, readTransactions, recordTransaction, staleTransactionsFor, transactionsFor, type TxKind, type TxRecord } from './utils/txStore';
 import { TransactionCenter } from './components/TransactionCenter';
-import { Inbox, useInbox } from './components/Inbox';
+import { Inbox, InboxAnnouncer, useInbox } from './components/Inbox';
 import { HostWorkspace, heldWindows, ZoneList } from './components/HostWorkspace';
 import { ResolverQueue, REVIEW_ACTIONS, submitReview } from './components/Disputes';
 import { HostVerificationPanel, ModerationPanel, useVerifications } from './components/Verification';
@@ -296,6 +296,12 @@ export const AppContent: React.FC<{
       if (r.kind === 'create' && r.auctionId === auctionId && !r.registered) patchTransaction(r.id, { registered: true });
     }
     setTxVersion((v) => v + 1);
+  };
+
+  const warnDuplicates = (listing: { duplicateSpaces: { spaceId: string }[] }) => {
+    if (listing.duplicateSpaces.length === 0) return;
+    const ids = listing.duplicateSpaces.map((d) => `#${d.spaceId}`).join(', ');
+    addToast('info', 'Possible duplicate space', `Another host's space (${ids}) has the same address or location. Moderators have been notified; make sure you are not listing someone else's space.`);
   };
 
   const addToast = useCallback(
@@ -730,11 +736,9 @@ export const AppContent: React.FC<{
         if (deploymentRef.current !== expectedDeploymentKey) {
           throw new Error('The marketplace deployment changed before metadata registration.');
         }
-        if (webProfile.id === 'sepolia') {
-          await createListingRecord(auctionId, metadata, expectedDeployment);
-        } else {
-          await createListingRecord(auctionId, metadata);
-        }
+        warnDuplicates(webProfile.id === 'sepolia'
+          ? await createListingRecord(auctionId, metadata, expectedDeployment)
+          : await createListingRecord(auctionId, metadata));
         markRegistered(auctionId);
         setPendingRegistration(null);
       } catch (postErr) {
@@ -812,11 +816,9 @@ export const AppContent: React.FC<{
     setIsActionBusy(true);
     try {
       await ensureSignedIn();
-      if (webProfile.id === 'sepolia') {
-        await createListingRecord(auctionId, metadata, pendingRegistration.deployment);
-      } else {
-        await createListingRecord(auctionId, metadata);
-      }
+      warnDuplicates(webProfile.id === 'sepolia'
+        ? await createListingRecord(auctionId, metadata, pendingRegistration.deployment)
+        : await createListingRecord(auctionId, metadata));
       addToast(
         'success',
         'Registration Confirmed',
@@ -1456,6 +1458,7 @@ export const AppContent: React.FC<{
             deployment={config ? { chainId: config.chainId, contractAddress: config.contractAddress, snapshotBlock: calendarSnapshot?.blockNumber, snapshotTime: calendarSnapshot?.blockTimestamp } : null}
           />
         )}
+        {session && <InboxAnnouncer inbox={inbox} timeZoneOf={(auctionId) => listings.find((l) => l.id === auctionId)?.timeZone} />}
         {currentTab === 'activity' && session && (
           <Inbox
             inbox={inbox}

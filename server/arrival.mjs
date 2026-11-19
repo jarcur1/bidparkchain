@@ -1,5 +1,7 @@
+import crypto from 'node:crypto';
 import { ethers } from 'ethers';
 import { readSession } from './auth.mjs';
+import { readToken, signToken, TOKEN_TTL } from './arrival-token.mjs';
 
 /**
  * Private arrival instructions and winner check-in (docs/booking-policy.md#arrival-instructions-and-check-in).
@@ -47,7 +49,10 @@ export function winnerAccess({ onchain, booking, address, chainTime, opensBefore
  *   pinnedReader: () => Promise<{ block: { number: number, hash: string, timestamp: number },
  *     call: (method: string, args: unknown[]) => Promise<any> }> }} deps
  */
-export function mountArrival(app, { db, contractAddress, pinnedReader, requireKey = false }) {
+export function mountArrival(app, { db, contractAddress, pinnedReader, requireKey = false, tokenKey = null }) {
+  // Local/demo mode without a configured key signs with a per-process key; hosted mode refuses to issue.
+  const key = tokenKey ?? (requireKey ? null : crypto.randomBytes(32));
+
   function scope(req, res) {
     const session = readSession(db, req);
     if (!session) return void res.status(401).json({ error: 'Sign in with your wallet first' });
@@ -77,7 +82,7 @@ export function mountArrival(app, { db, contractAddress, pinnedReader, requireKe
     }
   }
 
-  const checkInView = (row) => row && { winner: ethers.getAddress(row.winner), checkedInAt: row.checked_in_at, blockNumber: row.block_number };
+  const checkInView = (row) => row && { winner: ethers.getAddress(row.winner), checkedInAt: row.checked_in_at, blockNumber: row.block_number, verifiedBy: row.verified_by && ethers.getAddress(row.verified_by), verifiedAt: row.verified_at };
   const instructionsView = (row) => row && { instructions: row.instructions, updatedAt: row.updated_at };
   const windowOf = (onchain) => ({
     opensAt: Number(onchain.parkingStart) - ARRIVAL_OPENS_BEFORE,
@@ -170,5 +175,52 @@ export function mountArrival(app, { db, contractAddress, pinnedReader, requireKe
     if (!access.ok) return res.status(403).json({ error: access.error, reason: access.reason, window });
     const [row, created] = db.recordCheckIn(s.contract, a.id, { winner: s.session.address, blockNumber: a.block.number });
     res.status(created ? 201 : 200).json({ checkIn: checkInView(row), window });
+  });
+
+  /**
+   * POST /api/auctions/:id/arrival-token: the winner gets a code for the host to scan or type, valid for
+   * TOKEN_TTL seconds (never past the end of parking) and only while check-in is open.
+   */
+  app.post('/api/auctions/:id/arrival-token', async (req, res) => {
+    const s = scope(req, res);
+    if (!s) return;
+    if (!key) return res.status(503).json({ error: 'Arrival tokens need BIDPARK_ARRIVAL_TOKEN_KEY to be set on this server' });
+    const a = await readAuction(req, res, s.session.address);
+    if (!a) return;
+    const window = windowOf(a.onchain);
+    const access = winnerAccess({ ...a, address: s.session.address, opensBefore: CHECK_IN_OPENS_BEFORE });
+    if (!access.ok) return res.status(403).json({ error: access.error, reason: access.reason, window });
+    const expiresAt = Math.min(a.chainTime + TOKEN_TTL, Number(a.onchain.parkingEnd));
+    const token = signToken(key, {
+      chainId: db.chainId, contract: s.contract, auctionId: a.id, winner: s.session.address, expiresAt,
+    });
+    res.json({ token, expiresAt, window });
+  });
+
+  /**
+   * POST /api/auctions/:id/arrival/verify { token }: a host checks a winner's code once. It records the
+   * verified check-in (a repeat for an already verified auction returns it with 200); the same token again is 409.
+   * Like a plain check-in it is an attestation, not proof of physical access.
+   */
+  app.post('/api/auctions/:id/arrival/verify', async (req, res) => {
+    const s = scope(req, res);
+    if (!s) return;
+    if (!key) return res.status(503).json({ error: 'Arrival tokens need BIDPARK_ARRIVAL_TOKEN_KEY to be set on this server' });
+    const a = await readAuction(req, res, s.session.address);
+    if (!a) return;
+    if (!a.isHost) return res.status(403).json({ error: "Only this auction's host can verify an arrival code" });
+    const t = readToken(key, req.body?.token);
+    if (!t || t.chainId !== db.chainId || t.contract !== s.contract.toLowerCase() || t.auctionId !== a.id) {
+      return res.status(400).json({ error: 'This is not a valid arrival code for this auction', reason: 'invalid' });
+    }
+    if (a.chainTime >= t.expiresAt) return res.status(410).json({ error: 'This arrival code has expired', reason: 'expired' });
+    // The booking must still hold for the wallet the code was issued to.
+    const access = winnerAccess({ ...a, address: t.winner, opensBefore: CHECK_IN_OPENS_BEFORE });
+    if (!access.ok) return res.status(403).json({ error: access.error, reason: access.reason, window: windowOf(a.onchain) });
+    const out = db.verifyArrivalToken(s.contract, a.id, {
+      nonce: t.nonce, winner: t.winner, host: s.session.address, blockNumber: a.block.number,
+    });
+    if (out.replayed) return res.status(409).json({ error: 'This arrival code was already used', reason: 'replayed' });
+    res.status(out.created ? 201 : 200).json({ checkIn: checkInView(out.row), window: windowOf(a.onchain) });
   });
 }
