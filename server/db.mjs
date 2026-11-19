@@ -331,6 +331,41 @@ const MIGRATIONS = [
       ALTER TABLE arrival_checkins ADD COLUMN verified_at INTEGER;
     `);
   },
+  // 16: alias keys per space for duplicate detection, and an 'appeal' audit action (the CHECK on
+  //     verification_audit.action cannot be altered, so the append-only table is rebuilt with its rows and triggers).
+  (db) => {
+    db.exec(`
+      CREATE TABLE space_aliases (
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        space_id TEXT NOT NULL,
+        alias_key TEXT NOT NULL,
+        host TEXT NOT NULL,
+        PRIMARY KEY (chain_id, contract_address, space_id, alias_key)
+      );
+      CREATE INDEX idx_aliases_key ON space_aliases (chain_id, contract_address, alias_key);
+      CREATE TABLE verification_audit_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        space_id TEXT NOT NULL,
+        action TEXT NOT NULL CHECK (action IN ('submit', 'approve', 'reject', 'revoke', 'report', 'appeal')),
+        status TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        note TEXT NOT NULL DEFAULT '',
+        at INTEGER NOT NULL
+      );
+      INSERT INTO verification_audit_new SELECT id, chain_id, contract_address, space_id, action, status, actor, reason, note, at FROM verification_audit;
+      DROP TABLE verification_audit;
+      ALTER TABLE verification_audit_new RENAME TO verification_audit;
+      CREATE INDEX idx_audit_space ON verification_audit (chain_id, contract_address, space_id);
+      CREATE TRIGGER verification_audit_no_update BEFORE UPDATE ON verification_audit
+        BEGIN SELECT RAISE(ABORT, 'verification_audit is append-only'); END;
+      CREATE TRIGGER verification_audit_no_delete BEFORE DELETE ON verification_audit
+        BEGIN SELECT RAISE(ABORT, 'verification_audit is append-only'); END;
+    `);
+  },
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
@@ -448,6 +483,7 @@ export class EscrowDatabase {
     // The redeployed contract reuses the address and space ids, so old verification states must not carry
     // over. ponytail: the append-only audit keeps the old deployment's entries under the same space ids.
     this.db.prepare('DELETE FROM space_verifications WHERE chain_id = ?').run(this.chainId);
+    this.db.prepare('DELETE FROM space_aliases WHERE chain_id = ?').run(this.chainId);
     // Same for private arrival details: a new space or auction with a reused id must not see the old ones.
     this.db.prepare('DELETE FROM arrival_instructions WHERE chain_id = ?').run(this.chainId);
     this.db.prepare('DELETE FROM arrival_checkins WHERE chain_id = ?').run(this.chainId);
@@ -975,6 +1011,30 @@ export class EscrowDatabase {
       .run(id, this.chainId, contractAddress.toLowerCase(), address.toLowerCase()).changes > 0;
   }
 
+  /**
+   * Records a space's alias keys (replacing any earlier ones for it) and returns the other hosts' spaces
+   * that share a key, as [{ spaceId, key }] with one entry per space and key.
+   */
+  recordSpaceAliases(contractAddress, spaceId, host, keys) {
+    const contract = contractAddress.toLowerCase();
+    const owner = host.toLowerCase();
+    return this.#transaction(() => {
+      this.db.prepare('DELETE FROM space_aliases WHERE chain_id = ? AND contract_address = ? AND space_id = ?')
+        .run(this.chainId, contract, spaceId);
+      const insert = this.db.prepare('INSERT INTO space_aliases VALUES (?, ?, ?, ?, ?)');
+      const find = this.db.prepare(`
+        SELECT space_id AS spaceId, alias_key AS key FROM space_aliases
+        WHERE chain_id = ? AND contract_address = ? AND alias_key = ? AND space_id != ? AND host != ? ORDER BY CAST(space_id AS INTEGER)
+      `);
+      const matches = [];
+      for (const key of keys) {
+        insert.run(this.chainId, contract, spaceId, key, owner);
+        matches.push(...find.all(this.chainId, contract, key, spaceId, owner));
+      }
+      return matches;
+    });
+  }
+
   getVerificationAudit(contractAddress, spaceId) {
     return this.db.prepare(`
       SELECT action, status, actor, reason, note, at FROM verification_audit
@@ -998,7 +1058,7 @@ export class EscrowDatabase {
             host = excluded.host, status = excluded.status, evidence = excluded.evidence,
             updated_at = excluded.updated_at, ownership_epoch = excluded.ownership_epoch
         `).run(this.chainId, contract, spaceId, host, status, evidence, now, epoch);
-      } else if (action !== 'report') {
+      } else if (action !== 'report' && action !== 'appeal') {
         this.db.prepare(`
           UPDATE space_verifications SET status = ?, evidence = CASE WHEN ? THEN '' ELSE evidence END, updated_at = ?
           WHERE chain_id = ? AND contract_address = ? AND space_id = ?

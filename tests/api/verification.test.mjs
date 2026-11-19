@@ -153,3 +153,58 @@ it('keeps a review tied to the period when proof was submitted, even when the sa
   expect((await submit(HOST, spaceId, 'New lease after transfer')).status).toBe(201);
   expect((await call(MOD, route)).json).toMatchObject({ action: null, epoch: String(await host.spaceOwnershipEpoch(spaceId)) });
 });
+
+it('lets the host of a rejected space leave one appeal note that moderators see', async () => {
+  const route = '/api/spaces/1/appeal';
+  const note = 'The lease covers the driveway, uploading the signed page now';
+  expect((await call(null, route, { note })).status).toBe(401);
+  expect((await call(OTHER, route, { note })).status).toBe(403);
+  expect((await call(HOST, route, { note: 'short' })).status).toBe(400);
+  expect((await call(MOD_HOST, '/api/spaces/2/appeal', { note })).status).toBe(409); // approved, nothing to appeal
+  const sent = await call(HOST, route, { note });
+  expect(sent.status).toBe(201);
+  expect(sent.json).toMatchObject({ status: 'rejected' });
+  expect(sent.json.audit.at(-1)).toMatchObject({ action: 'appeal', reason: 'host-appeal', note });
+  expect((await call(HOST, route, { note })).status).toBe(409);
+  const queued = (await call(MOD, '/api/moderation/verifications')).json.queue.find((q) => q.spaceId === '1');
+  expect(queued).toMatchObject({ status: 'rejected' });
+  expect(queued.audit.at(-1)).toMatchObject({ action: 'appeal', note });
+  // New proof reopens the review, and a rejected space can be appealed again after the next decision.
+  expect((await submit(HOST, 1, 'Signed lease page attached to the request')).status).toBe(201);
+  expect((await decide(MOD, 1, 'reject', 'insufficient-evidence')).status).toBe(200);
+  expect((await call(HOST, route, { note })).status).toBe(201);
+});
+
+it('warns about and flags a space at the same address under another host', async () => {
+  const other = deployment.contract.connect(chain.wallet(OTHER));
+  const hostContract = deployment.contract.connect(chain.wallet(HOST));
+  await (await other.registerSpace()).wait(); // space 4
+  await (await hostContract.registerSpace()).wait(); // space 5
+  const now = await chain.latestTimestamp();
+  const list = async (contract, spaceId, details, from) => {
+    const hash = ethers.keccak256(ethers.toUtf8Bytes(JSON.stringify(validateSpotMetadata(details).normalized)));
+    await (await contract.createSpaceAuction(spaceId, hash, ethers.parseEther('0.01'), now + from, now + from + 600, now + from + 1200)).wait();
+    return String(Number(await contract.nextAuctionId()) - 1);
+  };
+  const alias = { ...metadata, title: 'Spot behind the house', address: '12 ELM ST., Apt 3' };
+  const second = { ...metadata, title: 'Second stall', address: '12 Elm Street #B' };
+  const aliasAuction = await list(other, 4, alias, 3000);
+  const secondAuction = await list(hostContract, 5, second, 4000);
+
+  // Space 1 belongs to another host and shares the normalized address and the location.
+  const first = await call(OTHER, '/api/listings', { auctionId: aliasAuction, metadata: alias });
+  expect(first.status).toBe(201);
+  expect(first.json.duplicateSpaces).toEqual([{ spaceId: '1', match: ['address', 'location'] }]);
+  await call(OTHER, '/api/listings', { auctionId: aliasAuction, metadata: alias }); // no second flag
+  const queue = (await call(MOD, '/api/moderation/verifications')).json.queue;
+  const flags = (id) => queue.find((q) => q.spaceId === String(id)).audit.filter((a) => a.actor === 'system');
+  expect(flags(4)).toEqual([expect.objectContaining({ action: 'report', reason: 'duplicate-listing', note: 'Possible duplicate of space #1 (same address and location)' })]);
+  expect(flags(1)).toEqual([expect.objectContaining({ note: 'Possible duplicate of space #4 (same address and location)' })]);
+
+  // The host's own space 1 is not a duplicate of space 5; only the other host's space 4 is.
+  const mine = await call(HOST, '/api/listings', { auctionId: secondAuction, metadata: second });
+  expect(mine.json.duplicateSpaces).toEqual([{ spaceId: '4', match: ['address', 'location'] }]);
+  // Hosts never see the system flags in their own history.
+  const history = (await call(HOST, '/api/verifications/mine')).json.verifications.find((v) => v.spaceId === '1').audit;
+  expect(history.some((a) => a.actor === 'system')).toBe(false);
+});

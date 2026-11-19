@@ -296,6 +296,12 @@ export const AppContent: React.FC<{
     setTxVersion((v) => v + 1);
   };
 
+  const warnDuplicates = (listing: { duplicateSpaces: { spaceId: string }[] }) => {
+    if (listing.duplicateSpaces.length === 0) return;
+    const ids = listing.duplicateSpaces.map((d) => `#${d.spaceId}`).join(', ');
+    addToast('info', 'Possible duplicate space', `Another host's space (${ids}) has the same address or location. Moderators have been notified; make sure you are not listing someone else's space.`);
+  };
+
   const addToast = useCallback(
     (type: 'success' | 'error' | 'info', title: string, message?: string, txHash?: string) => {
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -727,11 +733,9 @@ export const AppContent: React.FC<{
         if (deploymentRef.current !== expectedDeploymentKey) {
           throw new Error('The marketplace deployment changed before metadata registration.');
         }
-        if (webProfile.id === 'sepolia') {
-          await createListingRecord(auctionId, metadata, expectedDeployment);
-        } else {
-          await createListingRecord(auctionId, metadata);
-        }
+        warnDuplicates(webProfile.id === 'sepolia'
+          ? await createListingRecord(auctionId, metadata, expectedDeployment)
+          : await createListingRecord(auctionId, metadata));
         markRegistered(auctionId);
         setPendingRegistration(null);
       } catch (postErr) {
@@ -800,11 +804,9 @@ export const AppContent: React.FC<{
     setIsActionBusy(true);
     try {
       await ensureSignedIn();
-      if (webProfile.id === 'sepolia') {
-        await createListingRecord(auctionId, metadata, pendingRegistration.deployment);
-      } else {
-        await createListingRecord(auctionId, metadata);
-      }
+      warnDuplicates(webProfile.id === 'sepolia'
+        ? await createListingRecord(auctionId, metadata, pendingRegistration.deployment)
+        : await createListingRecord(auctionId, metadata));
       addToast(
         'success',
         'Registration Confirmed',
