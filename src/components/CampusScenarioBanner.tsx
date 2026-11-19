@@ -23,8 +23,8 @@ export const CampusScenarioBanner: React.FC<Props> = ({ scenario, listings, list
       <div className="banner-content">
         <GraduationCap className="banner-icon" size={18} />
         <div className="banner-text">
-          <strong>Unofficial campus-parking parody.</strong> Fictional spots and a fictional dorm expansion,
-          not affiliated with or endorsed by any university.
+          <strong>Unofficial campus-parking parody.</strong> Inspired by LSU commuter parking: what if a fictional new
+          dorm left so few good spots that students started auctioning them off? Not affiliated with or endorsed by LSU.
           <div>
             Scenario: <strong>{name}</strong>.{' '}
             {known

@@ -34,3 +34,10 @@ export async function advancePast(page, chain, timestamp) {
   await page.clock.setFixedTime(new Date(Number(BigInt(block.timestamp)) * 1000));
   await page.getByRole('button', { name: 'Refresh data' }).click();
 }
+
+/** A datetime-local value (browser time zone) this many minutes from now. */
+export function localTime(minutesFromNow) {
+  const d = new Date(Date.now() + minutesFromNow * 60_000);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}

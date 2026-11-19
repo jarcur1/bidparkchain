@@ -148,8 +148,8 @@ export async function reservationEntries({ db, contractAddress, address, events,
       const window = { parkingStart: start, parkingEnd: end };
       items.push({ id: `upcoming:${id}`, kind: 'upcoming', auctionId: id, at: Math.max(start - UPCOMING_BEFORE, settledAt), ...window });
       if (open(ARRIVAL_OPENS_BEFORE)) {
-        const hasInstructions = Boolean(db.getArrivalInstructions(contractAddress, 'auction', id) ??
-          db.getArrivalInstructions(contractAddress, 'space', spaceId));
+        const hasInstructions = db.hasArrivalInstructions(contractAddress, 'auction', id) ||
+          db.hasArrivalInstructions(contractAddress, 'space', spaceId);
         items.push({ id: `arrival:${id}`, kind: 'arrival', auctionId: id, at: Math.max(start - ARRIVAL_OPENS_BEFORE, settledAt), hasInstructions, ...window });
       }
     }

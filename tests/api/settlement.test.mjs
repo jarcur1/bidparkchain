@@ -222,6 +222,9 @@ it('runs on a timer in the API, reports status and readiness, and drains on shut
   const offUrl = `http://127.0.0.1:${off.server.address().port}`;
   expect(await (await fetch(`${offUrl}/api/settlement`)).json()).toEqual({ enabled: false });
   expect((await (await fetch(`${offUrl}/api/health/ready`)).json()).checks).not.toHaveProperty('settlement');
+  const offMetrics = await fetch(`${offUrl}/api/settlement/metrics`);
+  expect(offMetrics.headers.get('content-type')).toContain('text/plain');
+  expect(await offMetrics.text()).toContain('bidpark_settlement_enabled 0');
   await off.close();
 
   const api = serve({ ...common, indexIntervalMs: 200, settlement: { enabled: true, keeperKey: chain.wallet(8).privateKey, intervalMs: 1000 } });
@@ -235,6 +238,7 @@ it('runs on a timer in the API, reports status and readiness, and drains on shut
     expect((await onChain(id)).settled).toBe(true);
     const ready = await (await fetch(`${url}/api/health/ready`)).json();
     expect(ready.checks.settlement).toBe('ok');
+    expect(await (await fetch(`${url}/api/settlement/metrics`)).text()).toContain('bidpark_settlement_jobs{state="confirmed"} 1');
   } finally {
     await api.close();
   }
@@ -348,5 +352,91 @@ it('ignores reports that a resolver already decided, and settled bookings with n
     expect((await booking(id)).outcome).toBe(OUTCOME.None);
     expect(k.get(id)).toBeNull();
   }
+  k.db.close();
+});
+
+it('replaces a transaction stuck in the mempool with higher fees on the same nonce, within the cap', async () => {
+  const id = await createAuction();
+  await bid(1, id, '0.02');
+  await chain.increaseTime(700);
+  const k = await keeper({ replaceAfterMs: 0, bumpPercent: 20, maxAttempts: 3 });
+  await automine(false);
+  try {
+    await k.run();
+    const first = k.get(id).tx_hash;
+    const stuck = await chain.provider.getTransaction(first);
+    await k.run();
+    const replacement = k.get(id);
+    expect(replacement).toMatchObject({ status: 'sent', attempts: 2 });
+    expect(replacement.tx_hash).not.toBe(first);
+    const bumped = await chain.provider.getTransaction(replacement.tx_hash);
+    expect(bumped.nonce).toBe(stuck.nonce);
+    expect(bumped.maxFeePerGas).toBeGreaterThanOrEqual(stuck.maxFeePerGas * 12n / 10n);
+    expect(bumped.maxPriorityFeePerGas).toBeGreaterThan(stuck.maxPriorityFeePerGas);
+    expect(await chain.provider.getTransaction(first)).toBeNull();
+    expect(k.job.metrics()).toContain('bidpark_settlement_replaced_total 1');
+    await mine();
+  } finally {
+    await automine(true);
+  }
+  expect((await onChain(id)).settled).toBe(true);
+  await k.run();
+  expect(k.get(id)).toMatchObject({ status: 'confirmed', attempts: 2 });
+  k.db.close();
+});
+
+it('stops replacing at the attempt bound and at the fee cap', async () => {
+  const bounded = await createAuction();
+  await bid(1, bounded, '0.02');
+  await chain.increaseTime(700);
+  const k = await keeper({ replaceAfterMs: 0, maxAttempts: 2 });
+  await automine(false);
+  try {
+    for (let i = 0; i < 4; i++) await k.run();
+    expect(k.get(bounded)).toMatchObject({ status: 'sent', attempts: 2 });
+    await mine();
+  } finally {
+    await automine(true);
+  }
+  await k.run();
+  expect(k.get(bounded).status).toBe('confirmed');
+  k.db.close();
+
+  const capped = await createAuction();
+  await bid(1, capped, '0.02');
+  await chain.increaseTime(700);
+  const c = await keeper({ replaceAfterMs: 0, maxFeePerGasWei: 1n });
+  await automine(false);
+  try {
+    await c.run();
+    const first = c.get(capped).tx_hash;
+    await c.run();
+    expect(c.get(capped)).toMatchObject({ tx_hash: first, attempts: 1 });
+    await mine();
+  } finally {
+    await automine(true);
+  }
+  c.db.close();
+});
+
+it('exports Prometheus metrics for jobs, attempts, failures and lag', async () => {
+  const id = await createAuction();
+  await bid(1, id, '0.02');
+  await chain.increaseTime(700);
+  const clock = Date.now();
+  let offset = 0;
+  const k = await keeper({ wallet: ethers.Wallet.createRandom(), retryBaseMs: 60_000, retryMaxMs: 600_000, now: () => clock + offset });
+  expect(k.job.metrics()).toContain('bidpark_settlement_last_run_timestamp_seconds 0');
+  await k.run();
+  offset = 90_000;
+  const text = k.job.metrics();
+  expect(text).toContain('# TYPE bidpark_settlement_jobs gauge');
+  expect(text).toContain('bidpark_settlement_jobs{state="failed"} 1');
+  expect(text).toContain('bidpark_settlement_jobs{state="confirmed"} 0');
+  expect(text).toContain('bidpark_settlement_job_attempts 1');
+  expect(text).toContain('bidpark_settlement_failures_total 1');
+  expect(text).toContain('bidpark_settlement_last_run_ok 1');
+  expect(text).toContain('bidpark_settlement_lag_seconds 90');
+  expect(text).not.toMatch(/0x[0-9a-f]{40}/i);
   k.db.close();
 });
