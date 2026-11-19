@@ -1232,6 +1232,12 @@ a {
   color: var(--text-primary);
 }
 
+.countdown-at {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 .urgent-countdown {
   color: #dc2626;
   font-weight: 700;
@@ -3702,6 +3708,48 @@ button.header-brand {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+}
+
+/* Bid history */
+.bid-history .section-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bid-history-note {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.bid-history-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  font-size: 13px;
+}
+
+.bid-history-row {
+  display: grid;
+  grid-template-columns: 7rem 1fr auto auto;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.bid-history-event {
+  font-weight: 600;
+}
+
+.bid-history-block {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+@media (max-width: 480px) {
+  .bid-history-row {
+    grid-template-columns: 1fr auto;
   }
 }
 

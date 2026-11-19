@@ -704,7 +704,10 @@ export function createApp(options = {}) {
     });
   });
 
-  /** GET /api/auctions/:id/events: canonical public event history for one auction. */
+  /**
+   * GET /api/auctions/:id/events: canonical public event history for one auction, with the index
+   * checkpoint and last sync error so a client can tell "no events" from "not indexed yet" or stale.
+   */
   app.get('/api/auctions/:id/events', (req, res) => {
     const id = canonicalizeAuctionId(req.params.id);
     const deployment = loadDeployment();
@@ -713,6 +716,8 @@ export function createApp(options = {}) {
       return;
     }
     res.json({
+      indexedBlock: db.getCheckpoint(deployment.contractAddress)?.block_number ?? null,
+      syncError: lastSync?.error ?? null,
       events: db.getAuctionEvents(deployment.contractAddress, id).map((e) => ({
         event: e.event, account: e.account, amount: e.amount === null ? null : ethers.formatEther(e.amount),
         blockNumber: e.block_number, blockHash: e.block_hash, txHash: e.tx_hash, logIndex: e.log_index,

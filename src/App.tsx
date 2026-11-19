@@ -1205,6 +1205,7 @@ export const AppContent: React.FC<{
       <DetailModal
         listing={detailListing}
         contractAddress={config?.contractAddress}
+        chainId={config?.chainId}
         currentAddress={walletState.address}
         onClose={() => setDetailTarget(null)}
         onOpenBid={handleOpenBidModal}

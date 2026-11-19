@@ -29,44 +29,54 @@ export function formatBalance(balance: string | null, read: ReadState): string {
   return read.status === 'stale' ? `${text} (stale)` : text;
 }
 
-export function formatTimestamp(sec: number): string {
-  if (!sec) return '—';
-  const d = new Date(sec * 1000);
-  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+const DATE_OPTS: Intl.DateTimeFormatOptions = { weekday: 'short', month: 'short', day: 'numeric' };
+const TIME_OPTS: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit' };
+
+function part(sec: number, opts: Intl.DateTimeFormatOptions, timeZone?: string): string {
+  return new Date(sec * 1000).toLocaleString('en-US', { ...opts, timeZone });
 }
 
-export function formatDateTime(sec: number): string {
-  if (!sec) return '—';
-  const d = new Date(sec * 1000);
-  return d.toLocaleString([], {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+function zoneName(sec: number, timeZone?: string): string {
+  return (
+    new Intl.DateTimeFormat('en-US', { timeZoneName: 'short', timeZone })
+      .formatToParts(new Date(sec * 1000))
+      .find((p) => p.type === 'timeZoneName')?.value ?? ''
+  );
 }
 
-export function formatParkingWindow(startSec: number, endSec: number): {
+/** Date, time and time zone, e.g. "Thu, Nov 19, 1:27 AM CST". */
+export function formatDateTime(sec: number, timeZone?: string): string {
+  if (!sec) return '—';
+  return `${part(sec, DATE_OPTS, timeZone)}, ${part(sec, TIME_OPTS, timeZone)} ${zoneName(sec, timeZone)}`;
+}
+
+/**
+ * A parking window with explicit dates and time zone. A window that crosses midnight names both
+ * dates, and one that crosses a DST change names both zone abbreviations (e.g. CDT and CST).
+ */
+export function formatParkingWindow(startSec: number, endSec: number, timeZone?: string): {
   dateStr: string;
   timeRange: string;
   durationHours: string;
+  full: string;
 } {
-  const start = new Date(startSec * 1000);
-  const end = new Date(endSec * 1000);
-  const dateStr = start.toLocaleDateString([], {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-  });
-  const startTime = start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  const endTime = end.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const startDate = part(startSec, DATE_OPTS, timeZone);
+  const endDate = part(endSec, DATE_OPTS, timeZone);
+  const startTime = part(startSec, TIME_OPTS, timeZone);
+  const endTime = part(endSec, TIME_OPTS, timeZone);
+  const startZone = zoneName(startSec, timeZone);
+  const endZone = zoneName(endSec, timeZone);
+  const sameDay = startDate === endDate;
+  const timeRange = `${startTime}${startZone === endZone ? '' : ` ${startZone}`} – ${endTime} ${endZone}`;
   const hours = ((endSec - startSec) / 3600).toFixed(1).replace(/\.0$/, '');
 
   return {
-    dateStr,
-    timeRange: `${startTime} – ${endTime}`,
+    dateStr: sameDay ? startDate : `${startDate} – ${endDate}`,
+    timeRange,
     durationHours: `${hours} hr${Number(hours) === 1 ? '' : 's'}`,
+    full: sameDay
+      ? `${startDate}, ${timeRange}`
+      : `${formatDateTime(startSec, timeZone)} – ${formatDateTime(endSec, timeZone)}`,
   };
 }
 

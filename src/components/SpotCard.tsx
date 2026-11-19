@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import type { Listing } from '../types';
 import {
+  formatDateTime,
   formatEth,
   formatParkingWindow,
   getAuctionTimeRemaining,
@@ -204,6 +205,7 @@ export const SpotCard: React.FC<SpotCardProps> = ({
             >
               {timeRemaining.text}
             </span>
+            <span className="countdown-at">{formatDateTime(listing.bidEnd)}</span>
           </div>
         </div>
 

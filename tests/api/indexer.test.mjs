@@ -122,11 +122,13 @@ it('serves index freshness and per-auction history from the API', async () => {
   const get = async (route) => (await fetch(`${url}${route}`)).json();
   try {
     expect(await get('/api/index')).toMatchObject({ confirmation: 'mined', indexedBlock: null, lastSyncAt: null });
+    expect(await get('/api/auctions/1/events')).toEqual({ indexedBlock: null, syncError: null, events: [] });
     const [first, second] = await Promise.all([runtime.syncIndexOnce(), runtime.syncIndexOnce()]);
     expect(first).toBe(second);
     const head = await chain.provider.getBlockNumber();
     expect(await get('/api/index')).toMatchObject({ indexedBlock: head, headBlock: head, lagBlocks: 0, lastSyncError: null });
-    const { events } = await get('/api/auctions/1/events');
+    const { events, indexedBlock } = await get('/api/auctions/1/events');
+    expect(indexedBlock).toBe(head);
     expect(events.map((e) => [e.event, e.amount])).toEqual([['AuctionCreated', null], ['BidPlaced', '0.02'], ['BidPlaced', '0.03']]);
     expect(events[1]).toMatchObject({ txHash: expect.stringMatching(/^0x/), blockNumber: expect.any(Number) });
     expect((await fetch(`${url}/api/auctions/0/events`)).status).toBe(400);

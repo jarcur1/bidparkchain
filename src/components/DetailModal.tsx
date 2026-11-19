@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Calendar,
+  CalendarPlus,
   CheckCircle2,
   Clock,
   Copy,
@@ -15,6 +16,7 @@ import {
 } from 'lucide-react';
 import type { Listing } from '../types';
 import {
+  formatDateTime,
   formatEth,
   formatParkingWindow,
   getAuctionTimeRemaining,
@@ -22,11 +24,14 @@ import {
   shortenAddress,
 } from '../utils/formatters';
 import { getBidEligibility, getChainNowSec } from '../utils/eligibility';
+import { downloadReservationIcs } from '../utils/calendar';
+import { BidHistory } from './BidHistory';
 import { Dialog } from './Dialog';
 
 interface DetailModalProps {
   listing: Listing | null;
   contractAddress?: string;
+  chainId?: number;
   currentAddress: string | null;
   onClose: () => void;
   onOpenBid: (listing: Listing) => void;
@@ -39,6 +44,7 @@ interface DetailModalProps {
 export const DetailModal: React.FC<DetailModalProps> = ({
   listing,
   contractAddress,
+  chainId,
   currentAddress,
   onClose,
   onOpenBid,
@@ -189,6 +195,17 @@ export const DetailModal: React.FC<DetailModalProps> = ({
               </div>
             </div>
 
+            {isLeading && listing.settled && !listing.cancelled && contractAddress && chainId !== undefined && (
+              <button
+                type="button"
+                className="btn-pass-details"
+                onClick={() => downloadReservationIcs(listing, { chainId, contractAddress })}
+              >
+                <CalendarPlus size={14} />
+                <span>Add to calendar (.ics)</span>
+              </button>
+            )}
+
             {/* Description */}
             <div className="modal-section">
               <h4 className="section-label">Public Space Description</h4>
@@ -208,6 +225,8 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                 </div>
               </div>
             )}
+
+            <BidHistory listing={listing} currentAddress={currentAddress} />
 
             {/* Onchain Escrow Telemetry */}
             <div className="detail-info-card telemetry-card">
@@ -273,7 +292,9 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                 </div>
                 <div className="bid-box-cutoff">
                   <Clock size={13} />
-                  <span>Cutoff: {timeRemaining.text}</span>
+                  <span>
+                    Cutoff: {formatDateTime(listing.bidEnd)} ({timeRemaining.text})
+                  </span>
                 </div>
               </div>
 
