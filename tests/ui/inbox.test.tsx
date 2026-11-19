@@ -11,7 +11,8 @@ const item = (id: string, kind: InboxResponse['items'][number]['kind'], read = f
 });
 const data: InboxResponse = { items: [item('a', 'outbid'), item('b', 'refund', true), item('c', 'won')], unread: 2, index };
 const state = (over: Partial<InboxState> = {}): InboxState => ({
-  data, error: null, markRead: vi.fn(async () => {}), reload: vi.fn(async () => {}), ...over,
+  data, error: null, markRead: vi.fn(async () => {}), dismiss: vi.fn(async () => {}), setHidden: vi.fn(async () => {}),
+  reload: vi.fn(async () => {}), ...over,
 });
 
 let host: HTMLDivElement;
@@ -52,4 +53,54 @@ it('says when the inbox is unavailable, stale or behind instead of showing it as
   expect(host.textContent).not.toContain('No notifications yet');
   act(() => [...host.querySelectorAll('button')].find((b) => b.textContent === 'Retry')!.click());
   expect(inbox.reload).toHaveBeenCalled();
+});
+
+it('describes booking and reservation entries by role and links them to arrival details and history', () => {
+  const deployment = { chainId: 31337, contractAddress: '0xABC' };
+  const entries: InboxResponse['items'] = [
+    { id: 'arrival:7', kind: 'arrival', category: 'reservations', auctionId: '7', title: 'Garage', hasInstructions: true, parkingStart: 1, parkingEnd: 2, read: false },
+    { id: 'checkin:7', kind: 'checked-in', category: 'reservations', auctionId: '7', title: 'Garage', checkedInAt: 1_700_000_000_000, read: true },
+    { id: 'n', kind: 'booking', category: 'bookings', change: 'no-show', role: 'winner', byMe: false, auctionId: '7', title: 'Garage', read: false },
+    { id: 'd', kind: 'booking', category: 'bookings', change: 'dispute-opened', role: 'host', byMe: true, auctionId: '7', title: 'Garage', read: true },
+    { id: 'u', kind: 'booking', category: 'bookings', change: 'dispute-upheld', role: 'host', byMe: false, auctionId: '7', title: 'Garage', read: true },
+  ];
+  const inbox = state({ data: { items: entries, unread: 2, preferences: { hidden: [] }, index } });
+  const onOpenListing = vi.fn();
+  act(() => root.render(<Inbox inbox={inbox} onOpenListing={onOpenListing} deployment={deployment} timeZoneOf={() => 'America/Chicago'} />));
+  const rows = [...host.querySelectorAll('li')].map((li) => li.textContent ?? '');
+  expect(rows[0]).toContain('Arrival instructions for "Garage" are available.');
+  expect(rows[1]).toContain('The winner checked in for "Garage" at Tue, Nov 14, 4:13 PM CST.');
+  expect(rows[2]).toContain('The host recorded a no-show for "Garage". This is an attestation only');
+  expect(rows[3]).toContain('You reported a seller failure for "Garage".');
+  expect(rows[4]).toContain('A resolver upheld the seller-failure report for "Garage".');
+  expect(rows.join('')).not.toContain('Gate code');
+
+  const first = host.querySelectorAll('li')[0];
+  const button = (el: Element, name: string) => [...el.querySelectorAll('button')].find((b) => b.textContent === name)!;
+  act(() => button(first, 'Arrival details').click());
+  expect(onOpenListing).toHaveBeenCalledWith('7');
+  expect(first.querySelector('a')?.getAttribute('href')).toBe('?tab=activity&chain=31337&contract=0xabc&auction=7');
+  act(() => button(first, 'Dismiss').click());
+  expect(inbox.dismiss).toHaveBeenCalledWith(['arrival:7']);
+});
+
+it('saves category preferences and says when hidden categories leave the inbox empty', () => {
+  const inbox = state({ data: { items: [], unread: 0, preferences: { hidden: ['funds'] }, index } });
+  act(() => root.render(<Inbox inbox={inbox} onOpenListing={() => {}} />));
+  expect(host.textContent).toContain('1 category is hidden in your preferences.');
+  expect(host.textContent).toContain('There are no email, SMS or push notifications.');
+  const boxes = [...host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
+  expect(boxes.map((box) => [box.parentElement?.textContent?.trim(), box.checked])).toEqual([
+    ['Outbids and wins', true], ['Upcoming reservations and check-ins', true],
+    ['Booking changes and reports', true], ['Refunds and payouts', false],
+  ]);
+  act(() => boxes[2].click());
+  expect(inbox.setHidden).toHaveBeenLastCalledWith(['funds', 'bookings']);
+  act(() => boxes[3].click());
+  expect(inbox.setHidden).toHaveBeenLastCalledWith([]);
+});
+
+it('says when reservation entries could not be checked', () => {
+  expect(inboxNotice({ data: { ...data, index: { ...index, reservationsError: 'Reservation times could not be read from the chain' } }, error: null }))
+    .toBe('Reservation times could not be read from the chain, so upcoming reservation entries may be missing.');
 });
