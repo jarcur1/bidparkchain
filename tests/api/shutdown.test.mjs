@@ -34,7 +34,7 @@ it('drains an in-flight request before closing the database and provider', async
   const dataDir = scope.tempDir();
   const deploymentPath = path.join(dataDir, 'deployment.json');
   fs.writeFileSync(deploymentPath, JSON.stringify({ chainId: 31337, contractAddress: '0x5FbDB2315678afecb367f032d93F642f64180aa3', abi: [], deploymentBlock: 0 }));
-  const api = serve({ port: 0, dbPath: path.join(dataDir, 'bidpark.db'), deploymentPath, rpcUrl: rpc.url });
+  const api = serve({ port: 0, indexIntervalMs: 0, dbPath: path.join(dataDir, 'bidpark.db'), deploymentPath, rpcUrl: rpc.url });
   await once(api.server, 'listening');
   const url = `http://127.0.0.1:${api.server.address().port}`;
   try {

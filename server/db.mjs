@@ -107,6 +107,42 @@ const MIGRATIONS = [
       );
     `);
   },
+  // 4: auction event index. Every log is kept with its block and transaction identity; a reorg flips
+  //    `canonical` off instead of deleting, so orphaned history stays auditable. Public data only.
+  (db) => {
+    db.exec(`
+      CREATE TABLE index_checkpoints (
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        block_number INTEGER NOT NULL,
+        block_hash TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (chain_id, contract_address)
+      );
+      CREATE TABLE index_blocks (
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        block_number INTEGER NOT NULL,
+        block_hash TEXT NOT NULL,
+        PRIMARY KEY (chain_id, contract_address, block_number)
+      );
+      CREATE TABLE auction_events (
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        block_number INTEGER NOT NULL,
+        block_hash TEXT NOT NULL,
+        tx_hash TEXT NOT NULL,
+        log_index INTEGER NOT NULL,
+        event TEXT NOT NULL,
+        auction_id TEXT,
+        account TEXT,
+        amount TEXT,
+        canonical INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (chain_id, contract_address, block_hash, log_index)
+      );
+      CREATE INDEX idx_events_auction ON auction_events (chain_id, contract_address, auction_id, canonical);
+    `);
+  },
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
@@ -372,6 +408,97 @@ export class EscrowDatabase {
       ON CONFLICT(chain_id, address) DO UPDATE SET
         role = excluded.role, display_name = excluded.display_name, updated_at = excluded.updated_at
     `).run(this.chainId, address, role, displayName, Math.floor(Date.now() / 1000));
+  }
+
+  getCheckpoint(contractAddress) {
+    return this.db.prepare('SELECT block_number, block_hash, updated_at FROM index_checkpoints WHERE chain_id = ? AND contract_address = ?')
+      .get(this.chainId, contractAddress.toLowerCase()) || null;
+  }
+
+  /** Stored blocks that produced events, newest first, at or below `maxBlock`. */
+  getIndexedBlocks(contractAddress, maxBlock) {
+    return this.db.prepare(`
+      SELECT block_number, block_hash FROM index_blocks
+      WHERE chain_id = ? AND contract_address = ? AND block_number <= ? ORDER BY block_number DESC
+    `).all(this.chainId, contractAddress.toLowerCase(), maxBlock);
+  }
+
+  #transaction(work) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const result = work();
+      this.db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  /**
+   * Commits one scanned range atomically: its events (re-ingesting one is a no-op that re-marks it
+   * canonical), the hashes of the blocks they came from, and the new checkpoint.
+   */
+  commitIndexBatch(contractAddress, { events, blocks, checkpoint }) {
+    const contract = contractAddress.toLowerCase();
+    return this.#transaction(() => {
+      const insertEvent = this.db.prepare(`
+        INSERT INTO auction_events (chain_id, contract_address, block_number, block_hash, tx_hash, log_index, event, auction_id, account, amount, canonical)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        ON CONFLICT(chain_id, contract_address, block_hash, log_index) DO UPDATE SET canonical = 1 WHERE canonical = 0
+      `);
+      let added = 0;
+      for (const e of events) {
+        added += insertEvent.run(this.chainId, contract, e.blockNumber, e.blockHash, e.txHash, e.logIndex,
+          e.event, e.auctionId, e.account, e.amount).changes;
+      }
+      const saveBlock = this.db.prepare(`
+        INSERT INTO index_blocks (chain_id, contract_address, block_number, block_hash) VALUES (?, ?, ?, ?)
+        ON CONFLICT(chain_id, contract_address, block_number) DO UPDATE SET block_hash = excluded.block_hash
+      `);
+      for (const [number, hash] of blocks) saveBlock.run(this.chainId, contract, number, hash);
+      this.db.prepare(`
+        INSERT INTO index_checkpoints (chain_id, contract_address, block_number, block_hash, updated_at) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(chain_id, contract_address) DO UPDATE SET
+          block_number = excluded.block_number, block_hash = excluded.block_hash, updated_at = excluded.updated_at
+      `).run(this.chainId, contract, checkpoint.number, checkpoint.hash, Date.now());
+      return added;
+    });
+  }
+
+  /**
+   * Undoes everything above `ancestor` (the newest block still on the canonical chain, or null to
+   * start over): those events stop counting but are kept, and the checkpoint moves back.
+   * @returns {number} Events that were orphaned.
+   */
+  rewindIndex(contractAddress, ancestor) {
+    const contract = contractAddress.toLowerCase();
+    const floor = ancestor ? ancestor.number : -1;
+    return this.#transaction(() => {
+      const orphaned = this.db.prepare(`
+        UPDATE auction_events SET canonical = 0
+        WHERE chain_id = ? AND contract_address = ? AND block_number > ? AND canonical = 1
+      `).run(this.chainId, contract, floor).changes;
+      this.db.prepare('DELETE FROM index_blocks WHERE chain_id = ? AND contract_address = ? AND block_number > ?')
+        .run(this.chainId, contract, floor);
+      if (ancestor) {
+        this.db.prepare('UPDATE index_checkpoints SET block_number = ?, block_hash = ?, updated_at = ? WHERE chain_id = ? AND contract_address = ?')
+          .run(ancestor.number, ancestor.hash, Date.now(), this.chainId, contract);
+      } else {
+        this.db.prepare('DELETE FROM index_checkpoints WHERE chain_id = ? AND contract_address = ?').run(this.chainId, contract);
+      }
+      return orphaned;
+    });
+  }
+
+  /** Canonical events for one auction (or all, when auctionId is omitted), in chain order. */
+  getAuctionEvents(contractAddress, auctionId, { includeOrphaned = false } = {}) {
+    return this.db.prepare(`
+      SELECT block_number, block_hash, tx_hash, log_index, event, auction_id, account, amount, canonical
+      FROM auction_events
+      WHERE chain_id = ? AND contract_address = ? AND (? IS NULL OR auction_id = ?) AND (? OR canonical = 1)
+      ORDER BY block_number, log_index
+    `).all(this.chainId, contractAddress.toLowerCase(), auctionId ?? null, auctionId ?? null, includeOrphaned ? 1 : 0);
   }
 
   close() {

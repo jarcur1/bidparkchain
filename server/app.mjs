@@ -8,6 +8,7 @@ import { verifyPersistentDeployment } from '../scripts/helpers/persistent-deploy
 import { compileEscrowContract } from '../scripts/helpers/compiler.mjs';
 import { getNetworkProfile } from '../shared/network-profiles.mjs';
 import { mountAuth, readSession } from './auth.mjs';
+import { syncIndex } from './indexer.mjs';
 
 let sepoliaArtifact;
 
@@ -570,6 +571,61 @@ export function createApp(options = {}) {
     }
   });
 
+  /**
+   * One indexer pass for the deployment this API serves. Concurrent callers share the pass in flight,
+   * so the background job and a manual refresh never index the same range twice at once.
+   */
+  let indexing = null;
+  let lastSync = null;
+  function syncIndexOnce() {
+    indexing ??= (async () => {
+      const deployment = loadDeployment();
+      if (!deployment?.contractAddress) return null;
+      const abi = deployment.abi ?? (sepoliaArtifact ??= compileEscrowContract()).abi;
+      lastSync = { ...await syncIndex({
+        db, provider, address: deployment.contractAddress, abi,
+        fromBlock: Number(deployment.deploymentBlock ?? 0), confirmation: profile.confirmation,
+      }), at: Date.now(), error: null };
+      return lastSync;
+    })().catch((error) => {
+      lastSync = { ...lastSync, at: Date.now(), error: 'Index sync failed' };
+      console.warn('[BidPark Index] Sync failed:', error?.message ?? error);
+      return lastSync;
+    }).finally(() => { indexing = null; });
+    return indexing;
+  }
+
+  /** GET /api/index: how current the event index is. Never reports a failed sync as fresh. */
+  app.get('/api/index', (req, res) => {
+    const deployment = loadDeployment();
+    const checkpoint = deployment?.contractAddress ? db.getCheckpoint(deployment.contractAddress) : null;
+    res.json({
+      confirmation: profile.confirmation,
+      indexedBlock: checkpoint?.block_number ?? null,
+      indexedAt: checkpoint?.updated_at ?? null,
+      headBlock: lastSync?.headBlock ?? null,
+      lagBlocks: lastSync?.lagBlocks ?? null,
+      lastSyncAt: lastSync?.at ?? null,
+      lastSyncError: lastSync?.error ?? null,
+    });
+  });
+
+  /** GET /api/auctions/:id/events: canonical public event history for one auction. */
+  app.get('/api/auctions/:id/events', (req, res) => {
+    const id = canonicalizeAuctionId(req.params.id);
+    const deployment = loadDeployment();
+    if (!id || !deployment?.contractAddress) {
+      res.status(id ? 503 : 400).json({ error: id ? 'Smart contract not deployed' : 'Valid auction id is required' });
+      return;
+    }
+    res.json({
+      events: db.getAuctionEvents(deployment.contractAddress, id).map((e) => ({
+        event: e.event, account: e.account, amount: e.amount === null ? null : ethers.formatEther(e.amount),
+        blockNumber: e.block_number, blockHash: e.block_hash, txHash: e.tx_hash, logIndex: e.log_index,
+      })),
+    });
+  });
+
   // Catch-all 404 for unknown API routes
   app.use('/api', (req, res) => {
     res.status(404).json({ error: `API route ${req.method} ${req.path} not found` });
@@ -582,5 +638,5 @@ export function createApp(options = {}) {
     res.status(status).json({ error: message });
   });
 
-  return { app, db, provider };
+  return { app, db, provider, syncIndexOnce, indexingDone: () => indexing ?? Promise.resolve() };
 }
