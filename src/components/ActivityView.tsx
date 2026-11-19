@@ -15,6 +15,7 @@ import {
 import type { Listing } from '../types';
 import type { ReadState } from '../utils/readState';
 import {
+  formatDateTime,
   formatEth,
   formatParkingWindow,
   getAuctionTimeRemaining,
@@ -283,7 +284,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                     </div>
                     <div>
                       <span className="meta-sub">Window:</span>
-                      <p className="meta-val">{windowInfo.dateStr}</p>
+                      <p className="meta-val">{windowInfo.full}</p>
                     </div>
                   </div>
 
@@ -451,7 +452,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                       </td>
                       <td>
                         <span className="table-window-text">
-                          {windowInfo.dateStr} • {windowInfo.timeRange}
+                          {windowInfo.full}
                         </span>
                       </td>
                       <td>
@@ -463,7 +464,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                       <td>
                         <span className="table-countdown-text">
                           <Clock size={12} />
-                          <span>{time.text}</span>
+                          <span>{formatDateTime(listing.bidEnd)} ({time.text})</span>
                         </span>
                       </td>
                       <td>

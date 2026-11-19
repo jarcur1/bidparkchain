@@ -94,3 +94,29 @@ export async function createListingRecord(
 
   throw new ApiError('Invalid response shape from POST /api/listings', res.status);
 }
+
+export interface AuctionEvent {
+  event: 'AuctionCreated' | 'BidPlaced' | 'AuctionSettled' | 'PayoutClaimed' | 'AuctionCancelled';
+  account: string | null;
+  amount: string | null;
+  blockNumber: number;
+  logIndex: number;
+  txHash: string;
+}
+
+export interface AuctionHistory {
+  /** Last indexed block; null when the index has not run yet, so no events does not mean none happened. */
+  indexedBlock: number | null;
+  syncError: string | null;
+  events: AuctionEvent[];
+}
+
+export async function fetchAuctionHistory(auctionId: string): Promise<AuctionHistory> {
+  const res = await fetch(`/api/auctions/${encodeURIComponent(auctionId)}/events`);
+  if (!res.ok) throw new ApiError(await extractErrorMessage(res), res.status);
+  const data: unknown = await res.json();
+  if (!data || typeof data !== 'object' || !('events' in data) || !Array.isArray(data.events)) {
+    throw new ApiError('Invalid response shape from auction history', res.status);
+  }
+  return data as AuctionHistory;
+}
