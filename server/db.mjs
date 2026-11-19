@@ -312,6 +312,9 @@ const MIGRATIONS = [
   },
   // 13: bind proof to the ownership period that was actually reviewed. Older reviews need new proof.
   (db) => db.exec('ALTER TABLE space_verifications ADD COLUMN ownership_epoch TEXT'),
+  // 14: creation parameters of each indexed auction (JSON on its AuctionCreated row), so search can filter
+  //    from the index. Kept on the event row, so a reorg orphans them with the event.
+  (db) => db.exec('ALTER TABLE auction_events ADD COLUMN detail TEXT'),
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
@@ -665,6 +668,46 @@ export class EscrowDatabase {
       }
       return orphaned;
     });
+  }
+
+  /** Canonical AuctionCreated rows whose creation parameters are not stored yet. */
+  getCreatedWithoutDetail(contractAddress) {
+    return this.db.prepare(`
+      SELECT block_hash, log_index, auction_id FROM auction_events
+      WHERE chain_id = ? AND contract_address = ? AND canonical = 1 AND event = 'AuctionCreated' AND detail IS NULL
+    `).all(this.chainId, contractAddress.toLowerCase());
+  }
+
+  setEventDetail(contractAddress, blockHash, logIndex, detail) {
+    this.db.prepare('UPDATE auction_events SET detail = ? WHERE chain_id = ? AND contract_address = ? AND block_hash = ? AND log_index = ?')
+      .run(JSON.stringify(detail), this.chainId, contractAddress.toLowerCase(), blockHash, logIndex);
+  }
+
+  /**
+   * Auction state as of block `atBlock`, from canonical indexed events only: creation parameters (null
+   * until stored), the latest bid (bids only rise) and whether it was settled or cancelled.
+   * @returns {Map<string, {detail: object|null, highestBid: string, settled: boolean, cancelled: boolean}>}
+   */
+  getIndexedAuctions(contractAddress, atBlock) {
+    const rows = this.db.prepare(`
+      SELECT auction_id, event, amount, detail FROM auction_events
+      WHERE chain_id = ? AND contract_address = ? AND canonical = 1 AND block_number <= ?
+        AND event IN ('AuctionCreated', 'BidPlaced', 'AuctionSettled', 'AuctionCancelled', 'BookingRefunded')
+      ORDER BY block_number, log_index
+    `).all(this.chainId, contractAddress.toLowerCase(), atBlock);
+    const auctions = new Map();
+    for (const row of rows) {
+      if (row.event === 'AuctionCreated') {
+        auctions.set(row.auction_id, { detail: row.detail && JSON.parse(row.detail), highestBid: '0', settled: false, cancelled: false });
+        continue;
+      }
+      const auction = auctions.get(row.auction_id);
+      if (!auction) continue;
+      if (row.event === 'BidPlaced') auction.highestBid = row.amount;
+      else if (row.event === 'AuctionSettled') auction.settled = true;
+      else auction.cancelled = true;
+    }
+    return auctions;
   }
 
   /** Canonical events for one auction (or all, when auctionId is omitted), in chain order. */
