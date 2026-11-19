@@ -60,3 +60,31 @@ All are optional. Unknown, repeated (except `amenity`) or malformed parameters g
 Kind, amenities, area and text are filtered from stored metadata first; only those candidates are
 read from the chain (two calls each, 16 at a time), and each RPC call is bounded by
 `BIDPARK_RPC_TIMEOUT_MS`.
+
+## `GET /api/listings` is bounded too
+
+The full listing read scans auction ids, not stored rows, so staged and unindexed auctions (on chain, no
+stored row yet) are still found and reported in `unindexed`.
+
+- At most `BIDPARK_LISTINGS_SCAN_LIMIT` (default 500) auction ids are read per request. `limit`
+  (1 to that value) lowers it.
+- `nextCursor` is the first auction id not yet scanned, omitted when every id has been. Pass it back as
+  `cursor` for the next page. A request with no parameters returns the first page, which is everything while
+  there are no more auctions than the limit, so existing clients keep working. The web app follows the cursor
+  (up to 20 pages per refresh).
+- Each page is its own snapshot: `chain` names the block that page was read at. Unlike the search cursor it
+  does not pin the block across pages.
+- A malformed `limit`, `cursor` or unknown parameter is 400 before any chain read.
+
+## Map area, location and time zones
+
+- The marketplace map has a **Search this area** control: it sends the viewport as `bbox`
+  (`minLat,minLon,maxLat,maxLon`) and a **Clear area** control removes it. The area is part of the shareable
+  URL (`area=`).
+- **Use my location** is optional and asks the browser only when pressed. The position is rounded to about
+  100 m and is sent only as the `near` value of the search query. It is not stored and not put in the page URL.
+  If permission is denied or unavailable, the destination field keeps working by hand.
+- Cards show each space's own time zone with its parking times (the viewer's zone when none is set, and the
+  card says so). The arrive/depart filter is in the browser's zone, as the filter hint states.
+- Serving candidates from the event index is not done: the index stores events, not auction state, so it
+  would need a state projection in the indexer.

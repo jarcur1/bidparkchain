@@ -23,6 +23,11 @@ interface FilterBarProps {
   /** The typed destination resolved to a known place, or null. */
   destination?: Place | null;
   amenityChoices?: string[];
+  /** Optional browser location; omitted where the browser has none. */
+  onUseLocation?: () => void;
+  /** Result of the last location request, e.g. why it was refused. */
+  locationMessage?: string | null;
+  locating?: boolean;
 }
 
 export const FilterBar: React.FC<FilterBarProps> = ({
@@ -36,6 +41,9 @@ export const FilterBar: React.FC<FilterBarProps> = ({
   destinationChoices = [],
   destination = null,
   amenityChoices = [],
+  onUseLocation,
+  locationMessage = null,
+  locating = false,
 }) => {
   const isFiltered = (Object.keys(DEFAULT_FILTERS) as (keyof FilterState)[]).some(
     (k) => k !== 'sortBy' && String(filters[k]) !== String(DEFAULT_FILTERS[k])
@@ -126,6 +134,11 @@ export const FilterBar: React.FC<FilterBarProps> = ({
                 <option key={o.label} value={o.label} />
               ))}
             </datalist>
+            {onUseLocation && (
+              <button type="button" className="btn-table-action" disabled={locating} onClick={onUseLocation}>
+                {locating ? 'Locating...' : 'Use my location'}
+              </button>
+            )}
             <select
               id="radius-select"
               className="filter-select"
@@ -143,7 +156,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           </div>
           <p id="destination-hint" className="trip-hint" role="status">
             {!filters.destination.trim()
-              ? 'Pick a landmark or listing address to see straight-line distances.'
+              ? locationMessage ?? 'Pick a landmark or listing address to see straight-line distances.'
               : destination
                 ? `Distances are straight-line from ${destination.label}, not driving or walking routes.`
                 : `No landmark or listing address matches "${filters.destination.trim()}". Pick one of the suggestions.`}
@@ -179,7 +192,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           <p id="visit-hint" className={`trip-hint ${errors.time ? 'trip-error' : ''}`} role="status">
             {errors.time
               ? `${errors.time} The visit filter is not applied.`
-              : `Times are in ${timeZone}. Only spaces whose parking window covers your whole visit are shown.`}
+              : `Times are in ${timeZone}. Only spaces whose parking window covers your whole visit are shown; cards show each space's own time zone.`}
           </p>
         </fieldset>
 

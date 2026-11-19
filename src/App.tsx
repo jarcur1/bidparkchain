@@ -8,6 +8,8 @@ import { DisclosuresBanner } from './components/DisclosuresBanner';
 import { FilterBar } from './components/FilterBar';
 import {
   DEFAULT_FILTERS,
+  MY_LOCATION_LABEL,
+  type Place,
   amenityOptions,
   describeFilters,
   destinationOptions,
@@ -26,7 +28,7 @@ import { Toast } from './components/Toast';
 import { WalletModal } from './components/WalletModal';
 import { useWallet, WalletProvider } from './context/WalletContext';
 import { SessionProvider, useSession } from './context/SessionContext';
-import { ApiError, createListingRecord, fetchConfig, fetchListings, searchListings, stageListingMetadata } from './services/api';
+import { ApiError, createListingRecord, fetchConfig, fetchListings, searchListings, searchListingsPages, stageListingMetadata } from './services/api';
 import type { TxObserver } from './services/blockchain';
 import { patchTransaction, readTransactions, recordTransaction, staleTransactionsFor, transactionsFor, type TxKind, type TxRecord } from './utils/txStore';
 import { TransactionCenter } from './components/TransactionCenter';
@@ -992,7 +994,35 @@ export const AppContent: React.FC<{
   };
 
   // Filter & Sort Logic
-  const destinationChoices = useMemo(() => destinationOptions(listings), [listings]);
+  // Optional browser location: asked only when the driver presses the button, rounded, kept in memory
+  // and used only as the `near` value of the search query.
+  const [myLocation, setMyLocation] = useState<Place | null>(null);
+  const [locating, setLocating] = useState(false);
+  const [locationMessage, setLocationMessage] = useState<string | null>(null);
+  const useMyLocation = useCallback(() => {
+    if (!navigator.geolocation) {
+      setLocationMessage('This browser cannot share a location. Type a destination instead.');
+      return;
+    }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLocating(false);
+        setLocationMessage(null);
+        setMyLocation({ label: MY_LOCATION_LABEL, latitude: Math.round(pos.coords.latitude * 1000) / 1000, longitude: Math.round(pos.coords.longitude * 1000) / 1000 });
+        setFilters((f) => ({ ...f, destination: MY_LOCATION_LABEL }));
+      },
+      () => {
+        setLocating(false);
+        setLocationMessage('Location not shared. Type a destination or pick a landmark instead.');
+      },
+      { maximumAge: 60_000, timeout: 15_000 },
+    );
+  }, []);
+  const destinationChoices = useMemo(
+    () => (myLocation ? [myLocation, ...destinationOptions(listings)] : destinationOptions(listings)),
+    [listings, myLocation],
+  );
   const destination = resolveDestination(filters.destination, destinationChoices);
   const { listings: filteredListings, distances } = useMemo(
     () => discoverListings(listings, filters, getChainNowSec(), destination),
@@ -1004,7 +1034,11 @@ export const AppContent: React.FC<{
   const searchKey = searchQuery(filters, destination);
   const [serverSearch, setServerSearch] = useState<{
     key: string; deployment: string | null; listings: SearchListing[]; total: number; nextCursor: string | null; loadingMore: boolean;
+    /** Pages loaded, so a listings refresh can reload as many. */
+    pages: number;
   } | null>(null);
+  const serverSearchRef = useRef(serverSearch);
+  serverSearchRef.current = serverSearch;
   const [searchNonce, setSearchNonce] = useState(0);
   const snapshotBlock = listingsView.chain?.blockNumber;
   const listingsDeployment = listingsView.deployment;
@@ -1012,12 +1046,15 @@ export const AppContent: React.FC<{
     if (snapshotBlock === undefined) return;
     let live = true;
     const timer = setTimeout(() => {
-      searchListings(searchKey)
+      // A refresh of the same search reloads the pages already shown, from the new head.
+      const prev = serverSearchRef.current;
+      const keep = prev && prev.key === searchKey && prev.deployment === listingsDeployment ? prev.pages : 1;
+      searchListingsPages(searchKey, keep)
         .then((r) => {
           if (!live) return;
           const deployment = r.chain ? deploymentKey(r.chain) : null;
           setServerSearch(deployment === listingsDeployment
-            ? { key: searchKey, deployment, listings: r.listings, total: r.total, nextCursor: r.nextCursor, loadingMore: false }
+            ? { key: searchKey, deployment, listings: r.listings, total: r.total, nextCursor: r.nextCursor, loadingMore: false, pages: keep }
             : null);
         })
         .catch(() => { if (live) setServerSearch(null); });
@@ -1039,7 +1076,7 @@ export const AppContent: React.FC<{
     try {
       const page = await searchListings(current.key, current.nextCursor);
       setServerSearch((s) => s?.key === current.key && s.nextCursor === current.nextCursor
-        ? { ...s, listings: [...s.listings, ...page.listings], nextCursor: page.nextCursor, loadingMore: false }
+        ? { ...s, listings: [...s.listings, ...page.listings], nextCursor: page.nextCursor, loadingMore: false, pages: s.pages + 1 }
         : s);
     } catch (err) {
       // A cursor whose block was replaced starts the search again from the first page.
@@ -1254,6 +1291,9 @@ export const AppContent: React.FC<{
               onFilterChange={setFilters}
               destinationChoices={destinationChoices}
               destination={destination}
+              onUseLocation={useMyLocation}
+              locationMessage={locationMessage}
+              locating={locating}
               amenityChoices={amenityOptions(listings, filters.amenities)}
               totalSpots={listings.length}
               filteredCount={serverResult ? serverResult.total : filteredListings.length}
@@ -1296,6 +1336,9 @@ export const AppContent: React.FC<{
                 <div className="layout-map-column">
                   <ParkingMap
                     listings={shownListings}
+                    area={filters.area}
+                    onSearchArea={(area) => setFilters((f) => ({ ...f, area }))}
+                    onClearArea={() => setFilters((f) => ({ ...f, area: '' }))}
                     currentAddress={walletState.address}
                     selectedListingId={selectedListingId}
                     onSelectListing={handleSelectListing}

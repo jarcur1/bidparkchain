@@ -176,4 +176,47 @@ describe('GET /api/listings/search', () => {
       await close(srv, small);
     }
   });
+
+  it('pages GET /api/listings by auction id so a scan is bounded and unindexed auctions stay discoverable', async () => {
+    runtime.db.db.prepare("UPDATE listings SET amenities = '[]' WHERE auction_id = ?").run(ids.broken);
+    // On chain, never registered with the API: reported as unindexed.
+    await (await deployment.contract.createAuction(ethers.id('unregistered'), ethers.parseEther('0.01'), t0 + H, t0 + H, t0 + 3 * H)).wait();
+    const total = Number(await deployment.contract.nextAuctionId()) - 1;
+    const get = async (query, at = url) => {
+      const response = await fetch(`${at}/api/listings${query}`);
+      return { status: response.status, json: await response.json() };
+    };
+    // Existing clients: no parameters, everything, no further page.
+    const all = await get('');
+    expect(all.json.nextCursor).toBeUndefined();
+    expect(all.json.listings.length + all.json.unindexed.length).toBe(total);
+
+    const small = createApp({ dbPath, deploymentPath, rpcUrl: chain.rpcUrl, listingsScanLimit: 2 });
+    const { srv, url: smallUrl } = await listen(small.app);
+    try {
+      const seen = [];
+      const blocks = new Set();
+      let cursor = '';
+      let pages = 0;
+      do {
+        const { status, json } = await get(cursor ? `?cursor=${cursor}` : '', smallUrl);
+        expect(status).toBe(200);
+        expect(json.listings.length + json.unindexed.length).toBeLessThanOrEqual(2);
+        seen.push(...json.listings.map((l) => l.id), ...json.unindexed.map((u) => u.id));
+        blocks.add(json.chain.chainId);
+        cursor = json.nextCursor ?? '';
+        pages++;
+      } while (cursor && pages < 20);
+      expect(pages).toBe(Math.ceil(total / 2));
+      expect(seen.sort((a, b) => a - b)).toEqual([...all.json.listings.map((l) => l.id), ...all.json.unindexed.map((u) => u.id)].sort((a, b) => a - b));
+      expect(all.json.unindexed.map((u) => u.id)).toEqual([String(total)]);
+      expect((await get('?limit=1', smallUrl)).json.nextCursor).toBe('2');
+      for (const bad of ['limit=0', 'limit=3', 'limit=x', 'cursor=0', 'cursor=-1', 'cursor=1.5', 'cursor=a', 'skip=1', 'limit=1&limit=2']) {
+        expect((await get(`?${bad}`, smallUrl)).status, bad).toBe(400);
+      }
+      expect((await get('?cursor=999', smallUrl)).json).toEqual(expect.objectContaining({ listings: [], unindexed: [] }));
+    } finally {
+      await close(srv, small);
+    }
+  });
 });

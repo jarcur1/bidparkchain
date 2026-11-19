@@ -47,7 +47,7 @@ const h = vi.hoisted(() => {
     return obj;
   };
   const leaflet = {
-    map: () => ({ remove() {}, invalidateSize() {}, setView() {}, panTo() {} }),
+    map: () => ({ remove() {}, invalidateSize() {}, setView() {}, panTo() {}, on() {}, getBounds: () => ({ getSouth: () => 30, getWest: () => -98, getNorth: () => 31, getEast: () => -97 }) }),
     control: { zoom: () => chainable() },
     tileLayer: () => chainable(),
     layerGroup: () => chainable(),
@@ -84,6 +84,7 @@ vi.mock('../src/services/api', async (importActual) => ({
   ...(await importActual<typeof import('../src/services/api')>()),
   // No search service here: the marketplace filters the loaded snapshot locally.
   searchListings: vi.fn(async () => { throw new Error('offline'); }),
+  searchListingsPages: vi.fn(async () => { throw new Error('offline'); }),
   fetchConfig: vi.fn(),
   fetchListings: vi.fn(),
   createListingRecord: vi.fn(),

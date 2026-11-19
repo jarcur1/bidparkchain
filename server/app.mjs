@@ -52,6 +52,8 @@ export function publicSettings(options = {}, env = process.env) {
     // Listing search: at most this many candidates are read from the chain per request, within this deadline.
     searchScanLimit: options.searchScanLimit ?? Number(env.BIDPARK_SEARCH_SCAN_LIMIT ?? 500),
     searchDeadlineMs: options.searchDeadlineMs ?? Number(env.BIDPARK_SEARCH_DEADLINE_MS ?? 20_000),
+    // GET /api/listings reads at most this many auction ids per request; the rest follow via nextCursor.
+    listingsScanLimit: options.listingsScanLimit ?? Number(env.BIDPARK_LISTINGS_SCAN_LIMIT ?? 500),
     // Wallets allowed to review host verification requests (comma-separated addresses).
     moderators: parseModerators(options.moderators ?? env.BIDPARK_MODERATORS),
   };
@@ -332,26 +334,31 @@ export function createApp(options = {}) {
     return [space, badge];
   }
 
-  async function buildListings(contractAddress, readAuction, readSpace, nextId) {
+  /**
+   * One page of the auction id range: ids from `from` up, at most `limit` of them. `nextCursor` is the first
+   * id not yet scanned (null when the range is done), so staged and unindexed auctions stay discoverable
+   * on later pages instead of being dropped.
+   */
+  async function buildListings(contractAddress, readAuction, readSpace, nextId, { from = 1n, limit = settings.listingsScanLimit } = {}) {
     const listings = [];
     const unindexed = [];
-    const indexed = new Set();
+    const rows = new Map();
     for (const row of db.getAllListings(contractAddress)) {
       const id = canonicalizeAuctionId(row.auction_id);
-      if (!id) continue;
-      const onchain = await readAuction(id);
-      // A stored hash that no longer matches (e.g. after a chain rollback reused the id) is not shown.
-      if (!onchain || onchain.owner === ethers.ZeroAddress ||
-          row.metadata_hash.toLowerCase() !== onchain.metadataHash.toLowerCase()) continue;
-      indexed.add(id);
-      listings.push(listingFromRow(id, onchain, row, ...withBadge(contractAddress, await readSpace(id))));
+      if (id) rows.set(id, row);
     }
-    // ponytail: reads every auction id per request; the event indexer (#15) replaces this scan.
-    for (let n = 1n; n < BigInt(nextId); n++) {
+    const end = BigInt(nextId);
+    const stop = from + BigInt(limit) < end ? from + BigInt(limit) : end;
+    for (let n = from; n < stop; n++) {
       const id = n.toString();
-      if (indexed.has(id)) continue;
       const onchain = await readAuction(id);
       if (!onchain || onchain.owner === ethers.ZeroAddress) continue;
+      const row = rows.get(id);
+      // A stored hash that no longer matches (e.g. after a chain rollback reused the id) is not shown.
+      if (row && row.metadata_hash.toLowerCase() === onchain.metadataHash.toLowerCase()) {
+        listings.push(listingFromRow(id, onchain, row, ...withBadge(contractAddress, await readSpace(id))));
+        continue;
+      }
       const staged = db.getStagedMetadata(contractAddress, onchain.metadataHash);
       if (staged) {
         db.upsertListing({ ...staged, auctionId: id, contractAddress, metadataHash: onchain.metadataHash });
@@ -364,8 +371,19 @@ export function createApp(options = {}) {
         });
       }
     }
-    listings.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
-    return { listings, unindexed };
+    return { listings, unindexed, nextCursor: stop < end ? stop.toString() : null };
+  }
+
+  /** `limit` and `cursor` of GET /api/listings: both optional; null after answering 400 for a malformed one. */
+  function parseListingsPage(req, res) {
+    const bad = (error) => { res.status(400).json({ error }); return null; };
+    const { limit, cursor, ...rest } = req.query;
+    if (Object.keys(rest).length) return bad(`Unknown parameter: ${Object.keys(rest)[0]}`);
+    if (limit !== undefined && (typeof limit !== 'string' || !/^\d{1,5}$/.test(limit) || +limit < 1 || +limit > settings.listingsScanLimit)) {
+      return bad(`limit must be an integer from 1 to ${settings.listingsScanLimit}`);
+    }
+    if (cursor !== undefined && (typeof cursor !== 'string' || !/^[1-9]\d{0,17}$/.test(cursor))) return bad('cursor is malformed');
+    return { limit: limit === undefined ? settings.listingsScanLimit : Number(limit), from: BigInt(cursor ?? 1) };
   }
 
   /** The signed-in session, or null after answering 401: listing details are an off-chain write. */
@@ -497,26 +515,31 @@ export function createApp(options = {}) {
 
   /**
    * GET /api/listings
-   * Returns all active parking listings merged with live onchain state.
+   * Returns parking listings merged with live onchain state, one bounded page of auction ids per request
+   * (`limit`, default BIDPARK_LISTINGS_SCAN_LIMIT = 500; `cursor` = `nextCursor` of the previous page).
+   * `nextCursor` is omitted once every auction id has been scanned.
    * Includes the deployment identity and chain clock (`chain`) the state was read at.
    * Compares stored metadata_hash with onchain.metadataHash and skips stale rows.
    * Fails with 503 if chain is unreachable.
    */
   app.get('/api/listings', async (req, res, next) => {
     try {
+      const page = parseListingsPage(req, res);
+      if (!page) return;
       const deployment = loadDeployment();
       if (profile.id === 'sepolia') {
         try {
           const { finalized, iface } = await readFinalizedDeployment(deployment);
-          const { listings, unindexed } = await buildListings(
+          const { listings, unindexed, nextCursor } = await buildListings(
             deployment.contractAddress,
             (id) => readFinalizedAuction(deployment, iface, finalized, id),
             (id) => readFinalizedSpace(deployment, iface, finalized, id),
             await readFinalizedNextId(deployment, iface, finalized),
+            page,
           );
           const chain = { ...(await readChainSnapshot(deployment, finalized)), blockHash: finalized.hash };
           await assertCanonicalFinalized(finalized);
-          res.json({ listings, unindexed, chain });
+          res.json({ listings, unindexed, ...(nextCursor && { nextCursor }), chain });
         } catch {
           res.status(503).json({ error: 'Blockchain service unavailable' });
         }
@@ -558,6 +581,7 @@ export function createApp(options = {}) {
           (id) => contract.auctions(id, at),
           (id) => readLocalSpace(contract, id, at),
           await contract.nextAuctionId(at),
+          page,
         );
         // Read the clock after the auction state so the clock is never older than the state it judges.
         chain = { ...(await readChainSnapshot(deployment, pinned)), blockHash: pinned.hash };
@@ -567,7 +591,7 @@ export function createApp(options = {}) {
         return;
       }
 
-      res.json({ listings: built.listings, unindexed: built.unindexed, chain });
+      res.json({ listings: built.listings, unindexed: built.unindexed, ...(built.nextCursor && { nextCursor: built.nextCursor }), chain });
     } catch (err) {
       next(err);
     }

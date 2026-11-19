@@ -1,11 +1,16 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Listing } from '../../src/types';
 import { FilterBar } from '../../src/components/FilterBar';
+import { SpotCard } from '../../src/components/SpotCard';
+import { searchListingsPages } from '../../src/services/api';
 import {
   DEFAULT_FILTERS,
+  MY_LOCATION_LABEL,
   amenityOptions,
+  areaFromBounds,
+  parseArea,
   describeFilters,
   destinationOptions,
   discoverListings,
@@ -129,5 +134,75 @@ describe('discovery filters', () => {
       arrive: epochToLocal(T0 + 3600), depart: epochToLocal(T0), minPrice: '2', maxPrice: '1', sortBy: 'distance', radiusKm: '1',
     }), null));
     expect(Object.fromEntries(bad)).toEqual({ sort: 'ending-soon', limit: '50' });
+  });
+
+  it('applies a map area locally and to the server query, and keeps it in the URL', () => {
+    const area = '30.260000,-97.750000,30.270000,-97.730000';
+    expect(parseArea(area)).toEqual({ minLat: 30.26, minLon: -97.75, maxLat: 30.27, maxLon: -97.73 });
+    for (const bad of ['', '1,2,3', '30.3,-97,30.2,-96', '91,0,92,1', 'a,b,c,d']) expect(parseArea(bad), bad).toBeNull();
+    // The viewport is clamped to valid coordinates (a world-wrapped map reports longitudes past 180).
+    expect(areaFromBounds({ south: -95, west: -200, north: 30.123456789, east: 250 })).toBe('-90.000000,-180.000000,30.123457,180.000000');
+    expect(ids({ area })).toEqual(['1']);
+    expect(ids({ area: 'junk' }).sort()).toEqual(['1', '2']);
+    expect(new URLSearchParams(searchQuery(f({ area }), null)).get('bbox')).toBe(area);
+    expect(new URLSearchParams(searchQuery(f({ area: 'junk' }), null)).has('bbox')).toBe(false);
+    expect(filtersFromSearch(filtersToSearch(f({ area }))).area).toBe(area);
+    expect(filtersFromSearch('?area=junk').area).toBe('');
+    expect(describeFilters(f({ area }), null)).toContain('Inside the searched map area');
+  });
+
+  it('keeps a shared position out of the URL', () => {
+    expect(filtersToSearch(f({ destination: MY_LOCATION_LABEL }))).toBe('');
+    expect(filtersToSearch(f({ destination: 'Far Rd' }))).toBe('?dest=Far+Rd');
+  });
+
+  it('offers location only when given a handler and shows why it was refused', () => {
+    const host = document.createElement('div');
+    const root = createRoot(host);
+    const props = { filters: DEFAULT_FILTERS, onFilterChange: () => {}, totalSpots: 2, filteredCount: 2, listingsStatus: 'ready' as const, viewMode: 'split' as const, onViewModeChange: () => {} };
+    const buttons = () => [...host.querySelectorAll('button')].filter((b) => b.textContent === 'Use my location');
+    act(() => root.render(<FilterBar {...props} />));
+    expect(buttons()).toHaveLength(0);
+    const onUseLocation = vi.fn();
+    act(() => root.render(<FilterBar {...props} onUseLocation={onUseLocation} locationMessage="Location not shared. Type a destination instead." />));
+    act(() => buttons()[0].click());
+    expect(onUseLocation).toHaveBeenCalledOnce();
+    expect(host.querySelector('#destination-hint')?.textContent).toMatch(/Location not shared/);
+    act(() => root.unmount());
+  });
+
+  it('names the space time zone on a card, or says it is not set', () => {
+    const render = (over: Partial<Listing>) => {
+      const host = document.createElement('div');
+      const root = createRoot(host);
+      act(() => root.render(<SpotCard listing={listing(over)} currentAddress={null} isSelected={false} onSelect={() => {}} onOpenBid={() => {}} onOpenDetail={() => {}} onSettle={() => {}} />));
+      const text = host.querySelector('.window-zone')?.textContent;
+      act(() => root.unmount());
+      return text;
+    };
+    expect(render({ timeZone: 'America/Chicago' })).toBe('Space time zone: America/Chicago');
+    expect(render({ timeZone: '' })).toMatch(/not set/);
+  });
+});
+
+describe('search pages', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const page = (n: number, next: string | null) => ({ listings: [{ id: String(n) }], total: 3, nextCursor: next, chain: null });
+
+  it('reloads as many pages as were shown, on one cursor chain, and keeps what it has if a later page fails', async () => {
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      calls.push(url);
+      const cursor = new URL(url, 'http://x').searchParams.get('cursor');
+      if (cursor === 'c2') return new Response(JSON.stringify({ error: 'gone' }), { status: 409 });
+      return new Response(JSON.stringify(cursor === 'c1' ? page(2, 'c2') : page(1, 'c1')));
+    }));
+    const two = await searchListingsPages('limit=1', 2);
+    expect(two.listings.map((l) => l.id)).toEqual(['1', '2']);
+    expect(two.nextCursor).toBe('c2');
+    expect(calls).toEqual(['/api/listings/search?limit=1', '/api/listings/search?limit=1&cursor=c1']);
+    // The cursor for page 3 is refused: the pages already read are kept.
+    const three = await searchListingsPages('limit=1', 3);
+    expect(three.listings.map((l) => l.id)).toEqual(['1', '2']);
   });
 });

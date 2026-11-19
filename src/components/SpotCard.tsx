@@ -161,6 +161,9 @@ export const SpotCard: React.FC<SpotCardProps> = ({
             <span className="window-times">
               {parkingWindow.timeRange} ({parkingWindow.durationHours})
             </span>
+            <span className="window-zone">
+              {listing.timeZone ? `Space time zone: ${listing.timeZone}` : 'Space time zone not set; shown in your time zone'}
+            </span>
           </div>
         </div>
 

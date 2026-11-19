@@ -47,6 +47,8 @@ export interface FilterState {
   arrive: string;
   depart: string;
   amenities: string[];
+  /** Map area as 'minLat,minLon,maxLat,maxLon' (set by Search this area); '' means anywhere. */
+  area: string;
 }
 
 export type AppTab = 'marketplace' | 'activity' | 'create';
