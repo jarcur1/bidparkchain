@@ -31,6 +31,15 @@ export interface WalletContextValue {
 const STORAGE_WALLET_TYPE = 'bidpark_wallet_type';
 const STORAGE_ACCOUNT_INDEX = 'bidpark_account_index';
 const WalletContext = createContext<WalletContextValue | null>(null);
+
+/** A connection error in words a user can act on; a declined wallet prompt is not shown as a failure code. */
+function describeConnectionError(error: unknown): string {
+  const e = error as { code?: unknown; info?: { error?: { code?: unknown } } } | null;
+  if (e?.code === 4001 || e?.code === 'ACTION_REJECTED' || e?.info?.error?.code === 4001) {
+    return 'The connection request was rejected in your wallet. Choose a wallet again to retry.';
+  }
+  return error instanceof Error ? error.message : String(error);
+}
 type Provider = JsonRpcProvider | BrowserProvider;
 
 export const WalletProvider: React.FC<{ config: Config | null; children: React.ReactNode }> = ({ config, children }) => {
@@ -98,8 +107,7 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
   const fail = useCallback((id: number, error: unknown) => {
     if (generation.current !== id) return;
     setBalanceRead(readFailed(LOADING_READ, error));
-    publish({ ...stateRef.current, isReady: false, isConnecting: false,
-      error: error instanceof Error ? error.message : String(error) });
+    publish({ ...stateRef.current, isReady: false, isConnecting: false, error: describeConnectionError(error) });
   }, [publish]);
 
   const connectLocal = useCallback(async (accountIndex?: number) => {

@@ -112,7 +112,7 @@ it('signs in and out from the wallet dialog, explaining what signing proves', as
   expect(document.body.textContent).toContain('Not signed in');
   await act(async () => { button('Sign in with this wallet').click(); });
   await settle();
-  expect(document.querySelector('[role="status"]')?.textContent).toContain('Signed in as');
+  expect(document.querySelector('[aria-labelledby="wallet-signin-title"] [role="status"]')?.textContent).toContain('Signed in as');
   await act(async () => { button('Sign out').click(); });
   await settle();
   expect(button('Sign in with this wallet')).toBeTruthy();

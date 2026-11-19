@@ -103,6 +103,18 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
             )}
           </div>
 
+          <p className={walletState.error ? 'wallet-connection-error' : 'wallet-connection-status'} role={walletState.error ? 'alert' : 'status'}>
+            {walletState.isConnecting
+              ? 'Connecting…'
+              : walletState.error
+                ? walletState.error
+                : walletState.isReady
+                  ? 'Connected and ready'
+                  : wrongChain
+                    ? 'Connected to the wrong network'
+                    : 'Not connected'}
+          </p>
+
           {wrongChain && (
             <div className="wallet-wrong-chain-notice" role="alert">
               <ShieldAlert size={15} />
@@ -163,9 +175,11 @@ export const WalletModal: React.FC<WalletModalProps> = ({ isOpen, onClose }) => 
 
           <div className="demo-accounts-list">
             {DEMO_ACCOUNTS.map((acc) => {
+              // Only an account that finished connecting is marked active.
               const isActive =
                 walletState.type === 'local' &&
-                walletState.localAccountIndex === acc.index;
+                walletState.localAccountIndex === acc.index &&
+                walletState.isReady;
               return (
                 <button
                   key={acc.index}
