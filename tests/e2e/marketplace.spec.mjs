@@ -82,6 +82,9 @@ test('host lists, drivers bid and refund, winner reserves, host receives payout'
   await selectWallet(page, 2);
   await page.getByRole('button', { name: /My Activity/ }).click();
   await expect(page.getByText('Available to Withdraw:', { exact: true })).toBeVisible();
+  const outbidRow = page.getByRole('row').filter({ hasText: title });
+  await expect(outbidRow.getByText('Outbid — bidding still open', { exact: true })).toBeVisible();
+  await expect(outbidRow.getByRole('button', { name: 'Bid Again', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Withdraw 0.060 ETH', exact: true })).toBeVisible();
   expect(await escrow.pendingReturns(chain.wallet(2).address)).toBe(parseEther('0.06'));
   await page.getByRole('button', { name: 'Withdraw 0.060 ETH', exact: true }).click();
@@ -91,14 +94,18 @@ test('host lists, drivers bid and refund, winner reserves, host receives payout'
   await selectWallet(page, 1);
   await advancePast(page, chain, auction.bidEnd);
   await expect(page.getByRole('heading', { name: /Won Auctions — Settle to Confirm Reservation/ })).toBeVisible();
+  await expect(page.getByText('Status: You won — pending settlement', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Settle Auction & Claim Pass', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Confirmed Reservations (1)', exact: true })).toBeVisible();
+  await expect(page.getByText('Status: You won — confirmed on-chain', { exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: title, exact: true })).toBeVisible();
   await expect(page.getByText('BidPark Escrow Pass', { exact: true })).toBeVisible();
   auction = await escrow.auctions(auctionId);
   expect(auction.settled).toBe(true);
   expect(auction.highestBidder).toBe(chain.wallet(1).address);
   expect(auction.payoutClaimed).toBe(false);
+  await selectWallet(page, 2);
+  await expect(page.getByRole('row').filter({ hasText: title }).getByText('Outbid — another bidder won (confirmed)', { exact: true })).toBeVisible();
 
   await advancePast(page, chain, auction.parkingEnd);
   await selectWallet(page, 0);

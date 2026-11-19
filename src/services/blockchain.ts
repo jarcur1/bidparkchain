@@ -1,5 +1,6 @@
 import {
   Contract,
+  type EventLog,
   Interface,
   JsonRpcProvider,
   type BrowserProvider,
@@ -130,6 +131,21 @@ export async function fetchPendingReturns(
     throw new Error(`Finalized pending returns unavailable for ${accountAddress}: block changed`);
   }
   return balance;
+}
+
+/** Auction ids this account has ever bid on, from BidPlaced logs at the same confirmation level as listings. */
+export async function fetchBidAuctionIds(
+  contract: Contract,
+  accountAddress: string,
+  fromBlock: number,
+  confirmation: ConfirmationPolicy = 'mined',
+): Promise<Set<string>> {
+  const logs = await contract.queryFilter(
+    contract.filters.BidPlaced(null, accountAddress),
+    fromBlock,
+    confirmation === 'finalized' ? 'finalized' : 'latest',
+  );
+  return new Set(logs.map((log) => String((log as EventLog).args.id)));
 }
 
 export interface CreateAuctionResult {
