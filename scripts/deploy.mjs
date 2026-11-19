@@ -164,7 +164,7 @@ async function main() {
   if (isFreshDeploy) {
     console.log('[BidPark Deploy] Deploying new ParkingAuctionEscrow instance...');
     const factory = new ethers.ContractFactory(abi, bytecode, deployerWallet);
-    const contract = await factory.deploy();
+    const contract = await factory.deploy(false);
     await contract.waitForDeployment();
     contractAddress = await contract.getAddress();
     const receipt = await contract.deploymentTransaction()?.wait();

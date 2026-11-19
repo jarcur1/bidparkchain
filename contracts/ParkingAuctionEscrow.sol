@@ -37,6 +37,14 @@ contract ParkingAuctionEscrow {
     /// IANA time zone name of the space's location (e.g. "America/Chicago"); empty until the owner sets it.
     mapping(uint256 => string) public spaceTimeZone;
 
+    // A verifier attests one opaque canonical identity per physical stall. The binding survives
+    // revocation and transfer: all windows for that identity must keep using the same calendar.
+    bool public verifiedInventoryRequired;
+    mapping(address => bool) public spaceVerifiers;
+    mapping(uint256 => bytes32) public spaceIdentity;
+    mapping(bytes32 => uint256) public spaceForIdentity;
+    mapping(uint256 => bytes32) public spaceVerifiedMetadata;
+
     struct BlockedWindow {
         uint256 spaceId;
         uint64 start;
@@ -114,6 +122,12 @@ contract ParkingAuctionEscrow {
     error InvalidSpaceOwner();
     error InvalidTimeZone();
     error BlockedWindowNotFound();
+    error NotSpaceVerifier();
+    error SpaceNotVerified();
+    error StaleSpaceOwnership();
+    error InvalidSpaceIdentity();
+    error UnverifiedSpaceMetadata();
+    error SpaceIdentityTaken(uint256 spaceId);
     error NotProtected();
     error NotWinner();
     error NotResolver();
@@ -139,6 +153,8 @@ contract ParkingAuctionEscrow {
     event SpaceTimeZoneSet(uint256 indexed spaceId, string timeZone);
     event SpaceWindowBlocked(uint256 indexed spaceId, uint256 indexed blockId, uint64 start, uint64 end);
     event SpaceWindowUnblocked(uint256 indexed spaceId, uint256 indexed blockId);
+    event SpaceVerifierSet(address indexed verifier, bool allowed);
+    event SpaceVerificationSet(uint256 indexed spaceId, uint256 indexed epoch, bool verified);
     event ProtectedAuctionCreated(uint256 indexed id);
     event ResolverSet(address indexed resolver, bool allowed);
     /// The full winning principal was credited to the winner for withdrawal (terminal).
@@ -155,13 +171,70 @@ contract ParkingAuctionEscrow {
         _status = 1;
     }
 
-    constructor() {
+    constructor(bool requireVerifiedInventory) {
         resolverAdmin = msg.sender;
+        verifiedInventoryRequired = requireVerifiedInventory;
     }
 
     modifier onlySpaceOwner(uint256 spaceId) {
         if (spaceOwner[spaceId] != msg.sender) revert NotSpaceOwner();
         _;
+    }
+
+    /** @notice The deployment admin manages this role independently of dispute resolvers. */
+    function setSpaceVerifier(address verifier, bool allowed) external {
+        if (msg.sender != resolverAdmin) revert NotSpaceVerifier();
+        spaceVerifiers[verifier] = allowed;
+        emit SpaceVerifierSet(verifier, allowed);
+    }
+
+    /** @notice Changes on every ownership transfer, including a transfer back to an earlier owner. */
+    function spaceOwnershipEpoch(uint256 spaceId) external view returns (uint256) {
+        return _spaceEpoch[spaceId];
+    }
+
+    /** @notice Inventory and verification snapshot for an auction, read at the same block as its bid state. */
+    function auctionInventory(uint256 id) external view returns (
+        uint256 spaceId, string memory timeZone, address owner, bool required, bool verified, bool canAcceptBids
+    ) {
+        spaceId = auctionSpace[id];
+        timeZone = spaceTimeZone[spaceId];
+        owner = spaceOwner[spaceId];
+        required = verifiedInventoryRequired;
+        bytes32 approvedMetadata = spaceVerifiedMetadata[spaceId];
+        Auction storage auction = auctions[id];
+        verified = approvedMetadata != bytes32(0) && approvedMetadata == auction.metadataHash;
+        canAcceptBids = !required || (verified && isSpaceLister(spaceId, auction.owner));
+    }
+
+    /**
+     * @notice Approves or suspends a space for the reviewed owner and ownership epoch. For approval,
+     * pass the same opaque identity for aliases of the same stall and the reviewed listing hash.
+     * Passing zero for both suspends approval without changing existing commitments.
+     * A verifier cannot approve a space it owns or may list, and cannot move an identity to a new id.
+     */
+    function setSpaceVerification(uint256 spaceId, address owner, uint256 epoch, bytes32 identity, bytes32 metadataHash)
+        external
+    {
+        if (!spaceVerifiers[msg.sender]) revert NotSpaceVerifier();
+        if (owner == address(0) || spaceOwner[spaceId] != owner || _spaceEpoch[spaceId] != epoch) {
+            revert StaleSpaceOwnership();
+        }
+        if ((identity == bytes32(0)) != (metadataHash == bytes32(0))) revert InvalidSpaceIdentity();
+        if (identity != bytes32(0)) {
+            if (isSpaceLister(spaceId, msg.sender)) revert NotSpaceVerifier();
+            bytes32 current = spaceIdentity[spaceId];
+            if (current != identity) {
+                if (current != bytes32(0)) revert InvalidSpaceIdentity();
+                uint256 existing = spaceForIdentity[identity];
+                if (existing != 0) revert SpaceIdentityTaken(existing);
+                spaceIdentity[spaceId] = identity;
+                spaceForIdentity[identity] = spaceId;
+            }
+        }
+        bool approved = identity != bytes32(0);
+        spaceVerifiedMetadata[spaceId] = metadataHash;
+        emit SpaceVerificationSet(spaceId, epoch, approved);
     }
 
     /**
@@ -186,6 +259,7 @@ contract ParkingAuctionEscrow {
         uint64 parkingStart,
         uint64 parkingEnd
     ) external returns (uint256 id) {
+        if (verifiedInventoryRequired) revert SpaceNotVerified();
         id = _createAuction(_registerSpace(), metadataHash, minBid, bidEnd, parkingStart, parkingEnd);
     }
 
@@ -203,8 +277,7 @@ contract ParkingAuctionEscrow {
         uint64 parkingStart,
         uint64 parkingEnd
     ) external returns (uint256 id) {
-        if (!isSpaceLister(spaceId, msg.sender)) revert NotSpaceOwner();
-        _checkWindowFree(spaceId, parkingStart, parkingEnd);
+        _checkListableSpace(spaceId, metadataHash, parkingStart, parkingEnd);
         id = _createAuction(spaceId, metadataHash, minBid, bidEnd, parkingStart, parkingEnd);
     }
 
@@ -224,10 +297,10 @@ contract ParkingAuctionEscrow {
     ) external returns (uint256 id) {
         if (uint256(parkingStart) < uint256(bidEnd) + MIN_BID_LEAD) revert InvalidTimeWindow();
         if (spaceId == 0) {
+            if (verifiedInventoryRequired) revert SpaceNotVerified();
             spaceId = _registerSpace();
         } else {
-            if (!isSpaceLister(spaceId, msg.sender)) revert NotSpaceOwner();
-            _checkWindowFree(spaceId, parkingStart, parkingEnd);
+            _checkListableSpace(spaceId, metadataHash, parkingStart, parkingEnd);
         }
         id = _createAuction(spaceId, metadataHash, minBid, bidEnd, parkingStart, parkingEnd);
         bookings[id].isProtected = true;
@@ -263,6 +336,10 @@ contract ParkingAuctionEscrow {
     function transferSpace(uint256 spaceId, address newOwner) external onlySpaceOwner(spaceId) {
         if (newOwner == address(0)) revert InvalidSpaceOwner();
         _spaceEpoch[spaceId]++;
+        if (spaceVerifiedMetadata[spaceId] != bytes32(0)) {
+            delete spaceVerifiedMetadata[spaceId];
+            emit SpaceVerificationSet(spaceId, _spaceEpoch[spaceId], false);
+        }
         spaceOwner[spaceId] = newOwner;
         emit SpaceTransferred(spaceId, msg.sender, newOwner);
     }
@@ -375,6 +452,18 @@ contract ParkingAuctionEscrow {
         emit SpaceRegistered(spaceId, msg.sender);
     }
 
+    function _checkListableSpace(uint256 spaceId, bytes32 metadataHash, uint64 start, uint64 end) private {
+        if (!isSpaceLister(spaceId, msg.sender)) revert NotSpaceOwner();
+        if (verifiedInventoryRequired) _checkApprovedMetadata(spaceId, metadataHash);
+        _checkWindowFree(spaceId, start, end);
+    }
+
+    function _checkApprovedMetadata(uint256 spaceId, bytes32 metadataHash) private view {
+        bytes32 approved = spaceVerifiedMetadata[spaceId];
+        if (approved == bytes32(0)) revert SpaceNotVerified();
+        if (metadataHash != approved) revert UnverifiedSpaceMetadata();
+    }
+
     function _createAuction(
         uint256 spaceId,
         bytes32 metadataHash,
@@ -422,6 +511,11 @@ contract ParkingAuctionEscrow {
         if (auction.settled) revert AlreadySettled();
         if (block.timestamp >= auction.bidEnd) revert AuctionEnded();
         if (msg.sender == auction.owner) revert OwnerCannotBid();
+        if (verifiedInventoryRequired) {
+            uint256 spaceId = auctionSpace[id];
+            _checkApprovedMetadata(spaceId, auction.metadataHash);
+            if (!isSpaceLister(spaceId, auction.owner)) revert NotSpaceOwner();
+        }
         if (msg.value < auction.minBid || msg.value <= auction.highestBid) revert BidTooLow();
 
         address previousBidder = auction.highestBidder;

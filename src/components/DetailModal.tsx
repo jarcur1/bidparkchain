@@ -30,6 +30,7 @@ import { BidHistory } from './BidHistory';
 import { Dialog } from './Dialog';
 import { ReportSpace } from './ReportSpace';
 import { ArrivalPanel } from './ArrivalPanel';
+import { DisputeRecord, MIN_REVIEW_TEXT, REVIEW_ACTIONS } from './Disputes';
 
 interface DetailModalProps {
   listing: Listing | null;
@@ -41,7 +42,7 @@ interface DetailModalProps {
   onSettle: (listing: Listing) => void;
   onCancel: (listing: Listing) => void;
   onClaimPayout: (listing: Listing) => void;
-  onBookingAction?: (listing: Listing, action: BookingAction) => void;
+  onBookingAction?: (listing: Listing, action: BookingAction, text?: string) => void;
   isActionBusy: boolean;
   /** Whether the viewer has an API session; reporting needs one. */
   signedIn?: boolean;
@@ -62,6 +63,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
   signedIn = false,
 }) => {
   const [copiedHash, setCopiedHash] = useState(false);
+  const [reviewText, setReviewText] = useState('');
   const [timeRemaining, setTimeRemaining] = useState(() =>
     listing ? getAuctionTimeRemaining(listing.bidEnd) : { isEnded: true, text: '', totalSeconds: 0 }
   );
@@ -96,6 +98,8 @@ export const DetailModal: React.FC<DetailModalProps> = ({
   const canOwnerCancel = isOwner && !hasBids && !listing.settled && !listing.cancelled;
   const canOwnerClaimPayout = isOwner && canClaimPayout(listing, now);
   const booking = bookingView(listing, currentAddress, now);
+  const needsText = booking?.actions.some((a) => REVIEW_ACTIONS.includes(a)) ?? false;
+  const textOk = reviewText.trim().length >= MIN_REVIEW_TEXT && signedIn;
   const handleCopyHash = () => {
     if (listing.metadataHash) {
       navigator.clipboard.writeText(listing.metadataHash);
@@ -379,17 +383,31 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                 {booking && (
                   <div className="booking-protection" data-testid="booking-protection">
                     <p className="owner-notice">{booking.status}</p>
+                    {needsText && (
+                      <label className="owner-notice">
+                        {booking.actions.includes('reportSellerFailure') ? 'Evidence (text or links)' : 'Decision reason'}
+                        <textarea
+                          aria-label="Review text"
+                          maxLength={2000}
+                          rows={3}
+                          placeholder={signedIn ? 'Stored off-chain, readable only by the winner, host and resolvers. At least 10 characters.' : 'Sign in to submit a review record.'}
+                          value={reviewText}
+                          onChange={(e) => setReviewText(e.target.value)}
+                        />
+                      </label>
+                    )}
                     {booking.actions.map((action) => (
                       <button
                         key={action}
                         type="button"
                         className="btn-modal-settle"
-                        disabled={isActionBusy || !onBookingAction}
-                        onClick={() => onBookingAction?.(listing, action)}
+                        disabled={isActionBusy || !onBookingAction || (REVIEW_ACTIONS.includes(action) && !textOk)}
+                        onClick={() => onBookingAction?.(listing, action, REVIEW_ACTIONS.includes(action) ? reviewText.trim() : undefined)}
                       >
                         <span>{BOOKING_ACTION_LABELS[action]}</span>
                       </button>
                     ))}
+                    {signedIn && booking && listing.booking?.disputeReporter && <DisputeRecord auctionId={listing.id} refreshKey={listing.booking.disputeReporter} />}
                   </div>
                 )}
 

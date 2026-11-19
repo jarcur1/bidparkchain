@@ -14,6 +14,7 @@ import { createSettlementJob, settlementSettings } from './settlement.mjs';
 import { PRICE_NOTE, QueryError, encodeCursor, filterAndSort, matchesMetadata, parseSearchQuery } from './search.mjs';
 import { mountDrafts } from './drafts.mjs';
 import { mountArrival } from './arrival.mjs';
+import { mountDisputes } from './disputes.mjs';
 import { mountVerification, parseModerators, publicVerification } from './verification.mjs';
 
 let sepoliaArtifact;
@@ -102,9 +103,10 @@ export function bookingFromChain(booking) {
   };
 }
 
-function listingFromRow(id, onchain, row, [spaceId, timeZone, booking], verification) {
+function listingFromRow(id, onchain, row, { inventory, booking }, verification) {
   return {
-    id, spaceId: spaceId.toString(), timeZone, owner: onchain.owner, verification,
+    id, spaceId: inventory.spaceId.toString(), timeZone: inventory.timeZone, owner: onchain.owner, verification,
+    inventoryBlocked: !inventory.canAcceptBids,
     booking: bookingFromChain(booking),
     minBid: ethers.formatEther(onchain.minBid),
     highestBid: ethers.formatEther(onchain.highestBid),
@@ -296,18 +298,18 @@ export function createApp(options = {}) {
     return readFinalized(deployment, iface, finalized, 'auctions', [id]);
   }
 
-  /** [spaceId, IANA time zone] of the space an auction belongs to. */
-  async function readFinalizedSpace(deployment, iface, finalized, id) {
-    const [spaceId] = await readFinalized(deployment, iface, finalized, 'auctionSpace', [id]);
-    const [timeZone] = await readFinalized(deployment, iface, finalized, 'spaceTimeZone', [spaceId]);
-    const booking = iface.getFunction('bookings') ? await readFinalized(deployment, iface, finalized, 'bookings', [id]) : null;
-    return [spaceId, timeZone, booking];
+  async function readSpace(call, id) {
+    const inventory = await call('auctionInventory', [id]);
+    const booking = await call('bookings', [id]);
+    return { inventory, booking };
   }
 
-  async function readLocalSpace(contract, id, at = {}) {
-    const spaceId = await contract.auctionSpace(id, at);
-    const booking = contract.interface.getFunction('bookings') ? await contract.bookings(id, at) : null;
-    return [spaceId, await contract.spaceTimeZone(spaceId, at), booking];
+  function readFinalizedSpace(deployment, iface, finalized, id) {
+    return readSpace((method, args) => readFinalized(deployment, iface, finalized, method, args), id);
+  }
+
+  function readLocalSpace(contract, id, at = {}) {
+    return readSpace((method, args) => contract[method](...args, at), id);
   }
 
   async function readFinalizedNextId(deployment, iface, finalized) {
@@ -323,9 +325,12 @@ export function createApp(options = {}) {
    * metadata is either recovered from metadata staged under its hash or reported as unindexed,
    * so an auction never silently disappears. RPC errors propagate to the caller.
    */
-  /** [[spaceId, timeZone], public verification] for a listing: only the verification status is ever exposed. */
-  const withBadge = (contractAddress, onchain, space) =>
-    [space, publicVerification(db.getVerification(contractAddress, space[0].toString()), onchain.owner)];
+  function withBadge(contractAddress, space) {
+    const { spaceId, owner, required, verified } = space.inventory;
+    const badge = required ? (verified ? 'verified' : 'unverified')
+      : publicVerification(db.getVerification(contractAddress, spaceId.toString()), owner);
+    return [space, badge];
+  }
 
   async function buildListings(contractAddress, readAuction, readSpace, nextId) {
     const listings = [];
@@ -339,7 +344,7 @@ export function createApp(options = {}) {
       if (!onchain || onchain.owner === ethers.ZeroAddress ||
           row.metadata_hash.toLowerCase() !== onchain.metadataHash.toLowerCase()) continue;
       indexed.add(id);
-      listings.push(listingFromRow(id, onchain, row, ...withBadge(contractAddress, onchain, await readSpace(id))));
+      listings.push(listingFromRow(id, onchain, row, ...withBadge(contractAddress, await readSpace(id))));
     }
     // ponytail: reads every auction id per request; the event indexer (#15) replaces this scan.
     for (let n = 1n; n < BigInt(nextId); n++) {
@@ -350,7 +355,7 @@ export function createApp(options = {}) {
       const staged = db.getStagedMetadata(contractAddress, onchain.metadataHash);
       if (staged) {
         db.upsertListing({ ...staged, auctionId: id, contractAddress, metadataHash: onchain.metadataHash });
-        listings.push(listingFromRow(id, onchain, { ...staged, amenities: JSON.stringify(staged.amenities) }, ...withBadge(contractAddress, onchain, await readSpace(id))));
+        listings.push(listingFromRow(id, onchain, { ...staged, amenities: JSON.stringify(staged.amenities) }, ...withBadge(contractAddress, await readSpace(id))));
       } else {
         unindexed.push({
           id, owner: onchain.owner, metadataHash: onchain.metadataHash,
@@ -632,10 +637,8 @@ export function createApp(options = {}) {
         const read = await Promise.all(candidates.slice(i, i + 16).map(async ({ id, row, meta }) => {
           const onchain = await call('auctions', [id]);
           if (onchain.owner === ethers.ZeroAddress || row.metadata_hash.toLowerCase() !== onchain.metadataHash.toLowerCase()) return null;
-          const [spaceId] = await call('auctionSpace', [id]);
-          const [timeZone] = await call('spaceTimeZone', [spaceId]);
-          const booking = iface.getFunction('bookings') ? await call('bookings', [id]) : null;
-          return listingFromRow(id, onchain, { ...meta, amenities: JSON.stringify(meta.amenities) }, ...withBadge(deployment.contractAddress, onchain, [spaceId, timeZone, booking]));
+          return listingFromRow(id, onchain, { ...meta, amenities: JSON.stringify(meta.amenities) },
+            ...withBadge(deployment.contractAddress, await readSpace(call, id)));
         }));
         listings.push(...read.filter(Boolean));
       }
@@ -742,7 +745,7 @@ export function createApp(options = {}) {
           db.upsertListing({ auctionId: canonicalId, contractAddress: deployment.contractAddress,
             metadataHash: canonicalHash, ...normalized });
           res.status(existing && !isReconciliation ? 200 : 201).json({
-            listing: listingFromRow(canonicalId, onchain, { ...normalized, amenities: JSON.stringify(normalized.amenities) }, ...withBadge(deployment.contractAddress, onchain, space)),
+            listing: listingFromRow(canonicalId, onchain, { ...normalized, amenities: JSON.stringify(normalized.amenities) }, ...withBadge(deployment.contractAddress, space)),
           });
         } catch {
           res.status(503).json({ error: 'Blockchain service unavailable' });
@@ -817,7 +820,7 @@ export function createApp(options = {}) {
 
       const listing = listingFromRow(canonicalId, onchain, {
         ...normalized, amenities: JSON.stringify(normalized.amenities),
-      }, ...withBadge(deployment.contractAddress, onchain, space));
+      }, ...withBadge(deployment.contractAddress, space));
 
       res.status(existing && !isReconciliation ? 200 : 201).json({ listing });
     } catch (err) {
@@ -868,7 +871,7 @@ export function createApp(options = {}) {
    * GET /api/auctions/:id/events: canonical public event history for one auction, with the index
    * checkpoint and last sync error so a client can tell "no events" from "not indexed yet" or stale.
    */
-  app.get('/api/auctions/:id/events', (req, res) => {
+  app.get('/api/auctions/:id/events', async (req, res) => {
     const id = canonicalizeAuctionId(req.params.id);
     const deployment = loadDeployment();
     if (!id || !deployment?.contractAddress) {
@@ -878,10 +881,50 @@ export function createApp(options = {}) {
     res.json({
       indexedBlock: db.getCheckpoint(deployment.contractAddress)?.block_number ?? null,
       syncError: lastSync?.error ?? null,
-      events: db.getAuctionEvents(deployment.contractAddress, id).map((e) => ({
-        event: e.event, account: e.account, amount: e.amount === null ? null : ethers.formatEther(e.amount),
-        blockNumber: e.block_number, blockHash: e.block_hash, txHash: e.tx_hash, logIndex: e.log_index,
-      })),
+      events: await withBlockTimes(db.getAuctionEvents(deployment.contractAddress, id)),
+    });
+  });
+
+  // Block timestamps by block hash (immutable per hash). null when the node cannot be read.
+  const blockTimes = new Map();
+  async function withBlockTimes(rows) {
+    const missing = [...new Map(rows.filter((e) => !blockTimes.has(e.block_hash)).map((e) => [e.block_hash, e.block_number]))];
+    await Promise.all(missing.slice(0, 200).map(async ([hash]) => {
+      const block = await provider.getBlock(hash).catch(() => null);
+      if (block) blockTimes.set(hash, block.timestamp);
+    }));
+    return rows.map((e) => ({
+      event: e.event, auctionId: e.auction_id, account: e.account, amount: e.amount === null ? null : ethers.formatEther(e.amount),
+      blockNumber: e.block_number, blockHash: e.block_hash, txHash: e.tx_hash, logIndex: e.log_index,
+      blockTime: blockTimes.get(e.block_hash) ?? null,
+    }));
+  }
+
+  /**
+   * GET /api/accounts/:address/history: public canonical events for one wallet on this deployment (its
+   * own, plus every bid on auctions it bid on, so lost auctions can be told apart), with block times
+   * and the deployment identity so a link is only ever read against the network and contract it names.
+   */
+  app.get('/api/accounts/:address/history', async (req, res) => {
+    let address;
+    try {
+      address = ethers.getAddress(req.params.address);
+    } catch {
+      res.status(400).json({ error: 'Valid wallet address is required' });
+      return;
+    }
+    const deployment = loadDeployment();
+    if (!deployment?.contractAddress) {
+      res.status(503).json({ error: 'Smart contract not deployed' });
+      return;
+    }
+    const checkpoint = db.getCheckpoint(deployment.contractAddress);
+    res.json({
+      chainId: profile.chainId,
+      contractAddress: deployment.contractAddress,
+      indexedBlock: checkpoint?.block_number ?? null,
+      syncError: lastSync?.error ?? null,
+      events: await withBlockTimes(db.getInboxEvents(deployment.contractAddress, address)),
     });
   });
 
@@ -971,6 +1014,39 @@ export function createApp(options = {}) {
   });
 
   mountDrafts(app, { db, contractAddress: () => loadDeployment()?.contractAddress ?? null });
+
+  /** Live read of one chain method for the review channel: finalized on Sepolia, the latest block locally. */
+  async function readChain(method, args) {
+    const deployment = loadDeployment();
+    if (profile.id === 'sepolia') {
+      const { finalized, iface } = await readFinalizedDeployment(deployment);
+      const result = await readFinalized(deployment, iface, finalized, method, args);
+      await assertCanonicalFinalized(finalized);
+      return result.length === 1 ? result[0] : result;
+    }
+    const contract = deployment && isLocalDeployment(deployment) ? getContract(deployment) : null;
+    if (!contract) throw new Error('Smart contract not deployed');
+    return contract[method](...args);
+  }
+
+  mountDisputes(app, {
+    db, chainId: profile.chainId,
+    contractAddress: () => loadDeployment()?.contractAddress ?? null,
+    readState: async (id) => {
+      const auction = await readChain('auctions', [id]);
+      if (auction.owner === ethers.ZeroAddress) return null;
+      const [booking, spaceId] = await Promise.all([readChain('bookings', [id]), readChain('auctionSpace', [id])]);
+      return {
+        owner: auction.owner, spaceOwner: await readChain('spaceOwner', [spaceId]), highestBidder: auction.highestBidder,
+        settled: auction.settled, cancelled: auction.cancelled, parkingEnd: Number(auction.parkingEnd),
+        isProtected: booking.isProtected, outcome: Number(booking.outcome),
+        disputeReporter: booking.disputeReporter, disputeEvidence: booking.disputeEvidence,
+      };
+    },
+    isResolver: (account) => readChain('resolvers', [account]),
+    now: async () => (await provider.getBlock('latest')).timestamp,
+    sync: () => syncIndexOnce(),
+  });
 
   /**
    * Reads for access decisions, all pinned to one block: the finalized block on Sepolia, the latest

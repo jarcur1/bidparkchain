@@ -32,6 +32,7 @@ import { patchTransaction, readTransactions, recordTransaction, staleTransaction
 import { TransactionCenter } from './components/TransactionCenter';
 import { Inbox, useInbox } from './components/Inbox';
 import { HostWorkspace, heldWindows, ZoneList } from './components/HostWorkspace';
+import { ResolverQueue, REVIEW_ACTIONS, submitReview } from './components/Disputes';
 import { HostVerificationPanel, ModerationPanel, useVerifications } from './components/Verification';
 import {
   cancelAuction,
@@ -51,7 +52,7 @@ import {
   TransactionOutcomeUnknown,
   withdrawRefund,
 } from './services/blockchain';
-import { Interface, id as keccakId, parseEther } from 'ethers';
+import { Interface, parseEther } from 'ethers';
 import { BOOKING_ACTION_LABELS, type BookingAction } from './utils/booking';
 import type {
   AppTab,
@@ -167,7 +168,7 @@ export const AppContent: React.FC<{
   const chain = listingsView.deploymentChanged ? null : listingsView.chain;
 
   // Navigation & View
-  const [currentTab, setCurrentTab] = useState<AppTab>('marketplace');
+  const [currentTab, setCurrentTab] = useState<AppTab>(() => (new URLSearchParams(window.location.search).get('tab') === 'activity' ? 'activity' : 'marketplace'));
   const [viewMode, setViewMode] = useState<'split' | 'cards' | 'map'>('split');
   const [selectedListingId, setSelectedListingId] = useState<string | null>(null);
 
@@ -959,19 +960,21 @@ export const AppContent: React.FC<{
     }
   };
 
+  const ZERO_REFERENCE = '0x' + '0'.repeat(64);
   // Protected-booking actions (docs/booking-policy.md). Refunds and payouts are credits to withdraw.
-  const handleBookingAction = async (listing: Listing, action: BookingAction) => {
+  const handleBookingAction = async (listing: Listing, action: BookingAction, text = '') => {
     if (isActionBusy) return;
     if (!config?.contractAddress || !config.abi || !walletState.isReady || wrongChain || !signer) {
       addToast('error', 'Wallet Error', 'Wallet is not connected or connected to wrong network.');
       return;
     }
     const label = BOOKING_ACTION_LABELS[action];
-    // Reports and decisions carry only an opaque reference on-chain, never the evidence itself.
-    const reference = keccakId(`bidpark:${action}:${listing.id}:${walletState.address}:${Date.now()}`);
     setIsActionBusy(true);
     try {
       await preflightWrite(listing);
+      // Reports and decisions carry only an opaque reference on-chain: the evidence or reason is stored
+      // server-side, readable by the parties and resolvers only.
+      const reference = REVIEW_ACTIONS.includes(action) ? await submitReview(listing.id, action, text) : ZERO_REFERENCE;
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
       const receipt = await sendBookingAction(contract, listing.id, action, reference, config.confirmation,
         track('booking', `${label} for auction #${listing.id}`, { auctionId: listing.id }).observe);
@@ -1322,6 +1325,7 @@ export const AppContent: React.FC<{
             onOpenBid={handleOpenBidModal}
             onConnectWallet={() => setIsWalletModalOpen(true)}
             isActionBusy={isActionBusy}
+            deployment={config ? { chainId: config.chainId, contractAddress: config.contractAddress } : null}
           />
         )}
         {currentTab === 'activity' && session && (
@@ -1355,6 +1359,18 @@ export const AppContent: React.FC<{
           <HostVerificationPanel spaces={ownedSpaces.filter((space) => !space.lister)} state={verification} />
         )}
         {currentTab === 'activity' && session && verification.moderator && <ModerationPanel />}
+        {currentTab === 'activity' && session && (
+          <ResolverQueue
+            refreshKey={listingsView.chain?.blockNumber}
+            nowSec={getChainNowSec()}
+            busy={isActionBusy}
+            onAct={async (auctionId, action, text) => {
+              const listing = listings.find((l) => l.id === auctionId);
+              if (listing) await handleBookingAction(listing, action, text);
+              else addToast('info', 'Listing not available', `Auction #${auctionId} is not in the current listings.`);
+            }}
+          />
+        )}
         {currentTab === 'activity' && txScope && (
           <TransactionCenter
             records={txRecords}

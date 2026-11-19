@@ -10,6 +10,16 @@ function requireMatch(condition, message) {
   if (!condition) throw new Error(`Invalid persistent deployment: ${message}`);
 }
 
+/** Exact compiled init code followed by a canonical ABI bool. No other constructor input is accepted. */
+function inventoryMode(input, artifact) {
+  const data = typeof input === 'string' ? input.toLowerCase() : '';
+  const init = artifact.bytecode.toLowerCase();
+  requireMatch(data.startsWith(init), 'creation input or chain mismatch');
+  const mode = data.slice(init.length);
+  requireMatch(/^0{63}[01]$/.test(mode), 'creation inventory mode mismatch');
+  return mode.endsWith('1');
+}
+
 /** Verify a descriptor against the canonical finalized Sepolia chain and the local compiler. */
 export async function verifyPersistentDeployment(provider, descriptor, artifact = compileEscrowContract(), finalizedBlock = undefined) {
   const chainId = await provider.send('eth_chainId', []);
@@ -42,7 +52,8 @@ export async function verifyPersistentDeployment(provider, descriptor, artifact 
   const transaction = await provider.getTransaction(descriptor.deploymentTxHash);
   requireMatch(transaction && transaction.hash?.toLowerCase() === descriptor.deploymentTxHash.toLowerCase(), 'missing or mismatched creation transaction');
   requireMatch(transaction.blockNumber === descriptor.deploymentBlock && transaction.blockHash?.toLowerCase() === descriptor.deploymentBlockHash.toLowerCase(), 'transaction block mismatch');
-  requireMatch(transaction.to === null && transaction.chainId === BigInt(CHAIN_ID) && transaction.data?.toLowerCase() === artifact.bytecode.toLowerCase(), 'creation input or chain mismatch');
+  requireMatch(transaction.to === null && transaction.chainId === BigInt(CHAIN_ID), 'creation input or chain mismatch');
+  const verifiedInventoryRequired = inventoryMode(transaction.data, artifact);
   requireMatch(transaction.from?.toLowerCase() === receipt.from?.toLowerCase(), 'creation sender mismatch');
   const code = await provider.send('eth_getCode', [descriptor.contractAddress, { blockHash: finalized.hash, requireCanonical: true }]);
   requireMatch(typeof code === 'string' && code.toLowerCase() === artifact.runtimeBytecode.toLowerCase(), 'runtime bytecode mismatch');
@@ -50,7 +61,7 @@ export async function verifyPersistentDeployment(provider, descriptor, artifact 
     profile: 'sepolia', chainId: CHAIN_ID, contractAddress: descriptor.contractAddress,
     deploymentTxHash: descriptor.deploymentTxHash, deploymentBlock: descriptor.deploymentBlock,
     deploymentBlockHash: descriptor.deploymentBlockHash, compilerVersion: artifact.compilerVersion,
-    currency: 'ETH', networkName: 'Ethereum Sepolia', abi: artifact.abi,
+    currency: 'ETH', networkName: 'Ethereum Sepolia', abi: artifact.abi, verifiedInventoryRequired,
   };
 }
 
@@ -80,15 +91,20 @@ function assertNonDemoWallet(wallet) {
 /** Reuse a verified descriptor, or explicitly create/adopt a finalized deployment. */
 export async function runPersistentDeployment(runtime, args = [], env = process.env) {
   if (runtime.profile.id !== 'sepolia') throw new Error('Persistent deployment requires the Sepolia profile.');
-  const create = args.length === 1 && args[0] === '--create';
+  const verifiedInventory = args.length === 2 && args[0] === '--create' && args[1] === '--verified-inventory';
+  const create = verifiedInventory || (args.length === 1 && args[0] === '--create');
   const adopt = args.length === 2 && args[0] === '--adopt' && ethers.isHexString(args[1], 32);
   const resume = args.length === 1 && args[0] === '--resume';
-  if (args.length && !create && !adopt && !resume) throw new Error('Use --create, --resume or --adopt <transaction hash>.');
+  if (args.length && !create && !adopt && !resume) throw new Error('Use --create [--verified-inventory], --resume or --adopt <transaction hash>.');
   const provider = new ethers.JsonRpcProvider(runtime.rpcUrl, undefined, { cacheTimeout: -1 });
   try {
   const artifact = compileEscrowContract();
   const descriptorPath = runtime.deploymentPath;
-  const readExisting = async () => verifyPersistentDeployment(provider, JSON.parse(fs.readFileSync(descriptorPath, 'utf8')), artifact);
+  const readExisting = async () => {
+    const deployment = await verifyPersistentDeployment(provider, JSON.parse(fs.readFileSync(descriptorPath, 'utf8')), artifact);
+    requireMatch(!verifiedInventory || deployment.verifiedInventoryRequired, 'existing deployment does not require verified inventory');
+    return deployment;
+  };
   if (fs.existsSync(descriptorPath)) return await readExisting();
   if (!create && !adopt && !resume) throw new Error('No persistent deployment exists. Explicitly use --create, --resume or --adopt <transaction hash>.');
 
@@ -116,7 +132,7 @@ export async function runPersistentDeployment(runtime, args = [], env = process.
       try { wallet = new ethers.Wallet(env.BIDPARK_SEPOLIA_DEPLOYER_KEY, provider); } catch { throw new Error('A valid BIDPARK_SEPOLIA_DEPLOYER_KEY is required.'); }
       assertNonDemoWallet(wallet);
       const factory = new ethers.ContractFactory(artifact.abi, artifact.bytecode, wallet);
-      const request = await wallet.populateTransaction(await factory.getDeployTransaction());
+      const request = await wallet.populateTransaction(await factory.getDeployTransaction(verifiedInventory));
       requireMatch(request.chainId !== undefined && BigInt(request.chainId) === BigInt(CHAIN_ID), 'wrong transaction chain');
       requireMatch(BigInt(await provider.send('eth_chainId', [])) === BigInt(CHAIN_ID), 'wrong RPC chain');
       const signed = await wallet.signTransaction(request);
@@ -131,7 +147,8 @@ export async function runPersistentDeployment(runtime, args = [], env = process.
       let signed;
       try { signed = ethers.Transaction.from(pending.signedTransaction); } catch { throw new Error('Invalid pending creation transaction.'); }
       hash = pending.deploymentTxHash;
-      requireMatch(signed.isSigned() && signed.hash?.toLowerCase() === hash.toLowerCase() && signed.chainId === BigInt(CHAIN_ID) && signed.to === null && signed.data.toLowerCase() === artifact.bytecode.toLowerCase(), 'pending creation transaction mismatch');
+      requireMatch(signed.isSigned() && signed.hash?.toLowerCase() === hash.toLowerCase() && signed.chainId === BigInt(CHAIN_ID) && signed.to === null, 'pending creation transaction mismatch');
+      inventoryMode(signed.data, artifact);
       requireMatch(BigInt(await provider.send('eth_chainId', [])) === BigInt(CHAIN_ID), 'wrong RPC chain');
       if (!await provider.getTransactionReceipt(hash) && !await provider.getTransaction(hash)) {
         await provider.broadcastTransaction(pending.signedTransaction);

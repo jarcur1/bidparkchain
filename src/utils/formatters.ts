@@ -160,6 +160,10 @@ export function getListingStatus(listing: Listing, nowSec: number = getChainNowS
     };
   }
 
+  if (listing.inventoryBlocked) {
+    return { label: 'Bidding Paused', colorClass: 'status-ended', isBiddable: false, canSettle: false };
+  }
+
   const remaining = listing.bidEnd - now;
   if (remaining < 1800) {
     return {

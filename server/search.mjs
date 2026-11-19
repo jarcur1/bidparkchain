@@ -166,7 +166,7 @@ const priceWei = (l) => {
 export function filterAndSort(listings, p, now) {
   const from = p.arrive ?? p.depart;
   const to = p.depart ?? p.arrive;
-  const open = (l) => l.bidEnd > now && !l.settled && !l.cancelled;
+  const open = (l) => l.bidEnd > now && !l.settled && !l.cancelled && !l.inventoryBlocked;
   const out = [];
   for (const l of listings) {
     if (p.status === 'active' && !open(l)) continue;
