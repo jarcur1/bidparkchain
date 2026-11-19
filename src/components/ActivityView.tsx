@@ -265,7 +265,8 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
             {pendingSettlementWins.map((listing) => {
               const windowInfo = formatParkingWindow(
                 listing.parkingStart,
-                listing.parkingEnd
+                listing.parkingEnd,
+                listing.timeZone
               );
               return (
                 <div key={listing.id} className="settle-card">
@@ -322,7 +323,8 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
             {confirmedReservations.map((listing) => {
               const windowInfo = formatParkingWindow(
                 listing.parkingStart,
-                listing.parkingEnd
+                listing.parkingEnd,
+                listing.timeZone
               );
               const googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
                 listing.address
@@ -439,7 +441,8 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                 {activeBids.map((listing) => {
                   const windowInfo = formatParkingWindow(
                     listing.parkingStart,
-                    listing.parkingEnd
+                    listing.parkingEnd,
+                    listing.timeZone
                   );
                   const time = getAuctionTimeRemaining(listing.bidEnd);
                   return (
