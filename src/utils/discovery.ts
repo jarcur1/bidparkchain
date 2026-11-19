@@ -17,7 +17,11 @@ export const DEFAULT_FILTERS: FilterState = {
   arrive: '',
   depart: '',
   amenities: [],
+  area: '',
 };
+
+/** Destination label for a position the driver shared; it is never written to the page URL. */
+export const MY_LOCATION_LABEL = 'My location';
 
 export const RADIUS_OPTIONS_KM = ['0.5', '1', '2', '5'] as const;
 
@@ -61,6 +65,28 @@ export function resolveDestination(text: string, options: Place[]): Place | null
   const key = text.trim().toLowerCase();
   if (!key) return null;
   return options.find((o) => o.label.toLowerCase() === key) ?? null;
+}
+
+export interface Bbox {
+  minLat: number;
+  minLon: number;
+  maxLat: number;
+  maxLon: number;
+}
+
+/** 'minLat,minLon,maxLat,maxLon' within valid coordinates and ordered, or null. */
+export function parseArea(area: string): Bbox | null {
+  const parts = area.split(',');
+  if (parts.length !== 4 || !parts.every((x) => /^-?\d{1,3}(\.\d{1,6})?$/.test(x))) return null;
+  const [minLat, minLon, maxLat, maxLon] = parts.map(Number);
+  if (Math.abs(minLat) > 90 || Math.abs(maxLat) > 90 || Math.abs(minLon) > 180 || Math.abs(maxLon) > 180) return null;
+  return minLat <= maxLat && minLon <= maxLon ? { minLat, minLon, maxLat, maxLon } : null;
+}
+
+/** Map viewport to the area filter value, clamped to valid coordinates and rounded to about 10 cm. */
+export function areaFromBounds(b: { south: number; west: number; north: number; east: number }): string {
+  const c = (v: number, lim: number) => Math.min(lim, Math.max(-lim, v)).toFixed(6);
+  return [c(b.south, 90), c(b.west, 180), c(b.north, 90), c(b.east, 180)].join(',');
 }
 
 /** Union of amenities present in the listings, plus any already selected, sorted. */
@@ -122,6 +148,7 @@ export function discoverListings(
   const min = errors.price || f.minPrice === '' ? null : Number(f.minPrice);
   const max = errors.price || f.maxPrice === '' ? null : Number(f.maxPrice);
   const radius = destination && f.radiusKm ? Number(f.radiusKm) : null;
+  const area = parseArea(f.area);
 
   const distances = new Map<string, number>();
   if (destination) for (const l of listings) distances.set(l.id, distanceKm(destination, l));
@@ -142,6 +169,7 @@ export function discoverListings(
     const price = listingPrice(item);
     if (min !== null && price < min) return false;
     if (max !== null && price > max) return false;
+    if (area && (item.latitude < area.minLat || item.latitude > area.maxLat || item.longitude < area.minLon || item.longitude > area.maxLon)) return false;
     if (radius !== null && (distances.get(item.id) ?? Infinity) > radius) return false;
     return true;
   });
@@ -195,6 +223,7 @@ export function searchQuery(f: FilterState, destination: Place | null): string {
     if (f.maxPrice !== '') p.set('maxPrice', f.maxPrice);
   }
   for (const a of f.amenities) p.append('amenity', a);
+  if (parseArea(f.area)) p.set('bbox', f.area);
   if (destination) {
     p.set('near', `${destination.latitude.toFixed(6)},${destination.longitude.toFixed(6)}`);
     if (f.radiusKm) p.set('radiusKm', f.radiusKm);
@@ -218,6 +247,7 @@ export function describeFilters(f: FilterState, destination: Place | null): stri
     else if (f.arrive) out.push(`Covers arrival ${fmt(f.arrive)}`);
     else if (f.depart) out.push(`Covers departure ${fmt(f.depart)}`);
   }
+  if (parseArea(f.area)) out.push('Inside the searched map area');
   if (f.amenities.length) out.push(`Amenities: ${f.amenities.join(', ')}`);
   if (!errors.price) {
     if (f.minPrice && f.maxPrice) out.push(`Current price ${f.minPrice}–${f.maxPrice} ETH`);
@@ -232,7 +262,7 @@ export function describeFilters(f: FilterState, destination: Place | null): stri
 const KINDS: SpotKindFilter[] = ['all', 'garage', 'driveway', 'covered'];
 const STATUSES: AuctionStatusFilter[] = ['all', 'active', 'ending-soon', 'ended', 'settled'];
 const SORTS: SortOption[] = ['ending-soon', 'starts-soon', 'price-asc', 'price-desc', 'newest', 'distance'];
-const URL_KEYS = ['q', 'kind', 'status', 'min', 'max', 'sort', 'dest', 'within', 'arrive', 'depart', 'amenity'];
+const URL_KEYS = ['q', 'kind', 'status', 'min', 'max', 'sort', 'dest', 'within', 'arrive', 'depart', 'amenity', 'area'];
 
 /** Reads filters from a query string; unknown or malformed values fall back to defaults. */
 export function filtersFromSearch(search: string): FilterState {
@@ -261,6 +291,7 @@ export function filtersFromSearch(search: string): FilterState {
     arrive: time('arrive'),
     depart: time('depart'),
     amenities: [...new Set(p.getAll('amenity').filter(Boolean))],
+    area: parseArea(p.get('area') ?? '') ? (p.get('area') as string) : '',
   };
 }
 
@@ -277,7 +308,9 @@ export function filtersToSearch(f: FilterState, existing = ''): string {
   set('min', f.minPrice);
   set('max', f.maxPrice);
   set('sort', f.sortBy, 'ending-soon');
-  set('dest', f.destination.trim());
+  // A shared position stays in the browser: the link carries only typed destinations.
+  set('dest', f.destination.trim() === MY_LOCATION_LABEL ? '' : f.destination.trim());
+  set('area', parseArea(f.area) ? f.area : '');
   set('within', f.radiusKm);
   set('arrive', String(localToEpoch(f.arrive) ?? ''));
   set('depart', String(localToEpoch(f.depart) ?? ''));

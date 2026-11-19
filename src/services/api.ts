@@ -86,6 +86,24 @@ export async function searchListings(query: string, cursor?: string): Promise<Li
   return data as ListingSearchResponse;
 }
 
+/**
+ * The first `pages` pages of a search, each continuing the previous one's cursor so they share one block.
+ * A failure after the first page keeps what was read; the first page failing is the search failing.
+ */
+export async function searchListingsPages(query: string, pages: number): Promise<ListingSearchResponse> {
+  let result = await searchListings(query);
+  for (let n = 1; n < pages && result.nextCursor; n++) {
+    let page: ListingSearchResponse;
+    try {
+      page = await searchListings(query, result.nextCursor);
+    } catch {
+      break;
+    }
+    result = { ...page, listings: [...result.listings, ...page.listings] };
+  }
+  return result;
+}
+
 /** Saves metadata under its hash before the auction is created, so a lost registration is recoverable. */
 export async function stageListingMetadata(metadata: SpotMetadata, deployment?: DeploymentIdentity): Promise<void> {
   const res = await fetch('/api/listings/stage', {

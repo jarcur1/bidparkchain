@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
-import { AlertCircle, RotateCcw } from 'lucide-react';
+import { AlertCircle, RotateCcw, Search, X } from 'lucide-react';
 import type { Listing } from '../types';
 import { formatEth } from '../utils/formatters';
 import { getBidEligibility } from '../utils/eligibility';
+import { areaFromBounds } from '../utils/discovery';
 
 interface ParkingMapProps {
   listings: Listing[];
@@ -12,6 +13,11 @@ interface ParkingMapProps {
   onSelectListing: (listing: Listing) => void;
   onOpenBid: (listing: Listing) => void;
   onOpenDetail: (listing: Listing) => void;
+  /** The area filter in effect ('' for none); the map then does not claim to show everything. */
+  area?: string;
+  /** Search the current viewport as the area filter. */
+  onSearchArea?: (area: string) => void;
+  onClearArea?: () => void;
 }
 
 const AUSTIN_CENTER: [number, number] = [30.2672, -97.7431];
@@ -145,12 +151,17 @@ export const ParkingMap: React.FC<ParkingMapProps> = ({
   onSelectListing,
   onOpenBid,
   onOpenDetail,
+  area = '',
+  onSearchArea,
+  onClearArea,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
   const markersMapRef = useRef<Map<string, { marker: L.Marker; listing: Listing }>>(new Map());
   const [hasMapError, setHasMapError] = useState(false);
+  // The viewport as an area value, kept current while the map moves.
+  const [viewport, setViewport] = useState('');
 
   // Re-evaluate eligibility every second so a popup stops offering Bid at the chain cutoff.
   const [, setClockTick] = useState(0);
@@ -199,6 +210,12 @@ export const ParkingMap: React.FC<ParkingMapProps> = ({
 
       const markersGroup = L.layerGroup().addTo(map);
 
+      const readViewport = () => {
+        const b = map.getBounds();
+        setViewport(areaFromBounds({ south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() }));
+      };
+      map.on('moveend', readViewport);
+      readViewport();
       mapInstanceRef.current = map;
       markersLayerRef.current = markersGroup;
 
@@ -350,6 +367,25 @@ export const ParkingMap: React.FC<ParkingMapProps> = ({
   return (
     <div className="parking-map-wrapper">
       <div className="parking-map-container" ref={mapContainerRef} />
+      {onSearchArea && (
+        <div className="map-area-controls">
+          <button
+            type="button"
+            className="map-control-btn"
+            disabled={!viewport || viewport === area}
+            onClick={() => onSearchArea(viewport)}
+          >
+            <Search size={14} />
+            <span>{area && viewport === area ? 'Searching this area' : 'Search this area'}</span>
+          </button>
+          {area && onClearArea && (
+            <button type="button" className="map-control-btn" onClick={onClearArea}>
+              <X size={14} />
+              <span>Clear area</span>
+            </button>
+          )}
+        </div>
+      )}
       <div className="map-overlay-controls">
         <button
           type="button"

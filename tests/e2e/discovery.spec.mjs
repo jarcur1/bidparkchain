@@ -88,3 +88,75 @@ test('discovery keeps filtering the loaded listings when the search service fail
   await expect(cards).toHaveCount(1);
   await expect(page.getByRole('article', { name: `Listing: ${RAINEY}`, exact: true })).toBeVisible();
 });
+
+test('map-area search sends the viewport as a bbox, can be cleared, and keeps the area in the URL', async ({ page, stack }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(stack.webUrl);
+  const cards = page.getByRole('article', { name: /^Listing: / });
+  await expect(cards).toHaveCount(7);
+
+  // Zoom in so the viewport covers only part of the city, then search it.
+  for (let i = 0; i < 3; i++) await page.locator('.leaflet-control-zoom-in').click();
+  const searchArea = page.getByRole('button', { name: 'Search this area' });
+  await expect(searchArea).toBeEnabled();
+  const request = page.waitForRequest((r) => r.url().includes('/api/listings/search') && r.url().includes('bbox='));
+  await searchArea.click();
+  const bbox = new URL((await request).url()).searchParams.get('bbox');
+  expect(bbox).toMatch(/^-?\d+\.\d+(,-?\d+\.\d+){3}$/);
+  const [minLat, minLon, maxLat, maxLon] = bbox.split(',').map(Number);
+  await expect(page).toHaveURL(/area=/);
+
+  const inside = (await (await fetch(`${stack.apiUrl}/api/listings/search?bbox=${bbox}`)).json()).listings;
+  expect(inside.length).toBeGreaterThan(0);
+  expect(inside.length).toBeLessThan(7);
+  for (const l of inside) {
+    expect(l.latitude).toBeGreaterThanOrEqual(minLat);
+    expect(l.latitude).toBeLessThanOrEqual(maxLat);
+    expect(l.longitude).toBeGreaterThanOrEqual(minLon);
+    expect(l.longitude).toBeLessThanOrEqual(maxLon);
+  }
+  await expect(cards).toHaveCount(inside.length);
+  await expect(page.getByRole('button', { name: 'Searching this area' })).toBeDisabled();
+
+  // A reload restores the area; moving the map offers a new search; clearing shows everything again.
+  await page.reload();
+  await expect(cards).toHaveCount(inside.length);
+  await page.getByRole('button', { name: 'Clear area' }).click();
+  await expect(cards).toHaveCount(7);
+  await expect(page).not.toHaveURL(/area=/);
+});
+
+test('location is optional: it is sent only in the query, kept out of the URL, and a refusal is explained', async ({ page, stack, context }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  // Nothing asks for location until the button is pressed.
+  let asked = false;
+  await page.addInitScript(() => {
+    const original = navigator.geolocation.getCurrentPosition.bind(navigator.geolocation);
+    navigator.geolocation.getCurrentPosition = (...args) => { window.__geoAsked = true; return original(...args); };
+  });
+  await page.goto(stack.webUrl);
+  await page.getByTitle('Cards view only').click();
+  const cards = page.getByRole('article', { name: /^Listing: / });
+  await expect(cards).toHaveCount(7);
+  asked = await page.evaluate(() => Boolean(window.__geoAsked));
+  expect(asked).toBe(false);
+
+  // Refused: a plain explanation and the manual destination still works.
+  await context.grantPermissions([]);
+  await page.getByRole('button', { name: 'Use my location' }).click();
+  await expect(page.getByText(/Location not shared/)).toBeVisible();
+  await expect(cards).toHaveCount(7);
+
+  // Granted: rounded to 3 decimals, used as near=, not stored in the URL.
+  await context.grantPermissions(['geolocation']);
+  await context.setGeolocation({ latitude: 30.25921234, longitude: -97.73951234 });
+  const request = page.waitForRequest((r) => r.url().includes('/api/listings/search') && r.url().includes('near='));
+  await page.getByRole('button', { name: 'Use my location' }).click();
+  expect(new URL((await request).url()).searchParams.get('near')).toBe('30.259000,-97.740000');
+  await expect(page.getByLabel('Destination')).toHaveValue('My location');
+  await expect(page).not.toHaveURL(/dest=|30\.259/);
+  await page.getByLabel('Maximum distance').selectOption('0.5');
+  await expect(cards).toHaveCount(1);
+  await expect(page.getByRole('article', { name: `Listing: ${RAINEY}`, exact: true })).toContainText(/straight-line from My location/);
+  await expect(page.getByRole('article', { name: `Listing: ${RAINEY}`, exact: true })).toContainText(/Space time zone/);
+});
