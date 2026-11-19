@@ -9,7 +9,7 @@ const VALID_KINDS = new Set(['garage', 'driveway', 'covered']);
  * @param {string} url
  * @returns {boolean}
  */
-function isValidImageUrl(url) {
+export function isValidImageUrl(url) {
   if (url.startsWith('https://')) {
     try {
       const parsed = new URL(url);

@@ -28,6 +28,7 @@ import { BOOKING_ACTION_LABELS, bookingView, canClaimPayout, type BookingAction 
 import { downloadReservationIcs } from '../utils/calendar';
 import { BidHistory } from './BidHistory';
 import { Dialog } from './Dialog';
+import { ReportSpace } from './ReportSpace';
 
 interface DetailModalProps {
   listing: Listing | null;
@@ -41,6 +42,8 @@ interface DetailModalProps {
   onClaimPayout: (listing: Listing) => void;
   onBookingAction?: (listing: Listing, action: BookingAction) => void;
   isActionBusy: boolean;
+  /** Whether the viewer has an API session; reporting needs one. */
+  signedIn?: boolean;
 }
 
 export const DetailModal: React.FC<DetailModalProps> = ({
@@ -55,6 +58,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
   onClaimPayout,
   onBookingAction,
   isActionBusy,
+  signedIn = false,
 }) => {
   const [copiedHash, setCopiedHash] = useState(false);
   const [timeRemaining, setTimeRemaining] = useState(() =>
@@ -370,6 +374,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                   </div>
                 )}
 
+                {!isOwner && <ReportSpace spaceId={listing.spaceId} signedIn={signedIn} />}
                 {booking && (
                   <div className="booking-protection" data-testid="booking-protection">
                     <p className="owner-notice">{booking.status}</p>

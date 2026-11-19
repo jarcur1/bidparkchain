@@ -31,12 +31,17 @@ import type { TxObserver } from './services/blockchain';
 import { patchTransaction, readTransactions, recordTransaction, staleTransactionsFor, transactionsFor, type TxKind, type TxRecord } from './utils/txStore';
 import { TransactionCenter } from './components/TransactionCenter';
 import { Inbox, useInbox } from './components/Inbox';
+import { HostWorkspace, heldWindows, ZoneList } from './components/HostWorkspace';
 import { HostVerificationPanel, ModerationPanel, useVerifications } from './components/Verification';
 import {
   cancelAuction,
   claimPayout,
   createAuctionOnChain,
   fetchBidAuctionIds,
+  fetchHostSpaces,
+  sendSpaceAction,
+  type HostSpace,
+  type SpaceAction,
   fetchPendingReturns,
   getContractInstance,
   parseContractError,
@@ -1055,6 +1060,22 @@ export const AppContent: React.FC<{
     ).length;
   }, [listings, walletState.address]);
 
+  // Spaces this wallet owns or may list on, read from the chain, reloaded after each space action.
+  const [spacesNonce, setSpacesNonce] = useState(0);
+  const [hostSpacesState, setHostSpacesState] = useState<{ key: string; spaces: HostSpace[]; error: string | null }>({ key: '', spaces: [], error: null });
+  const hostSpacesKey = walletState.address && configDeployment && walletState.isReady ? `${walletState.address}|${configDeployment}` : '';
+  useEffect(() => {
+    if (!hostSpacesKey || !provider || !config?.contractAddress) return;
+    let live = true;
+    const contract = getContractInstance(config.contractAddress, config.abi, provider);
+    fetchHostSpaces(contract, walletState.address as string, config.deploymentBlock, config.confirmation).then(
+      (spaces) => { if (live) setHostSpacesState({ key: hostSpacesKey, spaces, error: null }); },
+      (err) => { if (live) setHostSpacesState({ key: hostSpacesKey, spaces: [], error: err instanceof Error ? err.message : String(err) }); },
+    );
+    return () => { live = false; };
+  }, [hostSpacesKey, spacesNonce, provider, config]);
+  const hostSpaces = hostSpacesState.key === hostSpacesKey ? hostSpacesState.spaces : [];
+
   // The wallet's spaces and the windows each still holds, mirroring the contract's holdsWindow rule.
   const ownedSpaces = useMemo<OwnedSpace[]>(() => {
     if (!walletState.address) return [];
@@ -1062,15 +1083,48 @@ export const AppContent: React.FC<{
     const addr = walletState.address.toLowerCase();
     const spaces = new Map<string, OwnedSpace>();
     for (const l of listings) {
-      if (l.owner.toLowerCase() !== addr) continue;
-      const space = spaces.get(l.spaceId) ?? { id: l.spaceId, title: l.title, held: [] };
-      space.title = l.title;
-      const hasBid = BigInt(l.highestBidder || 0) !== 0n;
-      if (!l.cancelled && (hasBid || l.bidEnd > now)) space.held.push({ start: l.parkingStart, end: l.parkingEnd });
-      spaces.set(l.spaceId, space);
+      if (l.owner.toLowerCase() === addr && !spaces.has(l.spaceId)) spaces.set(l.spaceId, { id: l.spaceId, title: l.title, held: [] });
     }
-    return [...spaces.values()];
-  }, [listings, walletState.address]);
+    for (const h of hostSpaces) {
+      if (!spaces.has(h.id)) {
+        const latest = listings.find((l) => l.spaceId === h.id);
+        spaces.set(h.id, { id: h.id, title: latest?.title ?? 'No listings yet', held: [], lister: h.isLister });
+      }
+    }
+    for (const space of spaces.values()) {
+      space.title = listings.find((l) => l.spaceId === space.id)?.title ?? space.title;
+      space.held = heldWindows(listings, space.id, now);
+    }
+    return [...spaces.values()].sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+  }, [listings, hostSpaces, walletState.address]);
+
+  // Space-control transactions (listers, transfer, time zone, blocked dates): sign, then re-read the chain.
+  const handleSpaceAction = async (action: SpaceAction, label: string): Promise<boolean> => {
+    if (isActionBusy) return false;
+    if (!config?.contractAddress || !config.abi || !walletState.isReady || wrongChain || !signer) {
+      addToast('error', 'Wallet Error', 'Wallet is not connected or connected to wrong network.');
+      return false;
+    }
+    setIsActionBusy(true);
+    try {
+      await preflightWrite();
+      const contract = getContractInstance(config.contractAddress, config.abi, signer);
+      const receipt = await sendSpaceAction(contract, action, config.confirmation, track('space', label).observe);
+      addToast('success', 'Space updated', label, receipt.hash);
+      setSpacesNonce((n) => n + 1);
+      await loadListings();
+      return true;
+    } catch (err) {
+      if (err instanceof TransactionOutcomeUnknown) {
+        reportUnknown(err);
+        return false;
+      }
+      addToast('error', 'Space action failed', parseContractError(err, config?.abi));
+      return false;
+    } finally {
+      setIsActionBusy(false);
+    }
+  };
 
   const readSources: ReadSource[] = [
     {
@@ -1280,8 +1334,25 @@ export const AppContent: React.FC<{
             }}
           />
         )}
+        {currentTab === 'activity' && walletState.address && (
+          <>
+            <ZoneList />
+            <HostWorkspace
+              account={walletState.address}
+              signedIn={Boolean(session)}
+              spaces={hostSpaces}
+              spacesError={hostSpacesState.key === hostSpacesKey ? hostSpacesState.error : null}
+              listings={listings}
+              verifications={verification.verifications}
+              isActionBusy={isActionBusy}
+              onSpaceAction={handleSpaceAction}
+              onPublish={handleCreateListing}
+              onSignIn={() => void signInSession()}
+            />
+          </>
+        )}
         {currentTab === 'activity' && session && (
-          <HostVerificationPanel spaces={ownedSpaces} state={verification} />
+          <HostVerificationPanel spaces={ownedSpaces.filter((space) => !space.lister)} state={verification} />
         )}
         {currentTab === 'activity' && session && verification.moderator && <ModerationPanel />}
         {currentTab === 'activity' && txScope && (
@@ -1304,6 +1375,7 @@ export const AppContent: React.FC<{
         contractAddress={config?.contractAddress}
         chainId={config?.chainId}
         currentAddress={walletState.address}
+        signedIn={Boolean(session)}
         onClose={() => setDetailTarget(null)}
         onOpenBid={handleOpenBidModal}
         onSettle={handleSettleListing}

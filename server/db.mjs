@@ -209,6 +209,22 @@ const MIGRATIONS = [
       );
     `);
   },
+  // 8: listing drafts and reusable space templates, private to the wallet that saved them.
+  (db) => {
+    db.exec(`
+      CREATE TABLE host_drafts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        address TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('draft', 'template')),
+        name TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX idx_host_drafts_owner ON host_drafts (chain_id, contract_address, address, updated_at);
+    `);
+  },
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
@@ -662,15 +678,50 @@ export class EscrowDatabase {
   }
 
   /** Every space with a request or a report, newest activity first, with its current state if any. */
-  getModerationQueue(contractAddress) {
+  getModerationQueue(contractAddress, { limit = 25, offset = 0 } = {}) {
     return this.db.prepare(`
       SELECT a.space_id, MAX(a.at) AS last_at, v.host, v.status, v.evidence, v.updated_at
       FROM verification_audit a
       LEFT JOIN space_verifications v
         ON v.chain_id = a.chain_id AND v.contract_address = a.contract_address AND v.space_id = a.space_id
       WHERE a.chain_id = ? AND a.contract_address = ?
-      GROUP BY a.space_id ORDER BY last_at DESC
-    `).all(this.chainId, contractAddress.toLowerCase());
+      GROUP BY a.space_id ORDER BY last_at DESC, a.space_id DESC LIMIT ? OFFSET ?
+    `).all(this.chainId, contractAddress.toLowerCase(), limit, offset);
+  }
+
+  countModerationQueue(contractAddress) {
+    return this.db.prepare('SELECT COUNT(DISTINCT space_id) AS n FROM verification_audit WHERE chain_id = ? AND contract_address = ?')
+      .get(this.chainId, contractAddress.toLowerCase()).n;
+  }
+
+  /** A wallet's drafts and templates, newest first. */
+  listHostDrafts(contractAddress, address) {
+    return this.db.prepare(`
+      SELECT id, kind, name, payload, updated_at FROM host_drafts
+      WHERE chain_id = ? AND contract_address = ? AND address = ? ORDER BY updated_at DESC, id DESC
+    `).all(this.chainId, contractAddress.toLowerCase(), address.toLowerCase());
+  }
+
+  /** Creates a draft (id null) or replaces one the wallet owns. Returns its id, or null if it is not the wallet's. */
+  saveHostDraft(contractAddress, address, { id = null, kind, name, payload }) {
+    const contract = contractAddress.toLowerCase();
+    const owner = address.toLowerCase();
+    const now = Date.now();
+    if (id === null) {
+      return Number(this.db.prepare(`
+        INSERT INTO host_drafts (chain_id, contract_address, address, kind, name, payload, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(this.chainId, contract, owner, kind, name, payload, now).lastInsertRowid);
+    }
+    const changed = this.db.prepare(`
+      UPDATE host_drafts SET kind = ?, name = ?, payload = ?, updated_at = ?
+      WHERE id = ? AND chain_id = ? AND contract_address = ? AND address = ?
+    `).run(kind, name, payload, now, id, this.chainId, contract, owner).changes;
+    return changed ? id : null;
+  }
+
+  deleteHostDraft(contractAddress, address, id) {
+    return this.db.prepare('DELETE FROM host_drafts WHERE id = ? AND chain_id = ? AND contract_address = ? AND address = ?')
+      .run(id, this.chainId, contractAddress.toLowerCase(), address.toLowerCase()).changes > 0;
   }
 
   getVerificationAudit(contractAddress, spaceId) {

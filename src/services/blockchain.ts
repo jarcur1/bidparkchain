@@ -304,6 +304,72 @@ export async function claimPayout(
   return send(contract, 'claimPayout', [BigInt(auctionId)], confirmation, observe);
 }
 
+export interface BlockedWindow { id: string; start: number; end: number }
+export interface HostSpace {
+  id: string;
+  owner: string;
+  isOwner: boolean;
+  /** True when the wallet may list on the space only because the owner approved it. */
+  isLister: boolean;
+  /** IANA name set on-chain; '' when the owner has not set one. */
+  timeZone: string;
+  /** Blocked windows that have not ended yet. */
+  blocked: BlockedWindow[];
+}
+
+/** Spaces this account owns or is approved to list on, with their time zone and upcoming blocked windows. */
+export async function fetchHostSpaces(
+  contract: Contract,
+  account: string,
+  fromBlock: number,
+  confirmation: ConfirmationPolicy = 'mined',
+): Promise<HostSpace[]> {
+  const toBlock = confirmation === 'finalized' ? 'finalized' : 'latest';
+  const logs = (await Promise.all([
+    contract.queryFilter(contract.filters.SpaceRegistered(null, account), fromBlock, toBlock),
+    contract.queryFilter(contract.filters.SpaceTransferred(null, null, account), fromBlock, toBlock),
+    contract.queryFilter(contract.filters.SpaceListerSet(null, account), fromBlock, toBlock),
+  ])).flat();
+  const ids = [...new Set(logs.map((log) => ((log as EventLog).args.spaceId as bigint).toString()))]
+    .sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
+  const nowSec = Math.floor(Date.now() / 1000);
+  const spaces = await Promise.all(ids.map(async (id): Promise<HostSpace | null> => {
+    const [owner, isLister] = await Promise.all([contract.spaceOwner(id) as Promise<string>, contract.isSpaceLister(id, account) as Promise<boolean>]);
+    const isOwner = owner.toLowerCase() === account.toLowerCase();
+    if (!isOwner && !isLister) return null;
+    const [timeZone, blockIds] = await Promise.all([contract.spaceTimeZone(id) as Promise<string>, contract.spaceBlockedWindows(id) as Promise<bigint[]>]);
+    const blocked = (await Promise.all(blockIds.map(async (blockId) => {
+      const w = await contract.blockedWindows(blockId);
+      return { id: blockId.toString(), start: Number(w.start), end: Number(w.end) };
+    }))).filter((w) => w.end > nowSec);
+    return { id, owner, isOwner, isLister: !isOwner && isLister, timeZone, blocked };
+  }));
+  return spaces.filter((space): space is HostSpace => space !== null);
+}
+
+export type SpaceAction =
+  | { kind: 'lister'; spaceId: string; lister: string; allowed: boolean }
+  | { kind: 'transfer'; spaceId: string; newOwner: string }
+  | { kind: 'timeZone'; spaceId: string; timeZone: string }
+  | { kind: 'block'; spaceId: string; start: number; end: number }
+  | { kind: 'unblock'; blockId: string };
+
+/** Sends one space-control transaction (owner only; the contract enforces it). */
+export function sendSpaceAction(
+  contract: Contract,
+  action: SpaceAction,
+  confirmation: ConfirmationPolicy = 'mined',
+  observe?: TxObserver,
+): Promise<TransactionReceipt> {
+  switch (action.kind) {
+    case 'lister': return send(contract, 'setSpaceLister', [BigInt(action.spaceId), action.lister, action.allowed], confirmation, observe);
+    case 'transfer': return send(contract, 'transferSpace', [BigInt(action.spaceId), action.newOwner], confirmation, observe);
+    case 'timeZone': return send(contract, 'setSpaceTimeZone', [BigInt(action.spaceId), action.timeZone], confirmation, observe);
+    case 'block': return send(contract, 'blockSpaceWindow', [BigInt(action.spaceId), BigInt(action.start), BigInt(action.end)], confirmation, observe);
+    case 'unblock': return send(contract, 'unblockSpaceWindow', [BigInt(action.blockId)], confirmation, observe);
+  }
+}
+
 /** Sends one protected-booking transaction (docs/booking-policy.md). */
 export async function sendBookingAction(
   contract: Contract,
@@ -340,6 +406,10 @@ const CONTRACT_ERROR_MESSAGES: Record<string, string> = {
   SpaceWindowTaken: 'This space already has a listing for an overlapping parking window. Pick a window that does not overlap, or cancel the other listing first.',
   NotSpaceOwner: 'Only the owner of this parking space, or a lister it approved, can list it.',
   SpaceWindowUnavailable: 'The space owner blocked part of this parking window. Pick a window outside the blocked dates.',
+  InvalidSpaceOwner: 'The new owner must be a valid, non-zero address.',
+  InvalidTimeZone: 'That time zone name is not accepted on-chain (letters, digits, / _ + - up to 64 characters).',
+  BlockedWindowNotFound: 'That blocked window no longer exists.',
+  InvalidTimeWindow: 'The end must be after the start, and the window must not already be over.',
   SpaceCalendarFull: 'This space already has the most upcoming windows it can hold. Wait for some to end or cancel unsold ones first.',
 };
 
