@@ -219,4 +219,74 @@ describe('GET /api/listings/search', () => {
       await close(srv, small);
     }
   });
+
+  it('serves candidates from the event index, reads only the page on chain and falls back when the index lags', async () => {
+    const idx = createApp({ dbPath, deploymentPath, rpcUrl: chain.rpcUrl });
+    const direct = createApp({ dbPath, deploymentPath, rpcUrl: chain.rpcUrl, searchIndexMaxLag: -1 });
+    const strict = createApp({ dbPath, deploymentPath, rpcUrl: chain.rpcUrl, searchIndexMaxLag: 0 });
+    const servers = await Promise.all([idx, direct, strict].map((rt) => listen(rt.app)));
+    const [idxUrl, directUrl, strictUrl] = servers.map((s) => s.url);
+    let calls = 0;
+    const send = idx.provider.send.bind(idx.provider);
+    idx.provider.send = (method, params) => { calls++; return send(method, params); };
+    try {
+      await idx.syncIndexOnce();
+      // ids.garage was reassigned by a reverted listing above; find the original by its title.
+      const garageQuery = 'q=downtown%20garage';
+      const [{ id: garage }] = (await search(garageQuery, directUrl)).json.listings;
+      await (await deployment.contract.connect(chain.wallet(2)).bid(garage, { value: ethers.parseEther('0.05') })).wait();
+      const near = `near=${SPOTS.garage.latitude},${SPOTS.garage.longitude}`;
+      const queries = ['', 'sort=price-asc', 'sort=price-desc&limit=2', 'status=active', 'status=ended', 'sort=newest',
+        `arrive=${t0 + 1.5 * H}&depart=${t0 + 2.5 * H}`, `${near}&radiusKm=2&sort=distance`, 'maxPrice=0.03&sort=starts-soon'];
+      for (const query of queries) {
+        const fromIndex = await search(query, idxUrl);
+        const fromChain = await search(query, directUrl);
+        expect(fromIndex.json.source, query).toBe('index');
+        expect(fromChain.json.source, query).toBe('chain');
+        expect(fromIndex.json.listings, query).toEqual(fromChain.json.listings);
+        expect(fromIndex.json.total, query).toBe(fromChain.json.total);
+        expect(fromIndex.json.chain.blockHash, query).toBe((await chain.provider.getBlock('latest')).hash);
+      }
+
+      // The index path reads the page (three calls a listing), not every candidate.
+      calls = 0;
+      expect((await search('limit=1', idxUrl)).json.listings).toHaveLength(1);
+      const indexCalls = calls;
+      const send2 = direct.provider.send.bind(direct.provider);
+      calls = 0;
+      direct.provider.send = (method, params) => { calls++; return send2(method, params); };
+      const all = await search('limit=1', directUrl);
+      expect(indexCalls).toBeLessThan(calls);
+      expect(calls - indexCalls).toBeGreaterThanOrEqual(3 * (all.json.total - 1));
+
+      // Within the lag threshold the index catches up first; beyond it search reads the chain.
+      await chain.provider.send('evm_mine', []);
+      expect((await search('', strictUrl)).json.source).toBe('chain');
+      const caughtUp = await search('', idxUrl);
+      expect(caughtUp.json).toMatchObject({ source: 'index', chain: { blockNumber: (await chain.provider.getBlock('latest')).number } });
+
+      // A reorg replaces a bid: the index rewinds and serves the replacement.
+      const snap = await chain.provider.send('evm_snapshot', []);
+      await (await deployment.contract.connect(chain.wallet(3)).bid(garage, { value: ethers.parseEther('0.4') })).wait();
+      expect((await search(garageQuery, idxUrl)).json.listings[0].highestBid).toBe('0.4');
+      await chain.provider.send('evm_revert', [snap]);
+      await (await deployment.contract.connect(chain.wallet(3)).bid(garage, { value: ethers.parseEther('0.3') })).wait();
+      await chain.provider.send('evm_mine', []);
+      const replaced = await search(garageQuery, idxUrl);
+      expect(replaced.json.source).toBe('index');
+      expect(replaced.json.listings[0].highestBid).toBe('0.3');
+
+      // State the index cannot vouch for is read from the chain instead.
+      const garageCreated = "event = 'AuctionCreated' AND auction_id = ? AND canonical = 1";
+      runtime.db.db.prepare(`UPDATE auction_events SET detail = json_set(detail, '$.bidEnd', 1) WHERE ${garageCreated}`).run(garage);
+      const disagreed = await search(garageQuery, idxUrl);
+      expect(disagreed.json).toMatchObject({ source: 'chain', listings: [{ id: garage, highestBid: '0.3' }] });
+      runtime.db.db.prepare(`UPDATE auction_events SET detail = NULL WHERE ${garageCreated}`).run(garage);
+      expect((await search(garageQuery, idxUrl)).json.source).toBe('chain');
+      await chain.provider.send('evm_mine', []);
+      expect((await search(garageQuery, idxUrl)).json.source).toBe('index');
+    } finally {
+      for (const [i, rt] of [idx, direct, strict].entries()) await close(servers[i].srv, rt);
+    }
+  });
 });
