@@ -1,6 +1,6 @@
 import { Contract, parseEther } from 'ethers';
 import { test, expect } from './fixtures.mjs';
-import { advancePast, bid, selectWallet } from './helpers.mjs';
+import { advancePast, bid, localTime, selectWallet } from './helpers.mjs';
 
 test('host lists, drivers bid and refund, winner reserves, host receives payout', async ({ page, stack }) => {
   const { chain, descriptor } = stack;
@@ -18,8 +18,9 @@ test('host lists, drivers bid and refund, winner reserves, host receives payout'
   await create.getByLabel('Street Address').fill(address);
   await create.getByLabel('Public space description').fill('Covered concrete driveway with good lighting and 2.1 m clearance.');
   await create.getByLabel('Opening Min Bid (ETH)').fill('0.05');
-  await create.getByLabel('Bidding Cutoff').selectOption('15');
-  await create.getByLabel('Parking Window').selectOption('immediate-2h');
+  await create.getByLabel('Bidding Cutoff', { exact: true }).fill(localTime(15));
+  await create.getByLabel('Parking Starts', { exact: true }).fill(localTime(15));
+  await create.getByLabel('Parking Ends', { exact: true }).fill(localTime(135));
   await create.getByRole('button', { name: 'Review public listing', exact: true }).click();
   await expect(create.getByRole('heading', { name: 'Review public listing before signing' })).toBeFocused();
   expect(await escrow.nextAuctionId()).toBe(auctionId);

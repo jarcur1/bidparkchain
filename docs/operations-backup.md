@@ -49,6 +49,28 @@ It only prints `Ready` when all of these pass. Then stop the API, move the verif
 - **A database newer than the code is refused,** so older code never writes to a newer schema. To roll back the code, restore the matching pre-migration copy or backup.
 - New migrations must only add to the end of the list and must preserve existing rows.
 
+## Settlement keeper alerts
+
+With the keeper on ([hosting](hosting.md#automatic-settlement)), scrape `/api/settlement/metrics` and alert on a stalled or failing keeper:
+
+```yaml
+groups:
+  - name: bidpark-settlement
+    rules:
+      - alert: SettlementKeeperStalled
+        expr: time() - bidpark_settlement_last_run_timestamp_seconds > 300 or bidpark_settlement_last_run_ok == 0
+        for: 5m
+        annotations:
+          summary: No successful settlement pass for 5 minutes (API down, RPC outage or indexer behind).
+      - alert: SettlementBacklog
+        expr: bidpark_settlement_lag_seconds > 1800 or bidpark_settlement_jobs{state="failed"} > 0
+        for: 15m
+        annotations:
+          summary: A won auction has been unsettled for 30 minutes or a job keeps failing.
+```
+
+Runbook: read `GET /api/settlement` for the reason on each failing job. `INSUFFICIENT_FUNDS`: top up the keeper address, retries resume on their own. `NETWORK_ERROR` or `TIMEOUT`: check the RPC provider. Repeated `replaced` or `replace_capped` log lines: the chain's fees are above `BIDPARK_KEEPER_MAX_FEE_GWEI`, so raise it or wait. Users can always settle manually from the UI.
+
 ## Shutdown
 
 On SIGINT or SIGTERM the API stops accepting connections, lets in-flight requests finish (up to 10 seconds, then remaining connections are closed), and only then closes the database and RPC provider.

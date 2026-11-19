@@ -56,10 +56,12 @@ An optional keeper in the API process settles auctions whose bidding has closed,
 | `BIDPARK_SETTLEMENT=1` | Turn the keeper on. Anything else, or unset, leaves it off. |
 | `BIDPARK_KEEPER_KEY` | Private key of a dedicated, lightly funded keeper account. Required on Sepolia. The API refuses to start with a public demo account key, or with the deployer key if `BIDPARK_SEPOLIA_DEPLOYER_KEY` is also set. On the local profile it falls back to the demo deployer (account 0). |
 | `BIDPARK_SETTLEMENT_INTERVAL_MS` | Time between passes, 30 s by default (minimum 1 s). |
+| `BIDPARK_KEEPER_MAX_FEE_GWEI` | Ceiling for the keeper's `maxFeePerGas` when it replaces a stuck transaction, 100 by default. |
 
 How it works:
 - **What it settles.** Candidates come from the event index: auctions with at least one bid and no indexed settlement or cancellation. It reads each one's live state first and calls `settle` only when bidding has closed and it is still unsettled. Auctions without bids are left alone, so the host can still cancel them. Protected bookings follow the contract: it settles before parking starts, calls `expire` (refunding the winner) for one still unsettled after parking starts, and calls `expireDispute` (refunding the winner) for a report still open at the end of its 72-hour resolution window. Candidates also include auctions with a report that has no decision or refund yet. A report inside its window is a dispute hold: the keeper sends nothing and a resolver decides. It never claims host payouts or resolves reports. The job row records which action it performed. The keeper relies on the indexer job, so keep `BIDPARK_INDEX_INTERVAL_MS` above 0.
 - **One transaction per auction.** Each attempt is stored in `settlement_jobs` (auction, status, transaction hash, attempts, last error, next retry). The keeper signs the transaction and records its hash before broadcasting it, so a crash or a lost RPC response still leaves a transaction to check. After a restart it checks the stored transaction instead of sending again. It sends again only once that transaction has reverted, been reorged out, or been missing from the node for 5 minutes.
+- **Stuck transactions.** A transaction still pending after 2 minutes is replaced: same nonce and gas limit, `maxFeePerGas` and priority fee raised by 20% (nodes reject less than 10%), clamped to `BIDPARK_KEEPER_MAX_FEE_GWEI`. The new hash is stored before broadcasting. At most 5 transactions are sent per job this way; if the cap leaves no room for a valid bump the keeper logs `replace_capped` and keeps waiting. If the original mines first, the replacement fails with a nonce error and the job confirms normally. Each replacement is one `replaced` log line.
 - **Races and reorgs.** If someone settles first, including in the same block, the result counts as success (`AlreadySettled` is not a failure). If a reorg undoes a settlement, the auction becomes a candidate again and is settled again.
 - **Confirmation.** A job is `confirmed` once the auction reads as settled at the profile's confirmation depth: the latest block locally, the finalized block on Sepolia. Until then it counts as pending.
 - **Failures.** A failed attempt (unfunded keeper, RPC outage, revert) is retried with exponential backoff: 30 s, doubling, capped at 15 minutes. Reasons are fixed codes such as `INSUFFICIENT_FUNDS`, `NETWORK_ERROR`, `TIMEOUT` or a contract error name, never an upstream message.
@@ -70,6 +72,21 @@ Visibility:
 - When the keeper is on, `/api/health/ready` adds a `settlement` check: `not run yet`, `last settlement run failed`, or `keeper is out of funds`.
 - Every send, confirmation and failure is logged as one JSON line with `component: "settlement"`, the auction id, the attempt count, the reason and the transaction hash. Alert on repeated `failed` lines or a `pending` count that keeps growing. For `INSUFFICIENT_FUNDS`, top up the keeper address with Sepolia ETH; retries resume on their own. For `NETWORK_ERROR` or `TIMEOUT`, check the RPC provider. Either way, users can still settle manually.
 
+### Settlement metrics
+
+`GET /api/settlement/metrics` returns Prometheus text (`text/plain; version=0.0.4`). It carries only counts and timings, no keys, addresses or hashes, and returns `bidpark_settlement_enabled 0` when the keeper is off. Counters (`*_total`) restart with the process; the gauges come from the database.
+
+| Metric | Meaning |
+| --- | --- |
+| `bidpark_settlement_jobs{state}` | Jobs by state: `sent`, `confirmed`, `failed`, `cancelled`. |
+| `bidpark_settlement_job_attempts` | Transactions sent across all jobs, replacements included. |
+| `bidpark_settlement_pending` | Auctions the last pass left unfinished. |
+| `bidpark_settlement_sent_total`, `_replaced_total`, `_failures_total`, `_run_failures_total` | Sends, fee-bump replacements, failed attempts and failed passes since start. |
+| `bidpark_settlement_last_run_timestamp_seconds`, `_last_run_ok` | When the last pass ran (0 before the first) and whether it succeeded. |
+| `bidpark_settlement_lag_seconds` | Age of the oldest job that is still `sent` or `failed`, 0 if none. |
+
+Scrape it from the private network only, or keep it behind the reverse proxy; it is as public as `/api/settlement`. A sample alert rule is in [operations-backup.md](operations-backup.md#settlement-keeper-alerts).
+
 ## Host workspace
 
 The My Activity tab holds a host workspace for a connected wallet:
@@ -78,10 +95,22 @@ The My Activity tab holds a host workspace for a connected wallet:
 - **Drafts and templates.** Saved on the server per signed-in wallet (`/api/drafts`, migration 8), private to that wallet, at most 50 each. They hold form text, a photo reference and wall-clock dates, never a signature or a secret. They are included in backups.
   The browser clears the open editor when the connected wallet, deployment, or app sign-in changes. Saved copies remain available to their owner.
 - **Photos.** A photo is only a reference: an https URL or a local path starting with `/`. There is no upload and no storage service, so the host keeps the image online. An empty or unreachable photo falls back to the default illustrative photo.
-- **Scheduling.** Cutoff, start and end are entered as wall-clock times in the space's time zone (the browser's zone while none is set), converted to UTC seconds, and checked against held and blocked windows before signing. The contract rechecks at signing and remains the authority.
+- **Scheduling.** Cutoff, start and end are entered as wall-clock times in the space's time zone (the browser's zone while none is set), converted to UTC seconds, and checked against held and blocked windows before signing. The contract rechecks at signing and remains the authority. The quick "List a Spot" dialog uses the same explicit dates, zone and conflict check (it starts with a default window an hour out).
+- **Autosave.** While signed in, the quick listing form saves one private draft named "Autosaved listing" about 1.5 seconds after the last change, shows `Unsaved changes`, `Saving`, `Draft saved.` or a failure, and restores it after a reload or sign-in. Without a session nothing is saved and the form says so. Making the listing deletes the draft.
 - **Reports and moderation.** A signed-in wallet can report a listing from its detail dialog. Moderators page through the queue 25 at a time (`/api/moderation/verifications?limit&offset`).
 
 Published auction metadata is immutable; relisting a space starts a new draft and a new auction.
+
+## Arrival instruction encryption
+
+Private arrival instructions are encrypted at rest with AES-256-GCM (`node:crypto`). The key is `BIDPARK_ARRIVAL_KEY`: 32 random bytes as 64 hex characters (or base64). An invalid value stops the API at startup.
+
+- **Hosted mode** (`BIDPARK_ALLOWED_ORIGINS` set) refuses to save instructions while the key is unset (HTTP 503).
+- **Local and demo mode** keep working without a key and store the text unencrypted. `GET /api/settings` reports `arrivalEncryption: "off"` with a note, or `"aes-256-gcm"`. It never returns the key.
+- **Existing rows.** Rows saved before the key was set are plaintext (migration 11 adds an `encrypted` flag, default 0). Start the API once with the key set and it encrypts them in place; a repeat start finds none.
+- **Binding.** Each value is authenticated with its chain, contract, scope and id, so a value copied to another row fails to decrypt.
+- **Keep the key apart from backups.** The database and its backups then hold only ciphertext. SQLite may leave old plaintext in free pages of a file that held plaintext rows, so run `VACUUM` once after enabling the key, and treat backups taken before that as plaintext.
+- **Losing the key** makes stored instructions unreadable; hosts must enter them again. There is no key rotation yet: to change the key, decrypt with the old one and re-save with the new one.
 
 ## First deployment
 

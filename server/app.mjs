@@ -14,6 +14,7 @@ import { createSettlementJob, settlementSettings } from './settlement.mjs';
 import { PRICE_NOTE, QueryError, encodeCursor, filterAndSort, matchesMetadata, parseSearchQuery } from './search.mjs';
 import { mountDrafts } from './drafts.mjs';
 import { mountArrival } from './arrival.mjs';
+import { parseArrivalKey } from './arrival-crypto.mjs';
 import { mountDisputes } from './disputes.mjs';
 import { mountVerification, parseModerators, publicVerification } from './verification.mjs';
 
@@ -182,6 +183,8 @@ export function createApp(options = {}) {
   const db = new EscrowDatabase(options.dbPath ?? runtime.dbPath, { chainId: profile.chainId });
 
   const settings = publicSettings(options);
+  // Arrival instructions are encrypted at rest when a key is set; existing plaintext rows are encrypted now.
+  db.setArrivalKey(parseArrivalKey(options.arrivalKey ?? process.env.BIDPARK_ARRIVAL_KEY));
   // Every RPC call is bounded, so a stalled node cannot hold requests open indefinitely.
   const rpcRequest = new ethers.FetchRequest(rpcUrl);
   rpcRequest.timeout = settings.rpcTimeoutMs;
@@ -1016,6 +1019,12 @@ export function createApp(options = {}) {
   const settlement = settlementConfig && createSettlementJob({ db, provider, profile, loadDeployment, abiFor, settings: settlementConfig });
 
   /** GET /api/settlement: keeper status, backlog and recent failures (fixed reasons only, no secrets). */
+  /** GET /api/settlement/metrics: Prometheus text; counts and timings only, no keys, hashes or addresses. */
+  app.get('/api/settlement/metrics', (req, res) => {
+    res.type('text/plain; version=0.0.4').send(settlement
+      ? settlement.metrics()
+      : '# HELP bidpark_settlement_enabled 1 when the keeper is on.\n# TYPE bidpark_settlement_enabled gauge\nbidpark_settlement_enabled 0\n');
+  });
   app.get('/api/settlement', (req, res) => res.json(settlement ? settlement.status() : { enabled: false }));
 
   /** Current owner and ownership epoch from the same canonical block. */
@@ -1096,7 +1105,16 @@ export function createApp(options = {}) {
     return { block, call: (method, args) => readFinalized(deployment, iface, block, method, args) };
   }
 
-  mountArrival(app, { db, pinnedReader, contractAddress: () => loadDeployment()?.contractAddress ?? null });
+  /** GET /api/settings: server settings a client or operator may read. Never includes a secret. */
+  app.get('/api/settings', (req, res) => res.json({
+    hosted: settings.hosted,
+    arrivalEncryption: db.arrivalKey ? 'aes-256-gcm' : 'off',
+    ...(db.arrivalKey ? {} : { arrivalEncryptionNote: settings.hosted
+      ? 'BIDPARK_ARRIVAL_KEY is not set: arrival instructions cannot be saved on this server.'
+      : 'BIDPARK_ARRIVAL_KEY is not set: arrival instructions are stored unencrypted (local/demo mode only).' }),
+  }));
+
+  mountArrival(app, { db, requireKey: settings.hosted, pinnedReader, contractAddress: () => loadDeployment()?.contractAddress ?? null });
 
   /** GET /api/health/live: the process is up and answering. Checks no dependencies. */
   app.get('/api/health/live', (req, res) => res.json({ live: true }));

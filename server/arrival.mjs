@@ -43,11 +43,11 @@ export function winnerAccess({ onchain, booking, address, chainTime, opensBefore
 
 /**
  * @param {import('express').Express} app
- * @param {{ db: any, contractAddress: () => string | null,
+ * @param {{ db: any, requireKey?: boolean, contractAddress: () => string | null,
  *   pinnedReader: () => Promise<{ block: { number: number, hash: string, timestamp: number },
  *     call: (method: string, args: unknown[]) => Promise<any> }> }} deps
  */
-export function mountArrival(app, { db, contractAddress, pinnedReader }) {
+export function mountArrival(app, { db, contractAddress, pinnedReader, requireKey = false }) {
   function scope(req, res) {
     const session = readSession(db, req);
     if (!session) return void res.status(401).json({ error: 'Sign in with your wallet first' });
@@ -87,7 +87,14 @@ export function mountArrival(app, { db, contractAddress, pinnedReader }) {
 
   function readText(req, res) {
     const value = req.body?.instructions;
-    if (typeof value === 'string' && value.trim().length <= MAX_INSTRUCTIONS) return value.trim();
+    if (typeof value === 'string' && value.trim().length <= MAX_INSTRUCTIONS) {
+      // Hosted mode never stores them in the clear; local/demo mode does, and /api/settings says so.
+      if (value.trim() && requireKey && !db.arrivalKey) {
+        res.status(503).json({ error: 'Arrival instructions need BIDPARK_ARRIVAL_KEY to be set on this server' });
+        return null;
+      }
+      return value.trim();
+    }
     res.status(400).json({ error: `Instructions must be text of at most ${MAX_INSTRUCTIONS} characters` });
     return null;
   }
