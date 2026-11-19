@@ -191,6 +191,24 @@ const MIGRATIONS = [
         BEGIN SELECT RAISE(ABORT, 'verification_audit is append-only'); END;
     `);
   },
+  // 7: settlement jobs, one per auction the keeper has acted on. `tx_hash` is recorded before the
+  //    next attempt may run, so a restart checks that transaction instead of sending a second one.
+  (db) => {
+    db.exec(`
+      CREATE TABLE settlement_jobs (
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        auction_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        tx_hash TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        next_attempt_at INTEGER,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (chain_id, contract_address, auction_id)
+      );
+    `);
+  },
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
@@ -582,6 +600,53 @@ export class EscrowDatabase {
     `);
     return this.#transaction(() => itemIds.reduce((n, id) => n + insert.run(this.chainId,
       contractAddress.toLowerCase(), address.toLowerCase(), id, Date.now()).changes, 0));
+  }
+
+  /**
+   * Auctions the settlement keeper should look at: indexed as created with at least one bid and not
+   * (yet) indexed as settled or cancelled, plus any with a job still in flight or retrying.
+   */
+  getSettlementCandidates(contractAddress) {
+    const contract = contractAddress.toLowerCase();
+    return this.db.prepare(`
+      SELECT auction_id FROM (SELECT auction_id FROM auction_events e
+      WHERE chain_id = ? AND contract_address = ? AND canonical = 1 AND event = 'BidPlaced'
+        AND NOT EXISTS (
+          SELECT 1 FROM auction_events s
+          WHERE s.chain_id = e.chain_id AND s.contract_address = e.contract_address AND s.auction_id = e.auction_id
+            AND s.canonical = 1 AND s.event IN ('AuctionSettled', 'AuctionCancelled')
+        )
+      UNION
+      SELECT auction_id FROM settlement_jobs WHERE chain_id = ? AND contract_address = ? AND status IN ('sent', 'failed'))
+      ORDER BY CAST(auction_id AS INTEGER)
+    `).all(this.chainId, contract, this.chainId, contract).map((row) => row.auction_id);
+  }
+
+  getSettlementJob(contractAddress, auctionId) {
+    return this.db.prepare('SELECT * FROM settlement_jobs WHERE chain_id = ? AND contract_address = ? AND auction_id = ?')
+      .get(this.chainId, contractAddress.toLowerCase(), auctionId) || null;
+  }
+
+  saveSettlementJob(contractAddress, auctionId, { status, txHash = null, attempts = 0, error = null, nextAttemptAt = null, updatedAt = Date.now() }) {
+    this.db.prepare(`
+      INSERT INTO settlement_jobs (chain_id, contract_address, auction_id, status, tx_hash, attempts, last_error, next_attempt_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(chain_id, contract_address, auction_id) DO UPDATE SET status = excluded.status, tx_hash = excluded.tx_hash,
+        attempts = excluded.attempts, last_error = excluded.last_error, next_attempt_at = excluded.next_attempt_at, updated_at = excluded.updated_at
+    `).run(this.chainId, contractAddress.toLowerCase(), auctionId, status, txHash, attempts, error, nextAttemptAt, updatedAt);
+  }
+
+  /** Job counts by status and the most recently updated failing jobs. */
+  getSettlementSummary(contractAddress, { failures = 10 } = {}) {
+    const contract = contractAddress.toLowerCase();
+    const counts = Object.fromEntries(this.db.prepare(
+      'SELECT status, COUNT(*) AS n FROM settlement_jobs WHERE chain_id = ? AND contract_address = ? GROUP BY status',
+    ).all(this.chainId, contract).map((row) => [row.status, row.n]));
+    const recentFailures = this.db.prepare(`
+      SELECT auction_id, attempts, last_error, next_attempt_at, updated_at FROM settlement_jobs
+      WHERE chain_id = ? AND contract_address = ? AND status = 'failed' ORDER BY updated_at DESC LIMIT ?
+    `).all(this.chainId, contract, failures);
+    return { counts, recentFailures };
   }
 
   /** A space's current verification state, including its private evidence, or null. */
