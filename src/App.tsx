@@ -82,6 +82,7 @@ import {
   type ListingTarget,
 } from './utils/eligibility';
 import { formatEth } from './utils/formatters';
+import { unregisteredListing } from './utils/history';
 import { webProfile } from './utils/networkProfile';
 import {
   LOADING_READ,
@@ -178,13 +179,18 @@ export const AppContent: React.FC<{
   // Dialogs hold a stable identity (deployment + auction id + metadata hash), never a listing snapshot.
   const [detailTarget, setDetailTarget] = useState<ListingTarget | null>(null);
   const [bidTarget, setBidTarget] = useState<ListingTarget | null>(null);
+  // Auctions without registered details can still be opened from the history, with contract data only.
+  const openable = useMemo(
+    () => [...listings, ...listingsView.unindexed.map(unregisteredListing)],
+    [listings, listingsView.unindexed]
+  );
   const detailListing = useMemo(
-    () => resolveListing(listings, chain, detailTarget),
-    [listings, chain, detailTarget]
+    () => resolveListing(openable, chain, detailTarget),
+    [openable, chain, detailTarget]
   );
   const bidModalListing = useMemo(
-    () => resolveListing(listings, chain, bidTarget),
-    [listings, chain, bidTarget]
+    () => resolveListing(openable, chain, bidTarget),
+    [openable, chain, bidTarget]
   );
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isWalletModalOpen, setIsWalletModalOpen] = useState(false);
@@ -1355,6 +1361,7 @@ export const AppContent: React.FC<{
           <ActivityView
             currentAddress={walletState.address}
             listings={listings}
+            unindexed={listingsView.unindexed}
             claimableRefundWei={claimableRefundWei}
             refundRead={refundRead}
             myBidAuctionIds={myBidAuctionIds}

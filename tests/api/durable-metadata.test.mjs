@@ -145,7 +145,7 @@ describe('registration recovery against an owned chain', () => {
   it('reports an auction without metadata, and one whose stored metadata no longer matches after a rollback', async () => {
     const unknown = await createAuction(spot('Never registered'));
     let { json } = await call('/api/listings');
-    expect(json.unindexed).toContainEqual(expect.objectContaining({ id: unknown, metadataHash: hash(spot('Never registered')) }));
+    expect(json.unindexed).toContainEqual(expect.objectContaining({ id: unknown, metadataHash: hash(spot('Never registered')), parkingStart: expect.any(Number), parkingEnd: expect.any(Number), settled: false, cancelled: false, booking: expect.anything(), timeZone: expect.any(String) }));
 
     const snapshot = await chain.provider.send('evm_snapshot', []);
     const original = spot('Before rollback');

@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, History, Link as LinkIcon, Loader2 } from 'lucide-react';
-import type { Listing } from '../types';
+import type { Listing, UnindexedAuction } from '../types';
+import { canExportIcs, downloadReservationIcs } from '../utils/calendar';
 import { fetchAccountHistory, type AccountHistory } from '../services/api';
 import { formatDateTime, formatEth, formatParkingWindow, shortenAddress } from '../utils/formatters';
-import { buildHistoryRows, filterHistory, historyLink, pageOf, readHistoryLink } from '../utils/history';
+import { buildHistoryRows, filterHistory, historyLink, pageOf, readHistoryLink, unregisteredListing } from '../utils/history';
 import { LIFECYCLE_STATES, zoneNote, type LifecycleState } from '../utils/lifecycle';
 import { LOADING_READ, readFailed, readSucceeded, type ReadState } from '../utils/readState';
 
@@ -17,6 +18,8 @@ const EVENT_LABELS: Record<string, string> = {
 interface Props {
   currentAddress: string;
   listings: Listing[];
+  /** On-chain auctions without registered details; they still get a state and a detail view. */
+  unindexed?: UnindexedAuction[];
   myBidAuctionIds: Set<string> | null;
   nowSec: number;
   deployment: { chainId: number; contractAddress: string } | null;
@@ -24,7 +27,7 @@ interface Props {
 }
 
 /** Searchable, paginated bid and reservation history across auctions, including lost ones. */
-export const ReservationHistory: React.FC<Props> = ({ currentAddress, listings, myBidAuctionIds, nowSec, deployment, onOpenListingDetail }) => {
+export const ReservationHistory: React.FC<Props> = ({ currentAddress, listings, unindexed = [], myBidAuctionIds, nowSec, deployment, onOpenListingDetail }) => {
   const link = useMemo(() => readHistoryLink(window.location.search, deployment), [deployment]);
   const [history, setHistory] = useState<AccountHistory | null>(null);
   const [read, setRead] = useState<ReadState>(LOADING_READ);
@@ -52,9 +55,10 @@ export const ReservationHistory: React.FC<Props> = ({ currentAddress, listings, 
   // Events of another deployment are never mixed into this one's history.
   const sameDeployment = !history || !deployment ||
     (history.chainId === deployment.chainId && history.contractAddress.toLowerCase() === deployment.contractAddress.toLowerCase());
+  const allListings = useMemo(() => [...listings, ...unindexed.map(unregisteredListing)], [listings, unindexed]);
   const rows = useMemo(
-    () => buildHistoryRows(sameDeployment ? history?.events ?? [] : [], listings, currentAddress, nowSec, myBidAuctionIds),
-    [history, listings, currentAddress, nowSec, myBidAuctionIds, sameDeployment],
+    () => buildHistoryRows(sameDeployment ? history?.events ?? [] : [], allListings, currentAddress, nowSec, myBidAuctionIds),
+    [history, allListings, currentAddress, nowSec, myBidAuctionIds, sameDeployment],
   );
   const matches = filterHistory(rows, query, state);
   const shown = pageOf(matches, page);
@@ -144,6 +148,11 @@ export const ReservationHistory: React.FC<Props> = ({ currentAddress, listings, 
                 )}
                 <div className="history-row-actions">
                   {l && <button type="button" className="btn-table-action" onClick={() => onOpenListingDetail(l)}>View Details</button>}
+                  {l && deployment && canExportIcs(row.lifecycle) && (
+                    <button type="button" className="btn-table-action" onClick={() => downloadReservationIcs(l, deployment, row.lifecycle!)}>
+                      Add to calendar
+                    </button>
+                  )}
                   {deployment && (
                     <a className="btn-table-action" href={historyLink(deployment, row.auctionId)}>
                       <LinkIcon size={12} /> Link

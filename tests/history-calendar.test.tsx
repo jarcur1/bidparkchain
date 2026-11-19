@@ -3,7 +3,9 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Listing } from '../src/types';
 import { formatDateTime, formatParkingWindow } from '../src/utils/formatters';
-import { reservationIcs } from '../src/utils/calendar';
+import { canExportIcs, reservationIcs } from '../src/utils/calendar';
+import { unregisteredListing } from '../src/utils/history';
+import { reservationLifecycle, type Lifecycle, type LifecycleState } from '../src/utils/lifecycle';
 import { BidHistory } from '../src/components/BidHistory';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -46,9 +48,12 @@ describe('date and time-zone display', () => {
 describe('reservation calendar export', () => {
   const listing = {
     id: '7', title: 'Garage; level 2, spot A', address: '100 Main St, Austin',
-    parkingStart: at('2026-11-20T05:00:00Z'), parkingEnd: at('2026-11-20T08:00:00Z'),
+    parkingStart: at('2026-11-20T05:00:00Z'), parkingEnd: at('2026-11-20T08:00:00Z'), timeZone: CHI,
   };
-  const ics = reservationIcs(listing, { chainId: 31337, contractAddress: '0xABCDEF' }, at('2026-11-19T00:00:00Z'));
+  const life = (state: LifecycleState, label = state): Lifecycle => ({ state, label, detail: '' });
+  const dep = { chainId: 31337, contractAddress: '0xABCDEF' };
+  const make = (state: LifecycleState, l = listing) => reservationIcs(l, dep, life(state), at('2026-11-19T00:00:00Z'));
+  const ics = make('upcoming');
 
   it('writes UTC instants, a stable UID and escaped text with CRLF lines', () => {
     const lines = ics.split('\r\n');
@@ -62,8 +67,53 @@ describe('reservation calendar export', () => {
     expect(ics.replace(/\r\n/g, '')).not.toMatch(/\n/);
   });
 
+  it('writes status and a revision that only grows as the reservation moves on', () => {
+    const seq = (s: LifecycleState) => ({
+      status: make(s).split('\r\n').find((x) => x.startsWith('STATUS:')),
+      sequence: Number(make(s).match(/SEQUENCE:(\d+)/)![1]),
+    });
+    expect(seq('awaiting-settlement')).toEqual({ status: 'STATUS:TENTATIVE', sequence: 0 });
+    expect(seq('upcoming')).toEqual({ status: 'STATUS:CONFIRMED', sequence: 1 });
+    expect(seq('completed').status).toBe('STATUS:CONFIRMED');
+    expect(seq('disputed')).toEqual({ status: 'STATUS:TENTATIVE', sequence: 2 });
+    expect(seq('cancelled-refunded')).toEqual({ status: 'STATUS:CANCELLED', sequence: 3 });
+    expect(seq('expired').status).toBe('STATUS:CANCELLED');
+    expect(make('cancelled-refunded')).toContain('SUMMARY:CANCELLED: Parking');
+    // The same event identity in every state, so a re-export updates it.
+    expect(make('cancelled-refunded')).toContain('UID:31337-0xabcdef-7@bidpark');
+    expect(() => make('outbid')).toThrow();
+    expect(canExportIcs(life('outbid'))).toBe(false);
+    expect(canExportIcs(null)).toBe(false);
+    expect(canExportIcs(life('leading'))).toBe(true);
+  });
+
+  it('uses UTC instants and names the space zone and local overnight window in the description', () => {
+    const d = ics.replace(/\r\n /g, '').split('\r\n').find((x) => x.startsWith('DESCRIPTION:'))!;
+    expect(d).toContain('America/Chicago');
+    expect(d).toContain('Thu\\, Nov 19\\, 11:00 PM CST – Fri\\, Nov 20\\, 2:00 AM CST');
+    expect(ics).not.toContain('TZID');
+    expect(ics).not.toContain('VTIMEZONE');
+  });
+
+  it('keeps instants exact across a daylight-saving change', () => {
+    // Chicago falls back on 2026-11-01: 01:00 CDT to 01:00 CST, so the window is two real hours.
+    const dst = make('upcoming', { ...listing, parkingStart: at('2026-11-01T06:00:00Z'), parkingEnd: at('2026-11-01T08:00:00Z') });
+    expect(dst).toContain('DTSTART:20261101T060000Z');
+    expect(dst).toContain('DTEND:20261101T080000Z');
+    expect(dst.replace(/\r\n /g, '')).toContain('1:00 AM CDT – 2:00 AM CST');
+    // Spring forward on 2026-03-08: 02:00 CST jumps to 03:00 CDT.
+    const spring = make('upcoming', { ...listing, parkingStart: at('2026-03-08T07:30:00Z'), parkingEnd: at('2026-03-08T09:30:00Z') });
+    expect(spring).toContain('DTSTART:20260308T073000Z');
+    expect(spring.replace(/\r\n /g, '')).toContain('1:30 AM CST – 4:30 AM CDT');
+  });
+
+  it('says so when the space has no time zone', () => {
+    const d = make('upcoming', { ...listing, timeZone: '' }).replace(/\r\n /g, '');
+    expect(d).toContain('no time zone set\\; times are in UTC');
+  });
+
   it('folds long lines to 75 octets', () => {
-    const long = reservationIcs({ ...listing, title: 'é'.repeat(80) }, { chainId: 1, contractAddress: '0x1' });
+    const long = reservationIcs({ ...listing, title: 'é'.repeat(80) }, { chainId: 1, contractAddress: '0x1' }, life('upcoming'));
     for (const line of long.split('\r\n')) expect(new TextEncoder().encode(line).length).toBeLessThanOrEqual(75);
     expect(long.replace(/\r\n /g, '')).toContain(`SUMMARY:Parking: ${'é'.repeat(80)}`);
   });
@@ -151,5 +201,20 @@ describe('bid history', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('auction without registered details', () => {
+  it('still gets a lifecycle state and an exportable event from contract data', () => {
+    const me = '0x00000000000000000000000000000000000000aa';
+    const l = unregisteredListing({
+      id: '9', owner: '0x1', metadataHash: '0xabc', highestBid: '0.5', bidEnd: at('2026-11-10T00:00:00Z'), settled: true, cancelled: false,
+      highestBidder: me, minBid: '0.1', parkingStart: at('2026-11-20T05:00:00Z'), parkingEnd: at('2026-11-20T08:00:00Z'),
+      payoutClaimed: false, spaceId: '2', timeZone: CHI, booking: null,
+    });
+    const life = reservationLifecycle(l, me, at('2026-11-19T00:00:00Z'));
+    expect(life?.state).toBe('upcoming');
+    expect(canExportIcs(life)).toBe(true);
+    expect(l.title).toBe('Auction #9');
   });
 });

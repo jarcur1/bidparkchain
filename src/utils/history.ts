@@ -1,6 +1,21 @@
-import type { Listing } from '../types';
+import type { Listing, UnindexedAuction } from '../types';
 import type { AuctionEvent } from '../services/api';
 import { reservationLifecycle, type Lifecycle, type LifecycleState } from './lifecycle';
+
+/**
+ * A listing for an auction whose details were never registered: the contract fields are real, the
+ * descriptive ones say so. It gives the history a lifecycle state and the detail dialog something to open.
+ */
+export function unregisteredListing(u: UnindexedAuction): Listing {
+  return {
+    id: u.id, spaceId: u.spaceId, timeZone: u.timeZone, owner: u.owner, minBid: u.minBid, highestBid: u.highestBid,
+    highestBidder: u.highestBidder, bidEnd: u.bidEnd, parkingStart: u.parkingStart, parkingEnd: u.parkingEnd,
+    settled: u.settled, cancelled: u.cancelled, payoutClaimed: u.payoutClaimed, metadataHash: u.metadataHash, booking: u.booking,
+    title: `Auction #${u.id}`, address: 'Details not registered by the seller yet', neighborhood: '', latitude: 0, longitude: 0,
+    description: 'The seller has not registered public details for this auction. The times and amounts shown come from the contract.',
+    image: '', kind: 'driveway', amenities: [],
+  };
+}
 
 export interface HistoryRow {
   auctionId: string;

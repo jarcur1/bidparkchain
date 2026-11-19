@@ -364,10 +364,16 @@ export function createApp(options = {}) {
         db.upsertListing({ ...staged, auctionId: id, contractAddress, metadataHash: onchain.metadataHash });
         listings.push(listingFromRow(id, onchain, { ...staged, amenities: JSON.stringify(staged.amenities) }, ...withBadge(contractAddress, await readSpace(id))));
       } else {
+        // Contract-derived fields only, so the history can still give the auction a lifecycle state.
+        const { inventory, booking } = await readSpace(id);
         unindexed.push({
           id, owner: onchain.owner, metadataHash: onchain.metadataHash,
           highestBid: ethers.formatEther(onchain.highestBid), bidEnd: Number(onchain.bidEnd),
           settled: Boolean(onchain.settled), cancelled: Boolean(onchain.cancelled),
+          highestBidder: onchain.highestBidder, minBid: ethers.formatEther(onchain.minBid),
+          parkingStart: Number(onchain.parkingStart), parkingEnd: Number(onchain.parkingEnd),
+          payoutClaimed: Boolean(onchain.payoutClaimed), spaceId: inventory.spaceId.toString(),
+          timeZone: inventory.timeZone, booking: bookingFromChain(booking),
         });
       }
     }
