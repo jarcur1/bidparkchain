@@ -120,11 +120,14 @@ export async function stageListingMetadata(metadata: SpotMetadata, deployment?: 
   if (!res.ok) throw new ApiError(await extractErrorMessage(res), res.status);
 }
 
+/** Another host's space that shares this listing's address or location. Advisory; moderators are told. */
+export interface DuplicateSpace { spaceId: string; match: ('address' | 'location')[] }
+
 export async function createListingRecord(
   auctionId: string,
   metadata: SpotMetadata,
   deployment?: DeploymentIdentity,
-): Promise<Listing> {
+): Promise<Listing & { duplicateSpaces: DuplicateSpace[] }> {
   const res = await fetch('/api/listings', {
     method: 'POST',
     headers: {
@@ -144,7 +147,8 @@ export async function createListingRecord(
 
   const data: unknown = await res.json();
   if (data && typeof data === 'object' && 'listing' in data) {
-    return data.listing as Listing;
+    const duplicateSpaces = 'duplicateSpaces' in data && Array.isArray(data.duplicateSpaces) ? data.duplicateSpaces as DuplicateSpace[] : [];
+    return { ...(data.listing as Listing), duplicateSpaces };
   }
 
   throw new ApiError('Invalid response shape from POST /api/listings', res.status);

@@ -1,5 +1,6 @@
 import { ethers } from 'ethers';
 import { readSession } from './auth.mjs';
+import { aliasKeys, matchKind } from './duplicates.mjs';
 
 /**
  * Host space-control verification. A space's on-chain owner asks for review with private evidence;
@@ -21,6 +22,31 @@ const TRANSITIONS = {
 };
 const MAX_EVIDENCE = 2000;
 const MAX_NOTE = 280;
+const MAX_APPEAL = 500;
+
+/**
+ * Records a registered listing's alias keys and flags the space against other hosts' spaces that share
+ * one: a system `report` entry on both spaces' audit trails, once per pair. Returns the matched spaces
+ * for the warning to the host. No state change and nothing blocks the listing.
+ */
+export function flagDuplicates(db, contract, spaceId, host, metadata) {
+  const matches = new Map();
+  for (const { spaceId: other, key } of db.recordSpaceAliases(contract, spaceId, host, aliasKeys(metadata))) {
+    matches.set(other, [...(matches.get(other) ?? []), matchKind(key)]);
+  }
+  for (const [other, kinds] of matches) {
+    const how = [...new Set(kinds)].join(' and ');
+    for (const [id, peer] of [[spaceId, other], [other, spaceId]]) {
+      const text = `Possible duplicate of space #${peer} (same ${how})`;
+      if (db.getVerificationAudit(contract, id).some((e) => e.action === 'report' && e.actor === 'system' && e.note === text)) continue;
+      db.recordVerification(contract, id, {
+        action: 'report', status: db.getVerification(contract, id)?.status ?? 'unverified',
+        actor: 'system', reason: 'duplicate-listing', note: text,
+      });
+    }
+  }
+  return [...matches].map(([id, kinds]) => ({ spaceId: id, match: [...new Set(kinds)] }));
+}
 
 /** Public meaning of a listing's verification: only an approved request by the current owner counts. */
 export function publicVerification(row, owner) {
@@ -110,6 +136,34 @@ export function mountVerification(app, { db, moderators, contractAddress, readSp
     } catch (err) {
       next(err);
     }
+  });
+
+  /**
+   * POST /api/spaces/:spaceId/appeal { note }: the host of a rejected or suspended space answers the decision.
+   * Stored in the audit trail for moderators; one per decision. Re-review still needs new proof.
+   */
+  app.post('/api/spaces/:spaceId/appeal', (req, res) => {
+    const s = scope(req, res);
+    if (!s) return;
+    const spaceId = spaceIdOf(req.params.spaceId);
+    const text = typeof req.body?.note === 'string' ? req.body.note.trim() : '';
+    if (!spaceId) return res.status(400).json({ error: 'Valid space id is required' });
+    if (text.length < 10 || text.length > MAX_APPEAL) {
+      return res.status(400).json({ error: `Appeal note must be 10 to ${MAX_APPEAL} characters` });
+    }
+    const current = db.getVerification(s.contract, spaceId);
+    if (!current || current.host.toLowerCase() !== s.session.address.toLowerCase()) {
+      return res.status(403).json({ error: 'Only the host of this verification request can appeal' });
+    }
+    if (!['rejected', 'suspended'].includes(current.status)) {
+      return res.status(409).json({ error: 'Only a rejected or suspended space can be appealed' });
+    }
+    const lastDecision = db.getVerificationAudit(s.contract, spaceId).filter((e) => e.action !== 'report').at(-1);
+    if (lastDecision?.action === 'appeal') return res.status(409).json({ error: 'Your appeal is already with the moderators' });
+    db.recordVerification(s.contract, spaceId, {
+      action: 'appeal', status: current.status, actor: s.session.address, reason: 'host-appeal', note: text,
+    });
+    res.status(201).json({ spaceId, status: current.status, audit: audit(db, s.contract, spaceId, { reports: false }) });
   });
 
   /** POST /api/spaces/:spaceId/report { reason, note }: any signed-in wallet flags a space for moderators. */
