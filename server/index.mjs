@@ -12,7 +12,7 @@ export { createApp };
  * and RPC provider, so no request ever runs against a closed resource.
  */
 export function serve({ port = 3001, host = '127.0.0.1', drainMs = 10_000, indexIntervalMs = 5_000, webDir, ...options } = {}) {
-  const { app, db, provider, syncIndexOnce, indexingDone } = createApp(options);
+  const { app, db, provider, syncIndexOnce, indexingDone, settlement, settlementIntervalMs } = createApp(options);
   if (webDir) {
     // Hosted mode serves the built web app from the same origin as /api: no Vite dev server and no
     // /rpc proxy. Hashed assets are cached for a year; index.html is always revalidated.
@@ -32,20 +32,24 @@ export function serve({ port = 3001, host = '127.0.0.1', drainMs = 10_000, index
   // Background indexer job; 0 disables it. Shutdown waits for a pass in flight before closing the DB.
   const indexTimer = indexIntervalMs > 0 ? setInterval(() => void syncIndexOnce(), indexIntervalMs) : null;
   if (indexTimer) void syncIndexOnce();
+  // Optional settlement keeper, same lifecycle: shutdown waits for a pass in flight.
+  const settleTimer = settlement ? setInterval(() => void settlement.runOnce(), settlementIntervalMs) : null;
+  if (settleTimer) void settlement.runOnce();
   let closing = null;
   const close = () => closing ??= new Promise((resolve) => {
     if (indexTimer) clearInterval(indexTimer);
+    if (settleTimer) clearInterval(settleTimer);
     const force = setTimeout(() => server.closeAllConnections(), drainMs);
     server.close(async () => {
       clearTimeout(force);
-      await indexingDone();
+      await Promise.all([indexingDone(), settlement?.done()]);
       db.close();
       provider.destroy();
       resolve();
     });
     server.closeIdleConnections();
   });
-  return { server, db, provider, close, syncIndexOnce };
+  return { server, db, provider, close, syncIndexOnce, settlement };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

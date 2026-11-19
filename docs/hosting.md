@@ -43,7 +43,30 @@ These apply in every mode:
 ## Health
 
 - `GET /api/health/live`: the process answers. Use it for restarts.
-- `GET /api/health/ready`: 200 only when the database, the chain id, contract code at the deployment address and (if `BIDPARK_MAX_INDEX_LAG` is set) index freshness all pass. Each check reports `ok` or a fixed reason, never an upstream error. Use it to gate traffic after a deploy.
+- `GET /api/health/ready`: 200 only when the database, the chain id, contract code at the deployment address, (if `BIDPARK_MAX_INDEX_LAG` is set) index freshness and (if the keeper is on) [settlement](#automatic-settlement) all pass. Each check reports `ok` or a fixed reason, never an upstream error. Use it to gate traffic after a deploy.
+
+## Automatic settlement
+
+An optional keeper in the API process settles auctions whose bidding has closed, so a won auction is not left unsettled only because nobody clicked **Settle**. It is off by default. Manual settlement in the UI stays available either way.
+
+| Setting | Meaning |
+| --- | --- |
+| `BIDPARK_SETTLEMENT=1` | Turn the keeper on. Anything else, or unset, leaves it off. |
+| `BIDPARK_KEEPER_KEY` | Private key of a dedicated, lightly funded keeper account. Required on Sepolia. The API refuses to start with a public demo account key, or with the deployer key if `BIDPARK_SEPOLIA_DEPLOYER_KEY` is also set. On the local profile it falls back to the demo deployer (account 0). |
+| `BIDPARK_SETTLEMENT_INTERVAL_MS` | Time between passes, 30 s by default (minimum 1 s). |
+
+How it works:
+- **What it settles.** Candidates come from the event index: auctions with at least one bid and no indexed settlement or cancellation. It reads each one's live state first and calls `settle` only when bidding has closed and it is still unsettled. Auctions without bids are left alone, so the host can still cancel them. The keeper relies on the indexer job, so keep `BIDPARK_INDEX_INTERVAL_MS` above 0.
+- **One transaction per auction.** Each attempt is stored in `settlement_jobs` (auction, status, transaction hash, attempts, last error, next retry) before anything else is sent. After a restart it checks the stored transaction instead of sending again. It sends again only once that transaction has reverted, been reorged out, or been missing from the node for 5 minutes.
+- **Races and reorgs.** If someone settles first, including in the same block, the result counts as success (`AlreadySettled` is not a failure). If a reorg undoes a settlement, the auction becomes a candidate again and is settled again.
+- **Confirmation.** A job is `confirmed` once the auction reads as settled at the profile's confirmation depth: the latest block locally, the finalized block on Sepolia. Until then it counts as pending.
+- **Failures.** A failed attempt (unfunded keeper, RPC outage, revert) is retried with exponential backoff: 30 s, doubling, capped at 15 minutes. Reasons are fixed codes such as `INSUFFICIENT_FUNDS`, `NETWORK_ERROR`, `TIMEOUT` or a contract error name, never an upstream message.
+- **Shutdown.** SIGTERM waits for a pass in flight, just like the indexer, before the database closes.
+
+Visibility:
+- `GET /api/settlement` returns `{ enabled: false }` when off. When on, it returns the keeper address (to fund it), interval, confirmation policy, last run time and error, pending count, job counts by status, and the 10 most recent failing jobs (auction, attempts, reason, next retry). It never returns keys or RPC URLs.
+- When the keeper is on, `/api/health/ready` adds a `settlement` check: `not run yet`, `last settlement run failed`, or `keeper is out of funds`.
+- Every send, confirmation and failure is logged as one JSON line with `component: "settlement"`, the auction id, the attempt count, the reason and the transaction hash. Alert on repeated `failed` lines or a `pending` count that keeps growing. For `INSUFFICIENT_FUNDS`, top up the keeper address with Sepolia ETH; retries resume on their own. For `NETWORK_ERROR` or `TIMEOUT`, check the RPC provider. Either way, users can still settle manually.
 
 ## First deployment
 

@@ -6,11 +6,11 @@ This is a proposed policy, not product approval or a description of deployed pro
 
 The current local contract, and an initial illustrative Sepolia rehearsal of that contract only after the infrastructure gates in the pilot policy, do **not** implement the protected policy below. Sepolia means Ethereum Sepolia L1, chain ID 11155111, with faucet-funded native test ETH only. Verify the supported operating window before shared deployment because published lifecycle guidance conflicts; stop if it cannot be confirmed, rather than automatically switching network or using mainnet.
 
-- Bids close at `bidEnd`. Anyone can manually settle at or after that cutoff, including after parking starts or ends; there is no settlement timeout or automatic settlement. Settlement without bids records no winner or payout. The host can cancel only while there are no bids and the auction is unsettled.
+- Bids close at `bidEnd`. Anyone can manually settle at or after that cutoff, including after parking starts or ends; there is no settlement timeout. An optional server-side keeper can settle due auctions automatically; it is off by default (see [hosting](hosting.md#automatic-settlement)). Settlement without bids records no winner or payout. The host can cancel only while there are no bids and the auction is unsettled.
 - Only the host can claim a payout, at or after `parkingEnd`, and only for a settled auction with a paid winning bid. The contract does not check physical delivery. Outbid bidders can withdraw their credited principal; the current host payout is a direct transfer on the host's claim, not a protected-protocol pull-credit mechanism.
 - There is no post-bid booking cancellation, seller-failure refund, dispute hold, no-show or overrun protection, or automatic gas refund. Transaction senders pay their own gas. A settled on-chain winner is not evidence of access or a completed booking.
 
-The [settlement automation issue #22](https://github.com/jarcur1/bidparkchain/issues/22) is future work, not an existing scheduler. Manual settlement remains necessary in the current contract.
+The keeper from [#22](https://github.com/jarcur1/bidparkchain/issues/22) calls the same permissionless `settle` as the UI and follows the current contract's rules only. Manual settlement stays available and is still required wherever the keeper is not enabled. Adapting the keeper to the protected settlement window and expiry below waits for [#18](https://github.com/jarcur1/bidparkchain/issues/18).
 
 ## Proposed future protected protocol
 

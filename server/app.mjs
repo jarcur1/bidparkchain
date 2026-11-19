@@ -10,6 +10,7 @@ import { getNetworkProfile } from '../shared/network-profiles.mjs';
 import { mountAuth, readSession } from './auth.mjs';
 import { syncIndex } from './indexer.mjs';
 import { deriveInbox } from './inbox.mjs';
+import { createSettlementJob, settlementSettings } from './settlement.mjs';
 
 let sepoliaArtifact;
 
@@ -671,13 +672,13 @@ export function createApp(options = {}) {
    */
   let indexing = null;
   let lastSync = null;
+  const abiFor = (deployment) => deployment.abi ?? (sepoliaArtifact ??= compileEscrowContract()).abi;
   function syncIndexOnce() {
     indexing ??= (async () => {
       const deployment = loadDeployment();
       if (!deployment?.contractAddress) return null;
-      const abi = deployment.abi ?? (sepoliaArtifact ??= compileEscrowContract()).abi;
       lastSync = { ...await syncIndex({
-        db, provider, address: deployment.contractAddress, abi,
+        db, provider, address: deployment.contractAddress, abi: abiFor(deployment),
         fromBlock: Number(deployment.deploymentBlock ?? 0), confirmation: profile.confirmation,
       }), at: Date.now(), error: null };
       return lastSync;
@@ -784,6 +785,13 @@ export function createApp(options = {}) {
     res.json(inboxFor(scope.session, scope.contractAddress));
   });
 
+  // Optional settlement keeper (off by default); serve() runs it on a timer and drains it on shutdown.
+  const settlementConfig = settlementSettings(options.settlement, process.env, profile);
+  const settlement = settlementConfig && createSettlementJob({ db, provider, profile, loadDeployment, abiFor, settings: settlementConfig });
+
+  /** GET /api/settlement: keeper status, backlog and recent failures (fixed reasons only, no secrets). */
+  app.get('/api/settlement', (req, res) => res.json(settlement ? settlement.status() : { enabled: false }));
+
   /** GET /api/health/live: the process is up and answering. Checks no dependencies. */
   app.get('/api/health/live', (req, res) => res.json({ live: true }));
 
@@ -824,6 +832,14 @@ export function createApp(options = {}) {
         if (lastSync.lagBlocks > maxIndexLag) throw unready(`index is ${lastSync.lagBlocks} blocks behind`);
       });
     }
+    if (settlement) {
+      await check('settlement', async () => {
+        const run = settlement.lastRun();
+        if (!run) throw unready('not run yet');
+        if (run.error) throw unready('last settlement run failed');
+        if (settlement.status().recentFailures.some((job) => job.error === 'INSUFFICIENT_FUNDS')) throw unready('keeper is out of funds');
+      });
+    }
     const ready = Object.values(checks).every((value) => value === 'ok');
     res.status(ready ? 200 : 503).json({
       ready, profile: profile.id, chainId: profile.chainId, contractAddress: deployment?.contractAddress ?? null, checks,
@@ -842,5 +858,8 @@ export function createApp(options = {}) {
     res.status(status).json({ error: message });
   });
 
-  return { app, db, provider, syncIndexOnce, indexingDone: () => indexing ?? Promise.resolve() };
+  return {
+    app, db, provider, syncIndexOnce, indexingDone: () => indexing ?? Promise.resolve(),
+    settlement, settlementIntervalMs: settlementConfig?.intervalMs ?? 0,
+  };
 }
