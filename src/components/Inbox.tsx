@@ -1,8 +1,8 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { formatDateTime } from '../utils/formatters';
 import { historyLink } from '../utils/history';
 
-export type InboxKind = 'outbid' | 'won' | 'refund' | 'payout' | 'booking-refund' | 'booking' | 'upcoming' | 'arrival' | 'checked-in';
+export type InboxKind = 'outbid' | 'won' | 'refund' | 'payout' | 'payout-ready' | 'booking-refund' | 'booking' | 'upcoming' | 'arrival' | 'checked-in';
 export type InboxCategory = 'bids' | 'reservations' | 'bookings' | 'funds';
 export type BookingChange =
   | 'refunded' | 'late-cancelled' | 'no-show' | 'dispute-opened' | 'dispute-upheld' | 'dispute-denied' | 'dispute-expired';
@@ -117,13 +117,14 @@ function describeBooking(item: InboxItem, spot: string): string {
   }
 }
 
-function describe(item: InboxItem, timeZone?: string): string {
+export function describe(item: InboxItem, timeZone?: string): string {
   const spot = item.title ? `"${item.title}"` : `auction #${item.auctionId}`;
   switch (item.kind) {
     case 'outbid': return `You were outbid on ${spot}. Your ${item.amount} ETH bid was credited to your refund balance.`;
     case 'won': return `You won ${spot} with a ${item.amount} ETH bid.`;
     case 'refund': return `You withdrew ${item.amount} ETH of refunds to your wallet.`;
     case 'payout': return `You claimed the ${item.amount} ETH payout for ${spot}.`;
+    case 'payout-ready': return `The ${item.amount} ETH payout for ${spot} is ready to claim. Open the listing to claim it.`;
     case 'booking-refund': return `Your ${item.amount} ETH winning bid for ${spot} was credited to your refund balance.`;
     case 'booking': return describeBooking(item, spot);
     case 'upcoming': return `Your reservation at ${spot} starts ${formatDateTime(item.parkingStart ?? 0, timeZone)}.`;
@@ -146,6 +147,34 @@ export function inboxNotice(state: Pick<InboxState, 'data' | 'error'>): string |
   if (data.index.reservationsError) return `${data.index.reservationsError}, so upcoming reservation entries may be missing.`;
   return null;
 }
+
+/**
+ * A polite live region that announces entries that arrive after the inbox first loaded: one entry in
+ * full, several as a count. The first load, a change of account and entries seen before (for example
+ * after a preference is toggled back) are never announced.
+ */
+export const InboxAnnouncer: React.FC<{ inbox: Pick<InboxState, 'data'>; timeZoneOf?: (auctionId: string) => string | undefined }> = ({ inbox, timeZoneOf }) => {
+  const seen = useRef<Set<string> | null>(null);
+  const [message, setMessage] = useState('');
+  const data = inbox.data;
+  useEffect(() => {
+    if (!data) {
+      seen.current = null;
+      setMessage('');
+      return;
+    }
+    if (!seen.current) {
+      seen.current = new Set(data.items.map((item) => item.id));
+      return;
+    }
+    const arrived = data.items.filter((item) => !seen.current!.has(item.id));
+    arrived.forEach((item) => seen.current!.add(item.id));
+    const fresh = arrived.filter((item) => !item.read);
+    if (fresh.length === 1) setMessage(`New notification: ${describe(fresh[0], fresh[0].auctionId ? timeZoneOf?.(fresh[0].auctionId) : undefined)}`);
+    else if (fresh.length > 1) setMessage(`${fresh.length} new notifications in your inbox`);
+  }, [data, timeZoneOf]);
+  return <div className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="inbox-announcer">{message}</div>;
+};
 
 interface Props {
   inbox: InboxState;

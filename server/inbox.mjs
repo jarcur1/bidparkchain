@@ -1,3 +1,4 @@
+import { formatEther } from 'ethers';
 import { ARRIVAL_OPENS_BEFORE, winnerAccess } from './arrival.mjs';
 
 /** Protected-booking events that both parties of a booking are told about. */
@@ -8,15 +9,18 @@ export const INBOX_CATEGORIES = {
   outbid: 'bids', won: 'bids',
   upcoming: 'reservations', arrival: 'reservations', 'checked-in': 'reservations',
   booking: 'bookings', 'booking-refund': 'bookings',
-  refund: 'funds', payout: 'funds',
+  refund: 'funds', payout: 'funds', 'payout-ready': 'funds',
 };
 export const CATEGORY_NAMES = [...new Set(Object.values(INBOX_CATEGORIES))];
 
 /** Entry ids: an event's (block hash, log index), or an off-chain entry's kind and auction. */
-export const INBOX_ID = /^(0x[0-9a-f]{64}:\d{1,6}|(upcoming|arrival|checkin):[1-9]\d{0,77})$/;
+export const INBOX_ID = /^(0x[0-9a-f]{64}:\d{1,6}|(upcoming|arrival|checkin|payout-ready):[1-9]\d{0,77})$/;
 
 /** The upcoming-reservation entry appears this long before parking starts. */
 export const UPCOMING_BEFORE = 24 * 60 * 60;
+
+/** A protected booking's host payout is held this long after parking ends (the contract's REPORT_WINDOW). */
+export const PAYOUT_HOLD = 24 * 60 * 60;
 
 const CHANGES = {
   LateCancellationRecorded: 'late-cancelled', NoShowRecorded: 'no-show', DisputeOpened: 'dispute-opened',
@@ -32,12 +36,14 @@ const CHANGES = {
  * - booking: a change to a protected booking this wallet hosts or won. `change` is refunded,
  *   late-cancelled, no-show, dispute-opened, dispute-upheld, dispute-denied or dispute-expired; `role`
  *   is this wallet's side and `byMe` whether this wallet sent it.
+ * `owned` lists auctions on spaces this wallet owns that it did not create; it is told about their
+ * booking changes as a host too.
  * Each entry's id is the triggering event's (block hash, log index), so a reorg that replaces the
  * event replaces the entry. Returned newest first.
  */
-export function deriveInbox(events, address) {
+export function deriveInbox(events, address, owned = []) {
   const me = address.toLowerCase();
-  const hosted = new Set();
+  const hosted = new Set(owned);
   const won = new Set();
   const refundTxs = new Set();
   const decisionTxs = new Set();
@@ -135,12 +141,7 @@ export async function reservationEntries({ db, contractAddress, address, events,
     const { block, call } = await pinnedReader();
     const chainTime = Math.max(Number(block.timestamp), Math.floor(Date.now() / 1000));
     for (const [id, settledAt] of held) {
-      const key = `${contractAddress.toLowerCase()}:${id}`;
-      if (!times.has(key)) {
-        const [onchain, [spaceId]] = await Promise.all([call('auctions', [id]), call('auctionSpace', [id])]);
-        times.set(key, { start: Number(onchain.parkingStart), end: Number(onchain.parkingEnd), spaceId: spaceId.toString() });
-      }
-      const { start, end, spaceId } = times.get(key);
+      const { start, end, spaceId } = await parkingWindow(call, times, contractAddress, id);
       if (chainTime < start - UPCOMING_BEFORE || chainTime >= end) continue;
       const [onchain, booking] = await Promise.all([call('auctions', [id]), call('bookings', [id])]);
       const open = (opensBefore) => winnerAccess({ onchain, booking, address, chainTime, opensBefore }).ok;
@@ -156,5 +157,70 @@ export async function reservationEntries({ db, contractAddress, address, events,
     return { items, error: null };
   } catch {
     return { items, error: 'Reservation times could not be read from the chain' };
+  }
+}
+
+/** An auction's immutable parking window and space, read once and kept in `times`. */
+async function parkingWindow(call, times, contractAddress, id) {
+  const key = `${contractAddress.toLowerCase()}:${id}`;
+  if (!times.has(key)) {
+    const [onchain, [spaceId]] = await Promise.all([call('auctions', [id]), call('auctionSpace', [id])]);
+    times.set(key, { start: Number(onchain.parkingStart), end: Number(onchain.parkingEnd), spaceId: spaceId.toString() });
+  }
+  return times.get(key);
+}
+
+/**
+ * Payout-ready entries for the auctions this wallet created and has not been paid for: settled with a
+ * winning bid, parking over (plus the report hold for a protected booking), no open report. Checked at
+ * one pinned block with the contract's claimPayout rules; it goes away once the payout is claimed.
+ */
+export async function payoutReadyEntries({ contractAddress, address, events, pinnedReader, times, blockTime }) {
+  const me = address.toLowerCase();
+  const paid = new Set(events.filter((e) => e.event === 'PayoutClaimed' && e.account?.toLowerCase() === me).map((e) => e.auction_id));
+  const mine = events.filter((e) => e.event === 'AuctionCreated' && e.account?.toLowerCase() === me && !paid.has(e.auction_id));
+  if (!mine.length) return { items: [], error: null };
+  try {
+    const { block, call } = await pinnedReader();
+    const chainTime = Math.max(Number(block.timestamp), Math.floor(Date.now() / 1000));
+    const items = [];
+    for (const e of mine) {
+      const { end } = await parkingWindow(call, times, contractAddress, e.auction_id);
+      if (chainTime < end) continue;
+      const [auction, booking] = await Promise.all([call('auctions', [e.auction_id]), call('bookings', [e.auction_id])]);
+      if (!auction.settled || auction.cancelled || auction.payoutClaimed || auction.highestBid === 0n) continue;
+      const claimableAt = end + (booking.isProtected ? PAYOUT_HOLD : 0);
+      if (chainTime < claimableAt || (booking.isProtected && booking.disputeReporter !== '0x0000000000000000000000000000000000000000')) continue;
+      items.push({ id: `payout-ready:${e.auction_id}`, kind: 'payout-ready', auctionId: e.auction_id, amount: formatEther(auction.highestBid),
+        // Ready from the later of the hold ending and the last report decision, so it sorts after a denial.
+        at: events.filter((ev) => ev.auction_id === e.auction_id).reduce((at, ev) => Math.max(at, blockTime(ev.block_hash) ?? 0), claimableAt) });
+    }
+    return { items, error: null };
+  } catch {
+    return { items: [], error: 'Payout and reservation times could not be read from the chain' };
+  }
+}
+
+/**
+ * Auctions on spaces this wallet owns that someone else created, among those with a booking change.
+ * `spaces` caches each auction's (immutable) space between calls; ownership is read live.
+ */
+export async function ownedAuctionIds({ address, bookingEvents, events, pinnedReader, spaces }) {
+  const me = address.toLowerCase();
+  const created = new Set(events.filter((e) => e.event === 'AuctionCreated' && e.account?.toLowerCase() === me).map((e) => e.auction_id));
+  const ids = [...new Set(bookingEvents.map((e) => e.auction_id))].filter((id) => !created.has(id));
+  if (!ids.length) return [];
+  try {
+    const { call } = await pinnedReader();
+    const owners = new Map();
+    const owns = await Promise.all(ids.map(async (id) => {
+      if (!spaces.has(id)) spaces.set(id, (await call('auctionSpace', [id]))[0].toString());
+      const space = spaces.get(id);
+      if (!owners.has(space)) owners.set(space, call('spaceOwner', [space]).then((r) => String(r[0]).toLowerCase()));
+      return (await owners.get(space)) === me;
+    }));
+    return ids.filter((_, i) => owns[i]);
+  } catch {
+    return [];
   }
 }

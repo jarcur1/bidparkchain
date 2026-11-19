@@ -702,6 +702,17 @@ export class EscrowDatabase {
     `).all(this.chainId, contract, address, this.chainId, contract, address, this.chainId, contract, address);
   }
 
+  /** Every canonical protected-booking event on this deployment, in chain order. */
+  getBookingEvents(contractAddress) {
+    return this.db.prepare(`
+      SELECT block_number, block_hash, tx_hash, log_index, event, auction_id, account, amount
+      FROM auction_events
+      WHERE chain_id = ? AND contract_address = ? AND canonical = 1
+        AND event IN ('BookingRefunded', 'LateCancellationRecorded', 'NoShowRecorded', 'DisputeOpened', 'DisputeResolved')
+      ORDER BY block_number, log_index
+    `).all(this.chainId, contractAddress.toLowerCase());
+  }
+
   /** The entry ids `address` has read and dismissed on this deployment. */
   getInboxState(contractAddress, address) {
     const rows = this.db.prepare('SELECT item_id, dismissed_at FROM inbox_reads WHERE chain_id = ? AND contract_address = ? AND address = ?')
