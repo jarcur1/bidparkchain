@@ -104,7 +104,7 @@ If a resumed demo auction can no longer accept its initial bid, deployment repor
 
 `BIDPARK_PROFILE=local` (the default) selects Hardhat chain 31337 and the local-only seed and wallet tools. `BIDPARK_PROFILE=sepolia` selects Ethereum Sepolia L1 (11155111), native test ETH, browser wallets, and finalized chain state. An unknown profile is an error; there is no fallback to another network. Set the same profile for the API and web build. `npm run dev` remains local-only.
 
-These are operator instructions for an authorized environment, **not authorization to deploy or run a public pilot**. Check the [pilot release gates and Sepolia support window](docs/pilot-policy.md#release-gates) first. The API still binds to loopback; public hosting and authentication are separate work under [#23](https://github.com/jarcur1/bidparkchain/issues/23).
+These are operator instructions for an authorized environment, **not authorization to deploy or run a public pilot**. Check the [pilot release gates and Sepolia support window](docs/pilot-policy.md#release-gates) first. The API still binds to loopback; see [hosted staging deployment](docs/hosting.md) for running it behind HTTPS.
 
 | Setting | Sepolia use |
 | --- | --- |
