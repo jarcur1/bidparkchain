@@ -470,7 +470,7 @@ export function createApp(options = {}) {
             async (id) => (await readFinalized(deployment, iface, finalized, 'auctionSpace', [id]))[0],
             await readFinalizedNextId(deployment, iface, finalized),
           );
-          const chain = await readChainSnapshot(deployment, finalized);
+          const chain = { ...(await readChainSnapshot(deployment, finalized)), blockHash: finalized.hash };
           await assertCanonicalFinalized(finalized);
           res.json({ listings, unindexed, chain });
         } catch {
@@ -494,25 +494,30 @@ export function createApp(options = {}) {
       }
 
       // Verify node connectivity upfront; fail whole request with 503 if node is down
+      let pinned;
       try {
-        await provider.getBlockNumber();
+        pinned = await provider.getBlock('latest');
+        if (!pinned) throw new Error('Latest block unavailable');
       } catch {
         res.status(503).json({ error: 'Local blockchain node is unavailable' });
         return;
       }
 
       // Do not suppress network RPC errors; a failed read is a 503, never an empty marketplace.
+      // Every contract read uses the same block, which is returned as chain.blockNumber.
+      const at = { blockTag: pinned.number };
       let built;
       let chain;
       try {
         built = await buildListings(
           deployment.contractAddress,
-          (id) => contract.auctions(id),
-          (id) => contract.auctionSpace(id),
-          await contract.nextAuctionId(),
+          (id) => contract.auctions(id, at),
+          (id) => contract.auctionSpace(id, at),
+          await contract.nextAuctionId(at),
         );
         // Read the clock after the auction state so the clock is never older than the state it judges.
-        chain = await readChainSnapshot(deployment);
+        chain = { ...(await readChainSnapshot(deployment, pinned)), blockHash: pinned.hash };
+        await assertCanonicalFinalized(pinned);
       } catch (rpcErr) {
         res.status(503).json({ error: 'Failed to read listing state from blockchain node' });
         return;

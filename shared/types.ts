@@ -58,7 +58,9 @@ export interface DeploymentIdentity {
 
 /** Chain state observed when listings were read. */
 export interface ChainSnapshot extends DeploymentIdentity {
+  /** The one block every contract read of the response used. */
   blockNumber: number;
+  blockHash?: string;
   /** Timestamp of the latest block (unix seconds). */
   blockTimestamp: number;
   /**

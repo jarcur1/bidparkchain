@@ -80,7 +80,10 @@ vi.mock('../src/context/WalletContext', () => ({
   WalletProvider: ({ children }: { children: React.ReactNode }) => children,
   useWallet: () => h.wallet,
 }));
-vi.mock('../src/services/api', () => ({
+vi.mock('../src/services/api', async (importActual) => ({
+  ...(await importActual<typeof import('../src/services/api')>()),
+  // No search service here: the marketplace filters the loaded snapshot locally.
+  searchListings: vi.fn(async () => { throw new Error('offline'); }),
   fetchConfig: vi.fn(),
   fetchListings: vi.fn(),
   createListingRecord: vi.fn(),
