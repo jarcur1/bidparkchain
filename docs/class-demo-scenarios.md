@@ -1,6 +1,6 @@
 # Class demo seed scenarios
 
-Two fictional versions of the same campus for the class demo. Everything here is illustrative: the spot names, positions, walking times and prices are made up. They are not based on any real campus map, parking rule, permit system or data feed, and none of the spots can be booked.
+Two fictional versions of the same campus for the class demo. The presenter run order and fallback screenshots are in [class demo presenter script](class-demo-presenter.md). Everything here is illustrative: the spot names, positions, walking times and prices are made up. They are not based on any real campus map, parking rule, permit system or data feed, and none of the spots can be booked.
 
 ## Run a scenario
 
