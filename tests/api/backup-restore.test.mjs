@@ -22,6 +22,8 @@ it('restore drill: back up a live stack, restore into a separate directory, veri
   try {
     original = (await (await fetch(`${api.url}/api/listings`)).json()).listings;
     expect(original).toHaveLength(7);
+    // Let the API's background indexer record a checkpoint so the manifest carries it.
+    await expect.poll(async () => (await (await fetch(`${api.url}/api/index`)).json()).indexedBlock, { timeout: 30_000 }).not.toBeNull();
 
     // Backed up through the CLI while the API keeps running.
     const cli = spawnSync(process.execPath, ['scripts/backup.mjs'], { cwd: ROOT_DIR, env: { ...process.env, BIDPARK_DATA_DIR: dataDir }, encoding: 'utf8' });
@@ -30,7 +32,8 @@ it('restore drill: back up a live stack, restore into a separate directory, veri
     const [stamp] = fs.readdirSync(path.join(dataDir, 'backups'));
     const backupDir = path.join(dataDir, 'backups', stamp);
     expect(JSON.parse(fs.readFileSync(path.join(backupDir, 'manifest.json'), 'utf8'))).toMatchObject({
-      database: 'bidpark.db', listingCount: 7, indexCheckpoint: null,
+      database: 'bidpark.db', listingCount: 7,
+      indexCheckpoint: { blockNumber: expect.any(Number), blockHash: expect.stringMatching(/^0x[0-9a-f]{64}$/) },
       deployment: { profile: 'local', chainId: 31337, contractAddress: expect.any(String) },
     });
 

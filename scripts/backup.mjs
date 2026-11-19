@@ -40,11 +40,17 @@ export function createBackup({ dataDir, backupRoot = path.join(dataDir, 'backups
   const live = new DatabaseSync(path.join(dataDir, dbName), { readOnly: true });
   let schemaVersion;
   let listingCount;
+  let indexCheckpoint = null;
   try {
     live.prepare('VACUUM INTO ?').run(path.join(dir, dbName));
     schemaVersion = Number(live.prepare('PRAGMA user_version').get().user_version);
     listingCount = Number(live.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'listings'").get().n)
       ? Number(live.prepare('SELECT COUNT(*) AS n FROM listings').get().n) : 0;
+    if (live.prepare("SELECT 1 FROM sqlite_master WHERE name = 'index_checkpoints'").get()) {
+      const row = live.prepare('SELECT block_number, block_hash FROM index_checkpoints WHERE contract_address = ?')
+        .get(String(deployment.contractAddress).toLowerCase());
+      if (row) indexCheckpoint = { blockNumber: row.block_number, blockHash: row.block_hash };
+    }
   } finally {
     live.close();
   }
@@ -62,8 +68,8 @@ export function createBackup({ dataDir, backupRoot = path.join(dataDir, 'backups
       deploymentTxHash: deployment.deploymentTxHash ?? null,
       deploymentBlock: deployment.deploymentBlock ?? null,
     },
-    // No event indexer exists yet (#15); its checkpoint will be recorded here.
-    indexCheckpoint: null,
+    // Where the event index stood; after a restore it resumes here and re-checks ancestry for reorgs.
+    indexCheckpoint,
   };
   fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2), { mode: 0o600 });
   for (const file of [dbName, 'deployment.json']) fs.chmodSync(path.join(dir, file), 0o600);
