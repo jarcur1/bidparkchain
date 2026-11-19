@@ -404,6 +404,8 @@ const CONTRACT_ERROR_MESSAGES: Record<string, string> = {
   AuctionNotFound: 'This auction does not exist on the connected deployment.',
   OwnerCannotBid: 'Spot owners cannot bid on their own listing.',
   SpaceWindowTaken: 'This space already has a listing for an overlapping parking window. Pick a window that does not overlap, or cancel the other listing first.',
+  SpaceNotVerified: 'This deployment requires an existing verified space. Choose an approved space or ask a verifier to review it.',
+  UnverifiedSpaceMetadata: 'This listing does not match the public details reviewed for the space. Ask a verifier to review the changes.',
   NotSpaceOwner: 'Only the owner of this parking space, or a lister it approved, can list it.',
   SpaceWindowUnavailable: 'The space owner blocked part of this parking window. Pick a window outside the blocked dates.',
   InvalidSpaceOwner: 'The new owner must be a valid, non-zero address.',

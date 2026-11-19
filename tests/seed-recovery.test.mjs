@@ -41,7 +41,7 @@ test('resumes an unregistered seed auction at its cutoff without replacing it or
   const owner = await provider.getSigner(0);
   const buyer = await provider.getSigner(1);
   const user = await provider.getSigner(2);
-  const contract = await new ethers.ContractFactory(abi, bytecode, owner).deploy();
+  const contract = await new ethers.ContractFactory(abi, bytecode, owner).deploy(false);
   const receipt = await contract.deploymentTransaction().wait();
   const contractAddress = receipt.contractAddress;
   await writeFile(path.join(dataDir, 'deployment.json'), JSON.stringify({

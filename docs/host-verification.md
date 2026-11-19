@@ -54,6 +54,17 @@ Every submission, decision and report is appended to `verification_audit` with t
 | `GET /api/moderation/verifications` | moderator | Queue with evidence and full history. |
 | `POST /api/moderation/verifications/:spaceId` `{ action, reason, note }` | moderator | Approve, reject or revoke. |
 
-## Not covered yet
+## Verified inventory deployments
 
-Verification is advisory for now. The contract does not check it, so an unverified or suspended space can still get new auctions and bids, and revoking leaves open auctions and reservations as they are. Enforcing it at the authoritative layer needs a contract change, which is tracked in #12/#13.
+The local demo and the default illustrative Sepolia deployment use advisory verification. For an authorized test with the contract gate enabled, create a fresh deployment with `npm run deploy -- --create --verified-inventory`, or deploy `ParkingAuctionEscrow(true)` on an isolated local chain. This mode cannot be switched on or off later. Do not list real inventory or fund real bookings based on this setting.
+
+1. The deployment admin authorizes a separate reviewer wallet with `setSpaceVerifier(verifier, true)`. This does not grant dispute-resolution authority or access to funds.
+2. The host calls `registerSpace()` and uses the `spaceId` from the mined `SpaceRegistered` event to submit the usual off-chain proof. The reviewer checks the current `spaceOwner(spaceId)` and `spaceOwnershipEpoch(spaceId)` against the proof they reviewed.
+3. Maintain a private stall registry. Resolve spelling, address and unit aliases to the same record, distinguish separately controlled stalls at one property, and assign each genuine stall one random opaque 32-byte key. Never publish evidence, raw location identifiers, or hashes of guessable addresses as keys. The contract cannot independently tell whether two different keys refer to one real stall.
+4. Review the exact public listing details as well as proof of control. Compute the same metadata hash as the listing form: keccak256 of the UTF-8 JSON returned by `JSON.stringify(validateSpotMetadata(details).normalized)` after validation succeeds. The deployer does not need to provide its key to the API.
+5. From the verifier wallet, call `setSpaceVerification(spaceId, reviewedOwner, reviewedEpoch, key, metadataHash)` to approve, or pass zero for both hashes to suspend. Check the finalized receipt on Sepolia. Record the off-chain review action separately in the moderation queue; API moderation actions do not sign transactions or sync permissions automatically. On a gated deployment the public badge and bid availability come from the chain, not the queue.
+6. The host or an authorized lister uses `createSpaceAuction` or `createProtectedAuction` with the approved `spaceId` and metadata hash. Quick creation that implicitly registers a new space is unavailable in this mode. Reviewing a new metadata hash pauses new bids on listings with the previous hash but does not free their windows or change their settlement rules.
+
+The same key can never claim a second `spaceId` in that contract, even after suspension. Transfer keeps the key and calendar, drops the delegated listers, and clears approval; the new owner needs review. If a stall was bound incorrectly, suspend it and investigate rather than issuing another key to bypass its calendar. The registry must be reconciled separately on redeployment; a new contract does not see old calendars.
+
+Suspension or lister revocation blocks new bids on affected open auctions. A prior high bid can still settle under the auction's existing rules. Existing reservations, refunds and payout rights are not rewritten; the normal cancellation and dispute rules still apply. A paused bidless auction holds its window until cancellation or its bidding cutoff, so re-approval cannot silently resurrect an auction on an already reallocated window.
