@@ -365,7 +365,7 @@ export const ParkingMap: React.FC<ParkingMapProps> = ({
   }
 
   return (
-    <div className="parking-map-wrapper">
+    <div className="parking-map-wrapper" data-viewport={viewport}>
       <div className="parking-map-container" ref={mapContainerRef} />
       {onSearchArea && (
         <div className="map-area-controls">

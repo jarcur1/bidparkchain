@@ -95,8 +95,17 @@ test('map-area search sends the viewport as a bbox, can be cleared, and keeps th
   const cards = page.getByRole('article', { name: /^Listing: / });
   await expect(cards).toHaveCount(7);
 
-  // Zoom in so the viewport covers only part of the city, then search it.
-  for (let i = 0; i < 3; i++) await page.locator('.leaflet-control-zoom-in').click();
+  // Zoom in so the viewport covers only part of the city. The map reports its viewport when a zoom
+  // ends, and ignores clicks while one is animating, so wait for each step before the next.
+  const span = async () => {
+    const [south, , north] = ((await page.locator('.parking-map-wrapper').getAttribute('data-viewport')) ?? '').split(',').map(Number);
+    return north - south;
+  };
+  for (let i = 0; i < 3; i++) {
+    const before = await span();
+    await page.locator('.leaflet-control-zoom-in').click();
+    await expect.poll(span).toBeLessThan(before * 0.7);
+  }
   const searchArea = page.getByRole('button', { name: 'Search this area' });
   await expect(searchArea).toBeEnabled();
   const request = page.waitForRequest((r) => r.url().includes('/api/listings/search') && r.url().includes('bbox='));
