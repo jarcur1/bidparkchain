@@ -6,7 +6,9 @@ import { createScope, findFreePort, runDeployScript } from '../support/owned-env
 export const test = base.extend({
   // Seed scenario for this worker's stack; a spec file can pick another with test.use({ scenario }).
   scenario: ['austin', { scope: 'worker', option: true }],
-  stack: [async ({ scenario }, use) => {
+  // A spec that changes shared state (new listings) can ask for its own stack: test.use({ isolatedStack: 'name' }).
+  isolatedStack: ['', { scope: 'worker', option: true }],
+  stack: [async ({ scenario, isolatedStack: _isolated }, use) => {
     const scope = await createScope('e2e');
     let chain;
     try {

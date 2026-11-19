@@ -16,6 +16,9 @@ import { WalletModal } from './components/WalletModal';
 import { useWallet, WalletProvider } from './context/WalletContext';
 import { SessionProvider, useSession } from './context/SessionContext';
 import { createListingRecord, fetchConfig, fetchListings, stageListingMetadata } from './services/api';
+import type { TxObserver } from './services/blockchain';
+import { patchTransaction, readTransactions, recordTransaction, staleTransactionsFor, transactionsFor, type TxKind, type TxRecord } from './utils/txStore';
+import { TransactionCenter } from './components/TransactionCenter';
 import {
   cancelAuction,
   claimPayout,
@@ -29,7 +32,7 @@ import {
   TransactionOutcomeUnknown,
   withdrawRefund,
 } from './services/blockchain';
-import { parseEther } from 'ethers';
+import { Interface, parseEther } from 'ethers';
 import type {
   AppTab,
   ChainSnapshot,
@@ -187,6 +190,75 @@ export const AppContent: React.FC<{
     maxPrice: '',
     sortBy: 'ending-soon',
   });
+
+  // Every wallet transaction is recorded in the persisted transaction center, scoped to this
+  // account and deployment, so a reload never loses a submitted transaction or committed metadata.
+  const [txVersion, setTxVersion] = useState(0);
+  const sessionTxIds = useRef(new Set<string>());
+  const txScope = walletState.address && config && configDeployment
+    ? { account: walletState.address, chainId: config.chainId, contract: config.contractAddress, deployment: configDeployment }
+    : null;
+  const track = (kind: TxKind, label: string, extra: Partial<TxRecord> = {}): { id: string | null; observe?: TxObserver } => {
+    if (!txScope) return { id: null };
+    const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    sessionTxIds.current.add(id);
+    recordTransaction({ id, kind, label, status: 'awaiting-wallet', scope: txScope, ...extra });
+    setTxVersion((v) => v + 1);
+    return { id, observe: (update) => { patchTransaction(id, update); setTxVersion((v) => v + 1); } };
+  };
+  const txRecords = txScope ? transactionsFor(txScope) : [];
+  const staleTxCount = txScope ? staleTransactionsFor(txScope).length : 0;
+  void txVersion; // re-read the store whenever a transaction changes
+
+  // After a reload or reconnect, re-check transactions that were still in flight and pick up listings
+  // the API already recovered from staged metadata. This only reads the chain; nothing is re-sent.
+  useEffect(() => {
+    if (!txScope || !provider || !config) return;
+    let live = true;
+    const iface = new Interface(config.abi);
+    (async () => {
+      for (const r of transactionsFor(txScope)) {
+        if (!live) return;
+        if (r.status === 'awaiting-wallet' && !sessionTxIds.current.has(r.id)) {
+          patchTransaction(r.id, { status: 'unknown', error: 'The page reloaded before the wallet answered. Check your wallet activity.' });
+        } else if ((r.status === 'submitted' || r.status === 'confirming') && r.hash && !sessionTxIds.current.has(r.id)) {
+          const receipt = await provider.getTransactionReceipt(r.hash).catch(() => null);
+          if (receipt && config.confirmation === 'finalized') {
+            const finalized = await provider.getBlock('finalized').catch(() => null);
+            if (!finalized || receipt.blockNumber > finalized.number) continue;
+          }
+          if (receipt) {
+            let auctionId = r.auctionId;
+            for (const log of r.kind === 'create' && !auctionId ? receipt.logs : []) {
+              try {
+                const parsed = iface.parseLog(log);
+                if (parsed?.name === 'AuctionCreated') auctionId = parsed.args[0].toString();
+              } catch { /* another contract's log */ }
+            }
+            patchTransaction(r.id, {
+              status: receipt.status === 1 ? 'confirmed' : 'reverted',
+              ...(r.kind === 'create' && auctionId ? { auctionId, registered: false } : {}),
+            });
+          } else if (!(await provider.getTransaction(r.hash).catch(() => null))) {
+            patchTransaction(r.id, { status: 'unknown', error: 'The network no longer knows this transaction; it may have been replaced or dropped.' });
+          }
+        }
+        const current = readTransactions().find((x) => x.id === r.id);
+        if (current?.kind === 'create' && current.auctionId && !current.registered && listings.some((l) => l.id === current.auctionId)) {
+          patchTransaction(r.id, { registered: true });
+        }
+      }
+      if (live) setTxVersion((v) => v + 1);
+    })();
+    return () => { live = false; };
+  }, [txScope?.account, txScope?.deployment, provider, config, listings]);
+
+  const markRegistered = (auctionId: string) => {
+    for (const r of readTransactions()) {
+      if (r.kind === 'create' && r.auctionId === auctionId && !r.registered) patchTransaction(r.id, { registered: true });
+    }
+    setTxVersion((v) => v + 1);
+  };
 
   const addToast = useCallback(
     (type: 'success' | 'error' | 'info', title: string, message?: string, txHash?: string) => {
@@ -535,7 +607,8 @@ export const AppContent: React.FC<{
       }
 
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
-      const receipt = await placeBid(contract, listing.id, amountEth, config.confirmation);
+      const receipt = await placeBid(contract, listing.id, amountEth, config.confirmation,
+        track('bid', `Bid ${amountEth} ETH on auction #${listing.id}`, { auctionId: listing.id }).observe);
 
       addToast(
         'success',
@@ -596,6 +669,7 @@ export const AppContent: React.FC<{
       // the server can still match the new auction's hash to these details.
       await stageListingMetadata(metadata, webProfile.id === 'sepolia' ? expectedDeployment : undefined);
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
+      const created = track('create', `List "${metadata.title}"`, { metadata });
       const { receipt, auctionId } = await createAuctionOnChain(
         contract,
         metadata,
@@ -603,8 +677,10 @@ export const AppContent: React.FC<{
         bidEndSec,
         parkingStartSec,
         parkingEndSec,
-        config.confirmation
+        config.confirmation,
+        created.observe,
       );
+      if (created.id) patchTransaction(created.id, { auctionId, registered: false });
 
       // Register metadata on backend with retry retention
       try {
@@ -616,6 +692,7 @@ export const AppContent: React.FC<{
         } else {
           await createListingRecord(auctionId, metadata);
         }
+        markRegistered(auctionId);
         setPendingRegistration(null);
       } catch (postErr) {
         setPendingRegistration({ auctionId, metadata, deployment: expectedDeployment, txHash: receipt.hash });
@@ -652,6 +729,27 @@ export const AppContent: React.FC<{
     }
   };
 
+  // Registers a confirmed listing from the transaction center using its stored, immutable metadata.
+  // No second createAuction is ever sent; only the off-chain details are registered.
+  const handleResumeRegistration = async (record: TxRecord) => {
+    if (isActionBusy || !config || !record.auctionId || !record.metadata || record.scope.deployment !== configDeployment) return;
+    setIsActionBusy(true);
+    try {
+      await ensureSignedIn();
+      await createListingRecord(record.auctionId, record.metadata, webProfile.id === 'sepolia' ? {
+        chainId: config.chainId, contractAddress: config.contractAddress,
+        deploymentBlock: config.deploymentBlock, deploymentBlockHash: config.deploymentBlockHash,
+      } : undefined);
+      markRegistered(record.auctionId);
+      addToast('success', 'Registration Confirmed', `Auction #${record.auctionId} metadata registered successfully.`);
+      await loadListings();
+    } catch (err) {
+      addToast('error', 'Registration failed', err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsActionBusy(false);
+    }
+  };
+
   // Handle Retry Metadata Registration
   const handleRetryRegistration = async (auctionId: string, metadata: SpotMetadata) => {
     if (isActionBusy) return;
@@ -672,6 +770,7 @@ export const AppContent: React.FC<{
         'Registration Confirmed',
         `Auction #${auctionId} metadata registered successfully.`
       );
+      markRegistered(auctionId);
       setPendingRegistration(null);
       await loadListings();
       setSelectedListingId(auctionId);
@@ -703,7 +802,7 @@ export const AppContent: React.FC<{
     try {
       await preflightWrite();
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
-      const receipt = await withdrawRefund(contract, config.confirmation);
+      const receipt = await withdrawRefund(contract, config.confirmation, track('withdraw', 'Withdraw refund').observe);
 
       addToast(
         'success',
@@ -737,7 +836,8 @@ export const AppContent: React.FC<{
     try {
       await preflightWrite(listing);
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
-      const receipt = await settleAuction(contract, listing.id, config.confirmation);
+      const receipt = await settleAuction(contract, listing.id, config.confirmation,
+        track('settle', `Settle auction #${listing.id}`, { auctionId: listing.id }).observe);
 
       addToast(
         'success',
@@ -771,7 +871,8 @@ export const AppContent: React.FC<{
     try {
       await preflightWrite(listing);
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
-      const receipt = await cancelAuction(contract, listing.id, config.confirmation);
+      const receipt = await cancelAuction(contract, listing.id, config.confirmation,
+        track('cancel', `Cancel auction #${listing.id}`, { auctionId: listing.id }).observe);
 
       addToast(
         'success',
@@ -806,7 +907,8 @@ export const AppContent: React.FC<{
     try {
       await preflightWrite(listing);
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
-      const receipt = await claimPayout(contract, listing.id, config.confirmation);
+      const receipt = await claimPayout(contract, listing.id, config.confirmation,
+        track('claim', `Claim payout for auction #${listing.id}`, { auctionId: listing.id }).observe);
 
       addToast(
         'success',
@@ -1108,6 +1210,15 @@ export const AppContent: React.FC<{
             onOpenListingDetail={handleOpenDetailModal}
             onOpenBid={handleOpenBidModal}
             onConnectWallet={() => setIsWalletModalOpen(true)}
+            isActionBusy={isActionBusy}
+          />
+        )}
+        {currentTab === 'activity' && txScope && (
+          <TransactionCenter
+            records={txRecords}
+            staleCount={staleTxCount}
+            explorerUrl={config?.explorerUrl}
+            onCompleteRegistration={(record) => void handleResumeRegistration(record)}
             isActionBusy={isActionBusy}
           />
         )}
