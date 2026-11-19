@@ -110,3 +110,29 @@ it('indexes only finalized blocks under the finalized policy', async () => {
   expect(result.headBlock).toBe(finalized.number);
   expect(finalized.number).toBeLessThanOrEqual(head.number);
 });
+
+it('serves index freshness and per-auction history from the API', async () => {
+  const { createApp } = await import('../../server/app.mjs');
+  const { writeDeployment } = await import('../support/owned-env.mjs');
+  const dataDir = scope.tempDir();
+  const runtime = createApp({ dbPath: path.join(dataDir, 'bidpark.db'), deploymentPath: writeDeployment(dataDir, deployment), rpcUrl: chain.rpcUrl });
+  const server = runtime.app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const get = async (route) => (await fetch(`${url}${route}`)).json();
+  try {
+    expect(await get('/api/index')).toMatchObject({ confirmation: 'mined', indexedBlock: null, lastSyncAt: null });
+    const [first, second] = await Promise.all([runtime.syncIndexOnce(), runtime.syncIndexOnce()]);
+    expect(first).toBe(second);
+    const head = await chain.provider.getBlockNumber();
+    expect(await get('/api/index')).toMatchObject({ indexedBlock: head, headBlock: head, lagBlocks: 0, lastSyncError: null });
+    const { events } = await get('/api/auctions/1/events');
+    expect(events.map((e) => [e.event, e.amount])).toEqual([['AuctionCreated', null], ['BidPlaced', '0.02'], ['BidPlaced', '0.03']]);
+    expect(events[1]).toMatchObject({ txHash: expect.stringMatching(/^0x/), blockNumber: expect.any(Number) });
+    expect((await fetch(`${url}/api/auctions/0/events`)).status).toBe(400);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    runtime.db.close();
+    runtime.provider.destroy();
+  }
+});
