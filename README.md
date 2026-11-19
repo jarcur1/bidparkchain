@@ -45,7 +45,7 @@ An injected Ethereum wallet is also supported on local chain **31337**. If addin
 
 ### Protected bookings
 
-A host can tick **Protected booking** when listing (it needs at least 30 minutes between the cutoff and parking start). The contract then applies the [booking policy](docs/booking-policy.md#protocol-version-2-in-the-contract) to that auction (`createProtectedAuction`, `bookings(id)`); listings made the ordinary way keep the rules above.
+A host can select **Protected booking** in **List a Spot** or in **My Activity → Host workspace**. Parking must start at least 30 minutes after bidding closes. In the workspace, make the choice when publishing; it is not saved in drafts or templates. The contract applies the [booking policy](docs/booking-policy.md#protocol-version-2-in-the-contract) to that auction (`createProtectedAuction`, `bookings(id)`); ordinary listings keep the rules above.
 
 - The winner must be settled before parking starts. After that, anyone can `expire` it and the winner is refunded in full.
 - The host can withdraw the booking (`hostCancelBooking`) from the cutoff until parking starts; the winner is refunded in full.
@@ -53,7 +53,7 @@ A host can tick **Protected booking** when listing (it needs at least 30 minutes
 - The winner or host can report a seller failure (`reportSellerFailure`) until 24 hours after parking ends. While it is open the payout is held. A resolver who is not a party upholds it (winner refunded) or denies it before 72 hours after parking ends; after that anyone can `expireDispute`, which refunds the winner.
 - The host claims the payout only from 24 hours after parking ends, with no open report. It is credited like a refund and withdrawn with **Withdraw**.
 - Every refund and payout is a credit to withdraw; no protected action sends ETH. The detail view shows the booking status, deadlines and the actions open to the connected wallet, and the inbox notes a refunded winning bid.
-- Resolvers are set by the deploying account with `setResolver(address, true)`. There is no review channel for evidence yet: the on-chain report carries only an opaque reference.
+- The deploying account authorizes resolvers with `setResolver(address, true)`. Participants submit private evidence through the app, and resolvers review it in **My Activity → Resolver queue**. Only an opaque reference is recorded on-chain.
 
 ### Parking spaces and calendars
 
