@@ -94,6 +94,19 @@ const MIGRATIONS = [
       );
     `);
   },
+  // 3: minimal driver/host profile per signed-in wallet. Holds no contact details or property claims.
+  (db) => {
+    db.exec(`
+      CREATE TABLE profiles (
+        chain_id INTEGER NOT NULL,
+        address TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('driver', 'host', 'both')),
+        display_name TEXT NOT NULL DEFAULT '',
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (chain_id, address)
+      );
+    `);
+  },
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
@@ -319,6 +332,19 @@ export class EscrowDatabase {
 
   revokeSession(tokenHash) {
     this.db.prepare('UPDATE sessions SET revoked = 1 WHERE token_hash = ?').run(tokenHash);
+  }
+
+  getProfile(address) {
+    return this.db.prepare('SELECT role, display_name FROM profiles WHERE chain_id = ? AND address = ?')
+      .get(this.chainId, address) || null;
+  }
+
+  saveProfile(address, { role, displayName }) {
+    this.db.prepare(`
+      INSERT INTO profiles (chain_id, address, role, display_name, updated_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(chain_id, address) DO UPDATE SET
+        role = excluded.role, display_name = excluded.display_name, updated_at = excluded.updated_at
+    `).run(this.chainId, address, role, displayName, Math.floor(Date.now() / 1000));
   }
 
   close() {
