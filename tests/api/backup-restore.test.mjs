@@ -26,7 +26,7 @@ it('restore drill: back up a live stack, restore into a separate directory, veri
     await expect.poll(async () => (await (await fetch(`${api.url}/api/index`)).json()).indexedBlock, { timeout: 30_000 }).not.toBeNull();
 
     // Backed up through the CLI while the API keeps running.
-    const cli = spawnSync(process.execPath, ['scripts/backup.mjs'], { cwd: ROOT_DIR, env: { ...process.env, BIDPARK_DATA_DIR: dataDir }, encoding: 'utf8' });
+    const cli = spawnSync(process.execPath, ['scripts/backup.mjs'], { cwd: ROOT_DIR, env: { ...process.env, BIDPARK_DATA_DIR: dataDir }, encoding: 'utf8', windowsHide: true });
     expect(cli.status, cli.stderr).toBe(0);
     expect(cli.stdout).toMatch(/7 listings, schema \d+, chain 31337/);
     const [stamp] = fs.readdirSync(path.join(dataDir, 'backups'));
@@ -39,7 +39,7 @@ it('restore drill: back up a live stack, restore into a separate directory, veri
 
     const restoredDir = path.join(scope.tempDir(), 'restored');
     const restore = spawnSync(process.execPath, ['scripts/backup.mjs', 'restore', backupDir, restoredDir],
-      { cwd: ROOT_DIR, env: { ...process.env, BIDPARK_DATA_DIR: dataDir }, encoding: 'utf8' });
+      { cwd: ROOT_DIR, env: { ...process.env, BIDPARK_DATA_DIR: dataDir }, encoding: 'utf8', windowsHide: true });
     expect(restore.status, restore.stderr).toBe(0);
     expect(restore.stdout).toContain('Verified 7 listings');
 

@@ -60,10 +60,13 @@ export const PAGE_SIZE = 8;
 
 /** Rows matching a text query (auction id, title, address, neighborhood, state label) and a state filter. */
 export function filterHistory(rows: HistoryRow[], query: string, state: LifecycleState | 'all' = 'all'): HistoryRow[] {
-  const q = query.trim().toLowerCase().replace(/^#/, '');
+  const raw = query.trim().toLowerCase();
+  const idOnly = /^#\d+$/.test(raw);
+  const q = raw.replace(/^#/, '');
   return rows.filter((r) => {
     if (state !== 'all' && r.lifecycle?.state !== state) return false;
     if (!q) return true;
+    if (idOnly) return r.auctionId === q;
     const l = r.listing;
     return [r.auctionId, l?.title, l?.address, l?.neighborhood, r.lifecycle?.label]
       .some((field) => field?.toLowerCase().includes(q));

@@ -33,6 +33,8 @@ function startGuard(spec) {
     // Own process group: a group-wide SIGKILL of the test runner (CI timeout) cannot take the
     // guard down before it notices the closed stdin and cleans up.
     detached: true,
+    // On Windows a detached child gets its own console window; keep it hidden.
+    windowsHide: true,
     stdio: ['pipe', process.env.BIDPARK_TEST_VERBOSE ? 'inherit' : 'ignore', 'inherit'],
   });
   const exited = new Promise((resolve) => guard.once('exit', resolve));
@@ -212,6 +214,7 @@ export async function runDeployScript({ rpcUrl, dataDir, env = {} }) {
       cwd: ROOT_DIR,
       env: { ...process.env, ...env, RPC_URL: rpcUrl, BIDPARK_DATA_DIR: dataDir },
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     let output = '';
     child.stdout.on('data', (chunk) => { output += chunk; });

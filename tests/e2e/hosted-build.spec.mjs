@@ -13,7 +13,7 @@ test('the hosted Sepolia build renders under its Content-Security-Policy', async
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bidpark-hosted-'));
   const webDir = path.join(dir, 'web');
   const build = spawnSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build', '--outDir', webDir, '--emptyOutDir'], {
-    env: { ...process.env, BIDPARK_PROFILE: 'sepolia' }, encoding: 'utf8',
+    env: { ...process.env, BIDPARK_PROFILE: 'sepolia' }, encoding: 'utf8', windowsHide: true,
   });
   expect(build.status, build.stderr).toBe(0);
   const api = serve({
