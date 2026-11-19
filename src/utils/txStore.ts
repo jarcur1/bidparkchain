@@ -10,7 +10,7 @@ export interface TxScope {
   deployment: string;
 }
 
-export type TxKind = 'create' | 'bid' | 'withdraw' | 'settle' | 'cancel' | 'claim' | 'space';
+export type TxKind = 'create' | 'bid' | 'withdraw' | 'settle' | 'cancel' | 'claim' | 'space' | 'booking';
 
 export interface TxRecord {
   id: string;

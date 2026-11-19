@@ -87,9 +87,24 @@ export function canonicalizeAuctionId(raw) {
   }
 }
 
-function listingFromRow(id, onchain, row, [spaceId, timeZone], verification) {
+const BOOKING_OUTCOMES = ['none', 'winner-cancelled', 'host-cancelled', 'expired', 'dispute-upheld', 'dispute-expired', 'host-paid'];
+
+/** Protected-booking state (docs/booking-policy.md), or null for a deployment without it. */
+export function bookingFromChain(booking) {
+  if (!booking) return null;
+  return {
+    protected: Boolean(booking.isProtected),
+    outcome: BOOKING_OUTCOMES[Number(booking.outcome)] ?? 'none',
+    lateCancelled: Boolean(booking.lateCancelled),
+    noShowRecorded: Boolean(booking.noShowRecorded),
+    disputeReporter: booking.disputeReporter === ethers.ZeroAddress ? null : booking.disputeReporter,
+  };
+}
+
+function listingFromRow(id, onchain, row, [spaceId, timeZone, booking], verification) {
   return {
     id, spaceId: spaceId.toString(), timeZone, owner: onchain.owner, verification,
+    booking: bookingFromChain(booking),
     minBid: ethers.formatEther(onchain.minBid),
     highestBid: ethers.formatEther(onchain.highestBid),
     highestBidder: onchain.highestBidder,
@@ -284,12 +299,14 @@ export function createApp(options = {}) {
   async function readFinalizedSpace(deployment, iface, finalized, id) {
     const [spaceId] = await readFinalized(deployment, iface, finalized, 'auctionSpace', [id]);
     const [timeZone] = await readFinalized(deployment, iface, finalized, 'spaceTimeZone', [spaceId]);
-    return [spaceId, timeZone];
+    const booking = iface.getFunction('bookings') ? await readFinalized(deployment, iface, finalized, 'bookings', [id]) : null;
+    return [spaceId, timeZone, booking];
   }
 
   async function readLocalSpace(contract, id, at = {}) {
     const spaceId = await contract.auctionSpace(id, at);
-    return [spaceId, await contract.spaceTimeZone(spaceId, at)];
+    const booking = contract.interface.getFunction('bookings') ? await contract.bookings(id, at) : null;
+    return [spaceId, await contract.spaceTimeZone(spaceId, at), booking];
   }
 
   async function readFinalizedNextId(deployment, iface, finalized) {
@@ -616,7 +633,8 @@ export function createApp(options = {}) {
           if (onchain.owner === ethers.ZeroAddress || row.metadata_hash.toLowerCase() !== onchain.metadataHash.toLowerCase()) return null;
           const [spaceId] = await call('auctionSpace', [id]);
           const [timeZone] = await call('spaceTimeZone', [spaceId]);
-          return listingFromRow(id, onchain, { ...meta, amenities: JSON.stringify(meta.amenities) }, ...withBadge(deployment.contractAddress, onchain, [spaceId, timeZone]));
+          const booking = iface.getFunction('bookings') ? await call('bookings', [id]) : null;
+          return listingFromRow(id, onchain, { ...meta, amenities: JSON.stringify(meta.amenities) }, ...withBadge(deployment.contractAddress, onchain, [spaceId, timeZone, booking]));
         }));
         listings.push(...read.filter(Boolean));
       }

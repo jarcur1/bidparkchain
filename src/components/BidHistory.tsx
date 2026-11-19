@@ -13,6 +13,11 @@ const LABELS: Record<string, string> = {
   AuctionSettled: 'Settled',
   PayoutClaimed: 'Payout claimed',
   AuctionCancelled: 'Cancelled',
+  BookingRefunded: 'Winner refunded',
+  LateCancellationRecorded: 'Late cancellation recorded',
+  NoShowRecorded: 'No-show recorded by host',
+  DisputeOpened: 'Seller-failure report opened',
+  DisputeResolved: 'Report decided',
 };
 
 /** Canonical indexed event history for one auction; says when it is unavailable, stale or behind. */

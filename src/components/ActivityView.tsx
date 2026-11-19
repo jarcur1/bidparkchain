@@ -13,6 +13,7 @@ import {
   Zap,
 } from 'lucide-react';
 import type { Listing } from '../types';
+import { canClaimPayout } from '../utils/booking';
 import type { ReadState } from '../utils/readState';
 import {
   formatDateTime,
@@ -134,7 +135,9 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
 
   // 3. Settleable auctions (Bidding ended, not settled yet, anyone can settle)
   const settleableAuctions = listings.filter(
-    (l) => l.bidEnd <= now && !l.settled && !l.cancelled
+    (l) => l.bidEnd <= now && !l.settled && !l.cancelled &&
+      // A protected winner past parking start can only expire (detail view), not settle.
+      !(l.booking?.protected && parseFloat(l.highestBid) > 0 && now >= l.parkingStart)
   );
 
   // 4. Hosted spots (You are the owner)
@@ -660,8 +663,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
             {hostedSpots.map((listing) => {
               const hasBids = parseFloat(listing.highestBid) > 0;
               const canCancel = !hasBids && !listing.settled && !listing.cancelled;
-              const canClaim =
-                listing.settled && hasBids && !listing.payoutClaimed && now >= listing.parkingEnd;
+              const canClaim = canClaimPayout(listing, now);
               const status = getListingStatus(listing);
 
               return (

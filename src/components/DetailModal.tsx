@@ -24,6 +24,7 @@ import {
   shortenAddress,
 } from '../utils/formatters';
 import { getBidEligibility, getChainNowSec } from '../utils/eligibility';
+import { BOOKING_ACTION_LABELS, bookingView, canClaimPayout, type BookingAction } from '../utils/booking';
 import { downloadReservationIcs } from '../utils/calendar';
 import { BidHistory } from './BidHistory';
 import { Dialog } from './Dialog';
@@ -39,6 +40,7 @@ interface DetailModalProps {
   onSettle: (listing: Listing) => void;
   onCancel: (listing: Listing) => void;
   onClaimPayout: (listing: Listing) => void;
+  onBookingAction?: (listing: Listing, action: BookingAction) => void;
   isActionBusy: boolean;
   /** Whether the viewer has an API session; reporting needs one. */
   signedIn?: boolean;
@@ -54,6 +56,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
   onSettle,
   onCancel,
   onClaimPayout,
+  onBookingAction,
   isActionBusy,
   signedIn = false,
 }) => {
@@ -90,8 +93,8 @@ export const DetailModal: React.FC<DetailModalProps> = ({
   const currentPriceEth = hasBids ? listing.highestBid : listing.minBid;
 
   const canOwnerCancel = isOwner && !hasBids && !listing.settled && !listing.cancelled;
-  const canOwnerClaimPayout =
-    isOwner && listing.settled && hasBids && !listing.payoutClaimed && now >= listing.parkingEnd;
+  const canOwnerClaimPayout = isOwner && canClaimPayout(listing, now);
+  const booking = bookingView(listing, currentAddress, now);
   const handleCopyHash = () => {
     if (listing.metadataHash) {
       navigator.clipboard.writeText(listing.metadataHash);
@@ -372,6 +375,22 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                 )}
 
                 {!isOwner && <ReportSpace spaceId={listing.spaceId} signedIn={signedIn} />}
+                {booking && (
+                  <div className="booking-protection" data-testid="booking-protection">
+                    <p className="owner-notice">{booking.status}</p>
+                    {booking.actions.map((action) => (
+                      <button
+                        key={action}
+                        type="button"
+                        className="btn-modal-settle"
+                        disabled={isActionBusy || !onBookingAction}
+                        onClick={() => onBookingAction?.(listing, action)}
+                      >
+                        <span>{BOOKING_ACTION_LABELS[action]}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
 
                 {isOwner && status.isBiddable && (
                   <p className="owner-notice">

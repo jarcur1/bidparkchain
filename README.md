@@ -36,12 +36,24 @@ An injected Ethereum wallet is also supported on local chain **31337**. If addin
 
 - A bid must meet the opening price and exceed the current highest bid. Owners cannot bid on their own auctions.
 - Each transaction sends the **entire new bid**, not a top-up. A displaced bid—including your own previous bid when raising it—becomes a withdrawable refund.
-- Owners cannot cancel an auction after any bid. The current winner cannot withdraw their winning bid.
+- Owners cannot cancel an auction after any bid. The current winner cannot withdraw their winning bid. Protected bookings (below) add cancellation paths that refund the winner.
 - Bid eligibility (open, not cancelled or settled, not the owner) is one rule shared by cards, the detail view, map popups and the bid dialog. It is judged against **chain time**, not the browser clock: `GET /api/listings` returns a `chain` object (deployment identity, the one block all its contract reads used, its timestamp and a `chainTime` lower bound for the next block), and the browser advances that value with its monotonic clock between polls.
 - An open bid dialog is bound to the listing's deployment, auction id and metadata hash, not a snapshot. Price, owner and eligibility refresh with every poll while the amount you typed is kept. If the deployment or committed metadata changes, or the listing disappears, the dialog closes. Before the wallet is asked to sign, the bid is revalidated against freshly read chain state; a competing bid, cutoff, cancellation or settlement is reported with your input retained and no transaction sent.
 - Bidding ends at the contract's `bidEnd` timestamp. The winner is confirmed by calling `settle` after that deadline.
 - Seller payout is available only after settlement and `parkingEnd`, and can be claimed once.
-- There is **no automatic refund or dispute process for an inaccessible space**. Time-locked escrow does not prove physical access or delivery.
+- For ordinary listings there is **no refund or dispute process for an inaccessible space**. Time-locked escrow does not prove physical access or delivery.
+
+### Protected bookings
+
+A host can tick **Protected booking** when listing (it needs at least 30 minutes between the cutoff and parking start). The contract then applies the [booking policy](docs/booking-policy.md#protocol-version-2-in-the-contract) to that auction (`createProtectedAuction`, `bookings(id)`); listings made the ordinary way keep the rules above.
+
+- The winner must be settled before parking starts. After that, anyone can `expire` it and the winner is refunded in full.
+- The host can withdraw the booking (`hostCancelBooking`) from the cutoff until parking starts; the winner is refunded in full.
+- The winner can cancel (`cancelBooking`) for a full refund up to 24 hours before parking starts. Later, the cancellation is only recorded and there is no refund.
+- The winner or host can report a seller failure (`reportSellerFailure`) until 24 hours after parking ends. While it is open the payout is held. A resolver who is not a party upholds it (winner refunded) or denies it before 72 hours after parking ends; after that anyone can `expireDispute`, which refunds the winner.
+- The host claims the payout only from 24 hours after parking ends, with no open report. It is credited like a refund and withdrawn with **Withdraw**.
+- Every refund and payout is a credit to withdraw; no protected action sends ETH. The detail view shows the booking status, deadlines and the actions open to the connected wallet, and the inbox notes a refunded winning bid.
+- Resolvers are set by the deploying account with `setResolver(address, true)`. There is no review channel for evidence yet: the on-chain report carries only an opaque reference.
 
 ### Parking spaces and calendars
 
@@ -91,7 +103,7 @@ Use **Connect Wallet** to choose an account with Enter or Space, **List a Spot**
 | Path | Purpose |
 | --- | --- |
 | `src/` | React/TypeScript interface, Leaflet map, ethers wallet integration |
-| `contracts/ParkingAuctionEscrow.sol` | Parking spaces and their calendars, auctions, pull refunds, settlement, time-locked owner payout |
+| `contracts/ParkingAuctionEscrow.sol` | Parking spaces and their calendars, auctions, pull refunds, settlement, time-locked owner payout, protected bookings |
 | `server/` | Express API and Node's native SQLite metadata storage |
 | `shared/` | Shared types and canonical metadata normalization |
 | `scripts/deploy.mjs` | Local Solidity compilation, deployment, seeded listings |
@@ -137,7 +149,7 @@ The API pins confirmed listings and registration checks to finalized state; mini
 
 ## Boundaries before real use
 
-This is a functional local prototype, **not an audited or production-ready payment system**. It does not verify listing ownership, availability, identities, municipal permission, gate access, or parking delivery. It has no fiat payments, dispute resolution, cancellation policy after bidding, or production authentication/operations. A wallet address is not proof of property ownership.
+This is a functional local prototype, **not an audited or production-ready payment system**. It does not verify listing ownership, availability, identities, municipal permission, gate access, or parking delivery. It has no fiat payments or production authentication/operations. Protected bookings enforce cancellation and dispute deadlines on chain, but the off-chain evidence review channel does not exist yet and no protection has been independently reviewed. A wallet address is not proof of property ownership.
 
 See the [shared testnet pilot policy](docs/pilot-policy.md) for the proposed pilot scope, the [booking and escrow policy](docs/booking-policy.md), and the approvals required before any real booking or funds. These decisions do not change the local prototype or enable a public deployment.
 

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 
-export type InboxKind = 'outbid' | 'won' | 'refund' | 'payout';
+export type InboxKind = 'outbid' | 'won' | 'refund' | 'payout' | 'booking-refund';
 export interface InboxItem {
   id: string;
   kind: InboxKind;
@@ -75,6 +75,7 @@ function describe(item: InboxItem): string {
     case 'won': return `You won ${spot} with a ${item.amount} ETH bid.`;
     case 'refund': return `You withdrew ${item.amount} ETH of refunds to your wallet.`;
     case 'payout': return `You claimed the ${item.amount} ETH payout for ${spot}.`;
+    case 'booking-refund': return `Your ${item.amount} ETH winning bid for ${spot} was credited to your refund balance.`;
   }
 }
 
