@@ -28,6 +28,7 @@ import { Toast } from './components/Toast';
 import { WalletModal } from './components/WalletModal';
 import { useWallet, WalletProvider } from './context/WalletContext';
 import { SessionProvider, useSession } from './context/SessionContext';
+import { linkReplacement } from './services/workspace';
 import { ApiError, createListingRecord, fetchConfig, fetchListings, searchListings, searchListingsPages, stageListingMetadata } from './services/api';
 import type { TxObserver } from './services/blockchain';
 import { patchTransaction, readTransactions, recordTransaction, staleTransactionsFor, transactionsFor, type TxKind, type TxRecord } from './utils/txStore';
@@ -182,6 +183,7 @@ export const AppContent: React.FC<{
   // Modals
   // Dialogs hold a stable identity (deployment + auction id + metadata hash), never a listing snapshot.
   const [detailTarget, setDetailTarget] = useState<ListingTarget | null>(null);
+  const [changeTarget, setChangeTarget] = useState<Listing | null>(null);
   const [bidTarget, setBidTarget] = useState<ListingTarget | null>(null);
   // Auctions without registered details can still be opened from the history, with contract data only.
   const openable = useMemo(
@@ -685,7 +687,8 @@ export const AppContent: React.FC<{
     parkingStartSec: number,
     parkingEndSec: number,
     spaceId?: string,
-    protectedBooking = false
+    protectedBooking = false,
+    replaces?: string,
   ) => {
     if (isActionBusy) return;
     if (!config?.contractAddress || !config.abi) {
@@ -744,6 +747,15 @@ export const AppContent: React.FC<{
         throw new Error(
           `Auction #${auctionId} is confirmed on-chain, but metadata registration failed: ${errDetail}. You can retry registration below without re-creating the auction.`
         );
+      }
+
+      if (replaces) {
+        try {
+          await linkReplacement(replaces, auctionId);
+          addToast('success', 'Replacement linked', `Bidders on auction #${replaces} will see a pointer to auction #${auctionId} in their inbox.`);
+        } catch (linkErr) {
+          addToast('error', 'Replacement not linked', linkErr instanceof Error ? linkErr.message : String(linkErr));
+        }
       }
 
       addToast(
@@ -1440,6 +1452,7 @@ export const AppContent: React.FC<{
             onClaimPayoutListing={handleClaimPayout}
             onOpenListingDetail={handleOpenDetailModal}
             onOpenBid={handleOpenBidModal}
+            onChangeListing={setChangeTarget}
             onConnectWallet={() => setIsWalletModalOpen(true)}
             isActionBusy={isActionBusy}
             deployment={config ? { chainId: config.chainId, contractAddress: config.contractAddress, snapshotBlock: calendarSnapshot?.blockNumber, snapshotTime: calendarSnapshot?.blockTimestamp } : null}
@@ -1471,6 +1484,11 @@ export const AppContent: React.FC<{
               isActionBusy={isActionBusy}
               onSpaceAction={handleSpaceAction}
               onPublish={handleCreateListing}
+              account={session?.address ?? null}
+              changeTarget={changeTarget}
+              onChangeDone={() => setChangeTarget(null)}
+              onBookingAction={handleBookingAction}
+              onCancelListing={handleCancelListing}
               onSignIn={() => void signInSession()}
             />
           </>

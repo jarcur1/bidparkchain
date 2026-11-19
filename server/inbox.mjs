@@ -6,7 +6,7 @@ export const BOOKING_EVENTS = ['BookingRefunded', 'LateCancellationRecorded', 'N
 
 /** Which preference category each entry kind belongs to. */
 export const INBOX_CATEGORIES = {
-  outbid: 'bids', won: 'bids',
+  outbid: 'bids', won: 'bids', replaced: 'bids',
   upcoming: 'reservations', arrival: 'reservations', 'checked-in': 'reservations',
   booking: 'bookings', 'booking-refund': 'bookings',
   refund: 'funds', payout: 'funds', 'payout-ready': 'funds',
@@ -14,7 +14,7 @@ export const INBOX_CATEGORIES = {
 export const CATEGORY_NAMES = [...new Set(Object.values(INBOX_CATEGORIES))];
 
 /** Entry ids: an event's (block hash, log index), or an off-chain entry's kind and auction. */
-export const INBOX_ID = /^(0x[0-9a-f]{64}:\d{1,6}|(upcoming|arrival|checkin|payout-ready):[1-9]\d{0,77})$/;
+export const INBOX_ID = /^(0x[0-9a-f]{64}:\d{1,6}|(upcoming|arrival|checkin|payout-ready|replaced):[1-9]\d{0,77})$/;
 
 /** The upcoming-reservation entry appears this long before parking starts. */
 export const UPCOMING_BEFORE = 24 * 60 * 60;
@@ -158,6 +158,19 @@ export async function reservationEntries({ db, contractAddress, address, events,
   } catch {
     return { items, error: 'Reservation times could not be read from the chain' };
   }
+}
+
+/**
+ * Entries for bidders of an auction whose host replaced it with a new listing. `replacements` are rows
+ * of { original_id, replacement_id, created_at (ms) }; only auctions this wallet bid on are considered.
+ */
+export function replacementEntries(events, address, replacements) {
+  const me = address.toLowerCase();
+  const bidOn = new Set(events.filter((e) => e.event === 'BidPlaced' && e.account?.toLowerCase() === me).map((e) => e.auction_id));
+  return replacements.filter((r) => bidOn.has(r.original_id)).map((r) => ({
+    id: `replaced:${r.original_id}`, kind: 'replaced', auctionId: r.original_id,
+    replacementId: r.replacement_id, at: Math.floor(r.created_at / 1000),
+  }));
 }
 
 /** An auction's immutable parking window and space, read once and kept in `times`. */

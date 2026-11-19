@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { formatDateTime } from '../utils/formatters';
 import { historyLink } from '../utils/history';
 
-export type InboxKind = 'outbid' | 'won' | 'refund' | 'payout' | 'payout-ready' | 'booking-refund' | 'booking' | 'upcoming' | 'arrival' | 'checked-in';
+export type InboxKind = 'outbid' | 'won' | 'refund' | 'payout' | 'payout-ready' | 'booking-refund' | 'booking' | 'upcoming' | 'arrival' | 'checked-in' | 'replaced';
 export type InboxCategory = 'bids' | 'reservations' | 'bookings' | 'funds';
 export type BookingChange =
   | 'refunded' | 'late-cancelled' | 'no-show' | 'dispute-opened' | 'dispute-upheld' | 'dispute-denied' | 'dispute-expired';
@@ -26,6 +26,8 @@ export interface InboxItem {
   parkingStart?: number;
   parkingEnd?: number;
   hasInstructions?: boolean;
+  /** Replaced entries: the auction the host published instead. */
+  replacementId?: string;
   checkedInAt?: number;
   read: boolean;
 }
@@ -131,6 +133,7 @@ export function describe(item: InboxItem, timeZone?: string): string {
     case 'arrival': return item.hasInstructions
       ? `Arrival instructions for ${spot} are available. Check-in opens 15 minutes before the start.`
       : `Arrival details for ${spot} are open; the host has not added instructions. Check-in opens 15 minutes before the start.`;
+    case 'replaced': return `The host replaced ${spot} with a new listing, auction #${item.replacementId}, because its details changed. Your bid on the original stands and is handled by the original auction.`;
     case 'checked-in': return `The winner checked in for ${spot} at ${formatDateTime(Math.floor((item.checkedInAt ?? 0) / 1000), timeZone)}.`;
   }
 }
@@ -235,6 +238,9 @@ export const Inbox: React.FC<Props> = ({ inbox, onOpenListing, deployment, timeZ
                   <button type="button" className="btn-table-action" onClick={() => onOpenListing(item.auctionId!)}>
                     {item.category === 'reservations' ? 'Arrival details' : 'View listing'}
                   </button>
+                )}
+                {item.kind === 'replaced' && item.replacementId && (
+                  <button type="button" className="btn-table-action" onClick={() => onOpenListing(item.replacementId!)}>View replacement</button>
                 )}
                 {item.auctionId && deployment && (item.category === 'bookings' || item.category === 'reservations') && (
                   <a className="btn-table-action" href={historyLink(deployment, item.auctionId)}>History</a>

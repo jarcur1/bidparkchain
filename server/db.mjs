@@ -366,6 +366,20 @@ const MIGRATIONS = [
         BEGIN SELECT RAISE(ABORT, 'verification_audit is append-only'); END;
     `);
   },
+  // 17: a host's replacement of an auction that already had bids: original -> replacement, one per original.
+  (db) => {
+    db.exec(`
+      CREATE TABLE listing_replacements (
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        original_id TEXT NOT NULL,
+        replacement_id TEXT NOT NULL,
+        host TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (chain_id, contract_address, original_id)
+      );
+    `);
+  },
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
@@ -1004,6 +1018,24 @@ export class EscrowDatabase {
       WHERE id = ? AND chain_id = ? AND contract_address = ? AND address = ?
     `).run(kind, name, payload, now, id, this.chainId, contract, owner).changes;
     return changed ? id : null;
+  }
+
+  /** Records that `original` was replaced by `replacement`. False when the original already has a replacement. */
+  saveReplacement(contractAddress, originalId, replacementId, host) {
+    return this.db.prepare(`
+      INSERT OR IGNORE INTO listing_replacements (chain_id, contract_address, original_id, replacement_id, host, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(this.chainId, contractAddress.toLowerCase(), originalId, replacementId, host.toLowerCase(), Date.now()).changes > 0;
+  }
+
+  /** Replacements recorded for the given original auction ids. */
+  getReplacements(contractAddress, originalIds) {
+    if (!originalIds.length) return [];
+    const marks = originalIds.map(() => '?').join(',');
+    return this.db.prepare(`
+      SELECT original_id, replacement_id, created_at FROM listing_replacements
+      WHERE chain_id = ? AND contract_address = ? AND original_id IN (${marks})
+    `).all(this.chainId, contractAddress.toLowerCase(), ...originalIds);
   }
 
   deleteHostDraft(contractAddress, address, id) {

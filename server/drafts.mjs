@@ -21,6 +21,7 @@ const FIELDS = {
   spaceId: (v) => typeof v === 'string' && (v === '' || /^[1-9]\d{0,77}$/.test(v)),
   latitude: (v) => Number.isFinite(v) && Math.abs(v) <= 90,
   longitude: (v) => Number.isFinite(v) && Math.abs(v) <= 180,
+  replaces: (v) => v === '' || /^[1-9]\d{0,77}$/.test(v),
   cutoff: localTime, start: localTime, end: localTime,
 };
 

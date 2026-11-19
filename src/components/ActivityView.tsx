@@ -43,6 +43,8 @@ interface ActivityViewProps {
   onClaimPayoutListing: (listing: Listing) => Promise<void>;
   onOpenListingDetail: (listing: Listing) => void;
   onOpenBid: (listing: Listing) => void;
+  /** Starts the edit-or-replace flow for one of the host's listings. */
+  onChangeListing?: (listing: Listing) => void;
   onConnectWallet: () => void;
   isActionBusy: boolean;
   /** Network and contract being read; enables the history section and its scoped links. */
@@ -64,6 +66,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
   onClaimPayoutListing,
   onOpenListingDetail,
   onOpenBid,
+  onChangeListing,
   onConnectWallet,
   isActionBusy,
   deployment,
@@ -730,6 +733,12 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                     >
                       View
                     </button>
+
+                    {onChangeListing && !listing.cancelled && listing.parkingEnd > now && (
+                      <button type="button" className="btn-hosted-view" onClick={() => onChangeListing(listing)}>
+                        Edit or replace
+                      </button>
+                    )}
 
                     {canCancel && (
                       <button
