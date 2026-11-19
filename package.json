@@ -8,6 +8,7 @@
     "chain": "hardhat node --hostname 127.0.0.1",
     "deploy": "node scripts/deploy.mjs",
     "demo": "node scripts/demo.mjs",
+    "backup": "node scripts/backup.mjs",
     "api": "node server/index.mjs",
     "web": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",

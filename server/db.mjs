@@ -110,6 +110,42 @@ const MIGRATIONS = [
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
+/**
+ * Applies pending migrations in order. A database that already holds data is first copied with
+ * `VACUUM INTO` (a consistent snapshot) next to itself; each migration then runs in its own
+ * transaction, so a failure rolls back to the last good version and the snapshot stays for recovery.
+ * A schema newer than `migrations` is refused rather than opened by older code.
+ */
+export function applyMigrations(db, { chainId, dbPath, migrations = MIGRATIONS }) {
+  const from = Number(db.prepare('PRAGMA user_version').get().user_version);
+  if (from > migrations.length) {
+    throw new Error(`Database schema version ${from} is newer than this code supports (${migrations.length}).`);
+  }
+  if (from === migrations.length) return { from, to: from, snapshot: null };
+  const hasData = from > 0 ||
+    db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'listings_metadata'").get();
+  let snapshot = null;
+  if (hasData && dbPath && dbPath !== ':memory:') {
+    snapshot = `${dbPath}.pre-v${migrations.length}-${Date.now()}.bak`;
+    db.prepare('VACUUM INTO ?').run(snapshot);
+  }
+  for (let next = from; next < migrations.length; next++) {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      migrations[next](db, chainId);
+      db.exec(`PRAGMA user_version = ${next + 1}`);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw Object.assign(new Error(
+        `Migration to schema ${next + 1} failed and was rolled back; the database is still at schema ${next}.` +
+        (snapshot ? ` A pre-migration copy is at ${snapshot}.` : ''),
+      ), { cause: error, snapshot });
+    }
+  }
+  return { from, to: migrations.length, snapshot };
+}
+
 export class EscrowDatabase {
   /**
    * One database serves one chain: every listing, staged metadata and deployment row is keyed by
@@ -129,20 +165,11 @@ export class EscrowDatabase {
   }
 
   _migrate() {
-    const version = Number(this.db.prepare('PRAGMA user_version').get().user_version);
-    if (version > SCHEMA_VERSION) {
-      throw new Error(`Database schema version ${version} is newer than this code supports (${SCHEMA_VERSION}).`);
-    }
-    for (let next = version; next < SCHEMA_VERSION; next++) {
-      this.db.exec('BEGIN IMMEDIATE');
-      try {
-        MIGRATIONS[next](this.db, this.chainId);
-        this.db.exec(`PRAGMA user_version = ${next + 1}`);
-        this.db.exec('COMMIT');
-      } catch (error) {
-        this.db.exec('ROLLBACK');
-        throw error;
-      }
+    try {
+      this.migration = applyMigrations(this.db, { chainId: this.chainId, dbPath: this.dbPath });
+    } catch (error) {
+      this.db.close();
+      throw error;
     }
   }
 
