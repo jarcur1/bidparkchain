@@ -19,7 +19,7 @@ process.on('SIGTERM', () => stop());
 process.on('exit', () => { for (const child of children) child.kill('SIGTERM'); });
 
 function start(label, args, finite = false) {
-  const child = spawn(process.execPath, args, { cwd: root, stdio: 'inherit' });
+  const child = spawn(process.execPath, args, { cwd: root, stdio: 'inherit', windowsHide: true });
   children.add(child);
   child.on('error', (error) => { console.error(`${label}: ${error.message}`); stop(1); });
   child.on('exit', (code) => {
