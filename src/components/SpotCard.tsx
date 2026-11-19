@@ -96,6 +96,7 @@ export const SpotCard: React.FC<SpotCardProps> = ({
         {/* Demo and Kind badges */}
         <div className="card-top-left-badges">
           <span className="badge-demo-sample">Demo Listing</span>
+          {listing.verification === 'verified' && <span className="badge-verified">Verified space</span>}
           <span className={`badge-kind badge-kind-${listing.kind}`}>
             {listing.kind.charAt(0).toUpperCase() + listing.kind.slice(1)}
           </span>

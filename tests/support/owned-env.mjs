@@ -144,13 +144,13 @@ export async function createScope(name) {
     },
 
     /** Starts the marketplace API (server/index.mjs) against a chain and data directory. */
-    async startApi({ rpcUrl, dataDir }) {
+    async startApi({ rpcUrl, dataDir, env = {} }) {
       const port = await findFreePort();
       const url = `http://127.0.0.1:${port}`;
       const service = await scope.startService({
         label: `API :${port}`,
         args: ['server/index.mjs'],
-        env: { PORT: String(port), RPC_URL: rpcUrl, BIDPARK_DATA_DIR: dataDir },
+        env: { PORT: String(port), RPC_URL: rpcUrl, BIDPARK_DATA_DIR: dataDir, ...env },
         ready: async () => (await fetch(`${url}/api/does-not-exist`, { signal: AbortSignal.timeout(1000) })).status === 404,
       });
       return { ...service, port, url };

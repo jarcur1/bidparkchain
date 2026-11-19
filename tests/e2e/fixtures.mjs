@@ -8,7 +8,9 @@ export const test = base.extend({
   scenario: ['austin', { scope: 'worker', option: true }],
   // A spec that changes shared state (new listings) can ask for its own stack: test.use({ isolatedStack: 'name' }).
   isolatedStack: ['', { scope: 'worker', option: true }],
-  stack: [async ({ scenario, isolatedStack: _isolated }, use) => {
+  // Extra API environment for this worker's stack, e.g. { BIDPARK_MODERATORS: '0x...' }.
+  apiEnv: [{}, { scope: 'worker', option: true }],
+  stack: [async ({ scenario, isolatedStack: _isolated, apiEnv }, use) => {
     const scope = await createScope('e2e');
     let chain;
     try {
@@ -17,7 +19,7 @@ export const test = base.extend({
       const deployment = await runDeployScript({ rpcUrl: chain.rpcUrl, dataDir, env: { BIDPARK_SCENARIO: scenario } });
       if (deployment.code !== 0) throw new Error(`Seeding failed:\n${deployment.output}`);
       const descriptor = JSON.parse(await readFile(path.join(dataDir, 'deployment.json'), 'utf8'));
-      const api = await scope.startApi({ rpcUrl: chain.rpcUrl, dataDir });
+      const api = await scope.startApi({ rpcUrl: chain.rpcUrl, dataDir, env: apiEnv });
       const port = await findFreePort();
       const webUrl = `http://127.0.0.1:${port}`;
       await scope.startService({

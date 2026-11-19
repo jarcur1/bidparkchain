@@ -18,6 +18,8 @@ export interface Listing extends SpotMetadata {
   /** Stable on-chain parking space this auction reserves a window on. */
   spaceId: string;
   owner: string;
+  /** 'verified' only when a moderator approved the current owner's proof of control over the space. */
+  verification?: 'verified' | 'unverified';
   minBid: string;
   highestBid: string;
   highestBidder: string;
