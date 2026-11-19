@@ -81,9 +81,9 @@ export function canonicalizeAuctionId(raw) {
   }
 }
 
-function listingFromRow(id, onchain, row, spaceId, verification) {
+function listingFromRow(id, onchain, row, [spaceId, timeZone], verification) {
   return {
-    id, spaceId: spaceId.toString(), owner: onchain.owner, verification,
+    id, spaceId: spaceId.toString(), timeZone, owner: onchain.owner, verification,
     minBid: ethers.formatEther(onchain.minBid),
     highestBid: ethers.formatEther(onchain.highestBid),
     highestBidder: onchain.highestBidder,
@@ -256,6 +256,18 @@ export function createApp(options = {}) {
     return readFinalized(deployment, iface, finalized, 'auctions', [id]);
   }
 
+  /** [spaceId, IANA time zone] of the space an auction belongs to. */
+  async function readFinalizedSpace(deployment, iface, finalized, id) {
+    const [spaceId] = await readFinalized(deployment, iface, finalized, 'auctionSpace', [id]);
+    const [timeZone] = await readFinalized(deployment, iface, finalized, 'spaceTimeZone', [spaceId]);
+    return [spaceId, timeZone];
+  }
+
+  async function readLocalSpace(contract, id) {
+    const spaceId = await contract.auctionSpace(id);
+    return [spaceId, await contract.spaceTimeZone(spaceId)];
+  }
+
   async function readFinalizedNextId(deployment, iface, finalized) {
     const result = await provider.send('eth_call', [
       { to: deployment.contractAddress, data: iface.encodeFunctionData('nextAuctionId', []) },
@@ -269,9 +281,9 @@ export function createApp(options = {}) {
    * metadata is either recovered from metadata staged under its hash or reported as unindexed,
    * so an auction never silently disappears. RPC errors propagate to the caller.
    */
-  /** [spaceId, public verification] for a listing: only the verification status is ever exposed. */
-  const withBadge = (contractAddress, onchain, spaceId) =>
-    [spaceId, publicVerification(db.getVerification(contractAddress, spaceId.toString()), onchain.owner)];
+  /** [[spaceId, timeZone], public verification] for a listing: only the verification status is ever exposed. */
+  const withBadge = (contractAddress, onchain, space) =>
+    [space, publicVerification(db.getVerification(contractAddress, space[0].toString()), onchain.owner)];
 
   async function buildListings(contractAddress, readAuction, readSpace, nextId) {
     const listings = [];
@@ -452,7 +464,7 @@ export function createApp(options = {}) {
           const { listings, unindexed } = await buildListings(
             deployment.contractAddress,
             (id) => readFinalizedAuction(deployment, iface, finalized, id),
-            async (id) => (await readFinalized(deployment, iface, finalized, 'auctionSpace', [id]))[0],
+            (id) => readFinalizedSpace(deployment, iface, finalized, id),
             await readFinalizedNextId(deployment, iface, finalized),
           );
           const chain = await readChainSnapshot(deployment, finalized);
@@ -493,7 +505,7 @@ export function createApp(options = {}) {
         built = await buildListings(
           deployment.contractAddress,
           (id) => contract.auctions(id),
-          (id) => contract.auctionSpace(id),
+          (id) => readLocalSpace(contract, id),
           await contract.nextAuctionId(),
         );
         // Read the clock after the auction state so the clock is never older than the state it judges.
@@ -573,7 +585,7 @@ export function createApp(options = {}) {
             return;
           }
           const onchain = await readFinalizedAuction(deployment, iface, finalized, canonicalId);
-          const [spaceId] = await readFinalized(deployment, iface, finalized, 'auctionSpace', [canonicalId]);
+          const space = await readFinalizedSpace(deployment, iface, finalized, canonicalId);
           await assertCanonicalFinalized(finalized);
           if (!onchain || onchain.owner === ethers.ZeroAddress) {
             res.status(404).json({ error: `Auction ID ${canonicalId} does not exist onchain` });
@@ -589,7 +601,7 @@ export function createApp(options = {}) {
           db.upsertListing({ auctionId: canonicalId, contractAddress: deployment.contractAddress,
             metadataHash: canonicalHash, ...normalized });
           res.status(existing && !isReconciliation ? 200 : 201).json({
-            listing: listingFromRow(canonicalId, onchain, { ...normalized, amenities: JSON.stringify(normalized.amenities) }, ...withBadge(deployment.contractAddress, onchain, spaceId)),
+            listing: listingFromRow(canonicalId, onchain, { ...normalized, amenities: JSON.stringify(normalized.amenities) }, ...withBadge(deployment.contractAddress, onchain, space)),
           });
         } catch {
           res.status(503).json({ error: 'Blockchain service unavailable' });
@@ -621,9 +633,9 @@ export function createApp(options = {}) {
       }
 
       // Verify auction onchain using canonical ID
-      let onchain, spaceId;
+      let onchain, space;
       try {
-        [onchain, spaceId] = await Promise.all([contract.auctions(canonicalId), contract.auctionSpace(canonicalId)]);
+        [onchain, space] = await Promise.all([contract.auctions(canonicalId), readLocalSpace(contract, canonicalId)]);
       } catch (err) {
         res.status(503).json({ error: 'Failed to query auction from smart contract' });
         return;
@@ -664,7 +676,7 @@ export function createApp(options = {}) {
 
       const listing = listingFromRow(canonicalId, onchain, {
         ...normalized, amenities: JSON.stringify(normalized.amenities),
-      }, ...withBadge(deployment.contractAddress, onchain, spaceId));
+      }, ...withBadge(deployment.contractAddress, onchain, space));
 
       res.status(existing && !isReconciliation ? 200 : 201).json({ listing });
     } catch (err) {

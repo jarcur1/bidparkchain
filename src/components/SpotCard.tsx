@@ -59,7 +59,7 @@ export const SpotCard: React.FC<SpotCardProps> = ({
     return () => clearInterval(timer);
   }, [listing.bidEnd, listing.settled, listing.cancelled]);
 
-  const parkingWindow = formatParkingWindow(listing.parkingStart, listing.parkingEnd);
+  const parkingWindow = formatParkingWindow(listing.parkingStart, listing.parkingEnd, listing.timeZone);
   const status = getListingStatus(listing);
 
   const isLeading =

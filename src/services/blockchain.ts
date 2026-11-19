@@ -308,7 +308,9 @@ const CONTRACT_ERROR_MESSAGES: Record<string, string> = {
   AuctionNotFound: 'This auction does not exist on the connected deployment.',
   OwnerCannotBid: 'Spot owners cannot bid on their own listing.',
   SpaceWindowTaken: 'This space already has a listing for an overlapping parking window. Pick a window that does not overlap, or cancel the other listing first.',
-  NotSpaceOwner: 'Only the wallet that owns this parking space can list it.',
+  NotSpaceOwner: 'Only the owner of this parking space, or a lister it approved, can list it.',
+  SpaceWindowUnavailable: 'The space owner blocked part of this parking window. Pick a window outside the blocked dates.',
+  SpaceCalendarFull: 'This space already has the most upcoming windows it can hold. Wait for some to end or cancel unsold ones first.',
 };
 
 /** Decodes raw revert data with the escrow ABI: ethers leaves gas-estimation reverts undecoded. */

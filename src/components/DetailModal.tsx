@@ -69,7 +69,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
   if (!listing) return null;
 
   const status = getListingStatus(listing);
-  const parkingWindow = formatParkingWindow(listing.parkingStart, listing.parkingEnd);
+  const parkingWindow = formatParkingWindow(listing.parkingStart, listing.parkingEnd, listing.timeZone);
   const now = getChainNowSec();
   const canBid = getBidEligibility(listing, currentAddress, now).canBid;
 
