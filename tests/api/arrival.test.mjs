@@ -2,6 +2,7 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ethers } from 'ethers';
 import { createApp } from '../../server/app.mjs';
+import { EscrowDatabase } from '../../server/db.mjs';
 import { ARRIVAL_OPENS_BEFORE, CHECK_IN_OPENS_BEFORE, winnerAccess } from '../../server/arrival.mjs';
 import { createScope, deployEscrow, writeDeployment } from '../support/owned-env.mjs';
 import { signInCookie } from '../support/auth.mjs';
@@ -207,4 +208,15 @@ describe('arrival instructions and check-in', () => {
     expect((await checkIn(WINNER, ids.main)).json.reason).toBe('closed');
     expect((await arrival(HOST, ids.main)).json.checkIn).not.toBeNull();
   });
+});
+
+it('a local demo reset drops arrival details, so reused space and auction ids start empty', () => {
+  const db = new EscrowDatabase(path.join(scope.tempDir('reset'), 'bidpark.db'));
+  const contract = '0x' + 'a'.repeat(40);
+  db.saveArrivalInstructions(contract, 'space', '1', { instructions: SECRET, updatedBy: contract });
+  db.recordCheckIn(contract, '1', { winner: contract, blockNumber: 1 });
+  db.resetLocalDemo();
+  expect(db.getArrivalInstructions(contract, 'space', '1')).toBeNull();
+  expect(db.getCheckIn(contract, '1')).toBeNull();
+  db.close();
 });
