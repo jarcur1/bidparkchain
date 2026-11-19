@@ -13,6 +13,7 @@ import { deriveInbox } from './inbox.mjs';
 import { createSettlementJob, settlementSettings } from './settlement.mjs';
 import { PRICE_NOTE, QueryError, encodeCursor, filterAndSort, matchesMetadata, parseSearchQuery } from './search.mjs';
 import { mountDrafts } from './drafts.mjs';
+import { mountDisputes } from './disputes.mjs';
 import { mountVerification, parseModerators, publicVerification } from './verification.mjs';
 
 let sepoliaArtifact;
@@ -1010,6 +1011,39 @@ export function createApp(options = {}) {
   });
 
   mountDrafts(app, { db, contractAddress: () => loadDeployment()?.contractAddress ?? null });
+
+  /** Live read of one chain method for the review channel: finalized on Sepolia, the latest block locally. */
+  async function readChain(method, args) {
+    const deployment = loadDeployment();
+    if (profile.id === 'sepolia') {
+      const { finalized, iface } = await readFinalizedDeployment(deployment);
+      const result = await readFinalized(deployment, iface, finalized, method, args);
+      await assertCanonicalFinalized(finalized);
+      return result.length === 1 ? result[0] : result;
+    }
+    const contract = deployment && isLocalDeployment(deployment) ? getContract(deployment) : null;
+    if (!contract) throw new Error('Smart contract not deployed');
+    return contract[method](...args);
+  }
+
+  mountDisputes(app, {
+    db, chainId: profile.chainId,
+    contractAddress: () => loadDeployment()?.contractAddress ?? null,
+    readState: async (id) => {
+      const auction = await readChain('auctions', [id]);
+      if (auction.owner === ethers.ZeroAddress) return null;
+      const [booking, spaceId] = await Promise.all([readChain('bookings', [id]), readChain('auctionSpace', [id])]);
+      return {
+        owner: auction.owner, spaceOwner: await readChain('spaceOwner', [spaceId]), highestBidder: auction.highestBidder,
+        settled: auction.settled, cancelled: auction.cancelled, parkingEnd: Number(auction.parkingEnd),
+        isProtected: booking.isProtected, outcome: Number(booking.outcome),
+        disputeReporter: booking.disputeReporter, disputeEvidence: booking.disputeEvidence,
+      };
+    },
+    isResolver: (account) => readChain('resolvers', [account]),
+    now: async () => (await provider.getBlock('latest')).timestamp,
+    sync: () => syncIndexOnce(),
+  });
 
   /** GET /api/health/live: the process is up and answering. Checks no dependencies. */
   app.get('/api/health/live', (req, res) => res.json({ live: true }));

@@ -225,6 +225,46 @@ const MIGRATIONS = [
       CREATE INDEX idx_host_drafts_owner ON host_drafts (chain_id, contract_address, address, updated_at);
     `);
   },
+  // 9: restricted review channel for protected-booking reports (docs/booking-policy.md). Records hold the
+  //    reporting party's evidence or a resolver's reason; only `reference` (a hash of the record) goes
+  //    on-chain. Both tables are append-only. Also records which action each keeper job performed.
+  (db) => {
+    db.exec(`
+      CREATE TABLE dispute_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        auction_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('report', 'decision')),
+        author TEXT NOT NULL,
+        uphold INTEGER CHECK (uphold IN (0, 1)),
+        body TEXT NOT NULL,
+        reference TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX idx_dispute_records_auction ON dispute_records (chain_id, contract_address, auction_id);
+      CREATE TABLE dispute_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        auction_id TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        action TEXT NOT NULL CHECK (action IN ('submit-report', 'submit-decision', 'view')),
+        record_id INTEGER,
+        at INTEGER NOT NULL
+      );
+      CREATE INDEX idx_dispute_audit_auction ON dispute_audit (chain_id, contract_address, auction_id);
+      CREATE TRIGGER dispute_records_no_update BEFORE UPDATE ON dispute_records
+        BEGIN SELECT RAISE(ABORT, 'dispute_records is append-only'); END;
+      CREATE TRIGGER dispute_records_no_delete BEFORE DELETE ON dispute_records
+        BEGIN SELECT RAISE(ABORT, 'dispute_records is append-only'); END;
+      CREATE TRIGGER dispute_audit_no_update BEFORE UPDATE ON dispute_audit
+        BEGIN SELECT RAISE(ABORT, 'dispute_audit is append-only'); END;
+      CREATE TRIGGER dispute_audit_no_delete BEFORE DELETE ON dispute_audit
+        BEGIN SELECT RAISE(ABORT, 'dispute_audit is append-only'); END;
+      ALTER TABLE settlement_jobs ADD COLUMN action TEXT NOT NULL DEFAULT 'settle';
+    `);
+  },
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
@@ -630,7 +670,7 @@ export class EscrowDatabase {
         AND NOT EXISTS (
           SELECT 1 FROM auction_events s
           WHERE s.chain_id = e.chain_id AND s.contract_address = e.contract_address AND s.auction_id = e.auction_id
-            AND s.canonical = 1 AND s.event IN ('AuctionSettled', 'AuctionCancelled')
+            AND s.canonical = 1 AND s.event IN ('AuctionSettled', 'AuctionCancelled', 'BookingRefunded')
         )
       UNION
       SELECT auction_id FROM settlement_jobs WHERE chain_id = ? AND contract_address = ? AND status IN ('sent', 'failed'))
@@ -638,18 +678,59 @@ export class EscrowDatabase {
     `).all(this.chainId, contract, this.chainId, contract).map((row) => row.auction_id);
   }
 
+  /** Auctions whose indexed events show more reports than decisions and no refund: reports that may still be open. */
+  getOpenDisputeAuctions(contractAddress) {
+    const count = (event) => `(SELECT COUNT(*) FROM auction_events x WHERE x.chain_id = o.chain_id AND x.contract_address = o.contract_address
+      AND x.auction_id = o.auction_id AND x.canonical = 1 AND x.event = '${event}')`;
+    return this.db.prepare(`
+      SELECT DISTINCT auction_id FROM auction_events o
+      WHERE chain_id = ? AND contract_address = ? AND canonical = 1 AND event = 'DisputeOpened'
+        AND ${count('DisputeOpened')} > ${count('DisputeResolved')} AND ${count('BookingRefunded')} = 0
+      ORDER BY CAST(auction_id AS INTEGER)
+    `).all(this.chainId, contractAddress.toLowerCase()).map((row) => row.auction_id);
+  }
+
+  /** Appends a review record and its audit entry; returns the stored record. */
+  addDisputeRecord(contractAddress, auctionId, { kind, author, uphold = null, body, reference, createdAt }) {
+    const contract = contractAddress.toLowerCase();
+    return this.#transaction(() => {
+      const { lastInsertRowid } = this.db.prepare(`
+        INSERT INTO dispute_records (chain_id, contract_address, auction_id, kind, author, uphold, body, reference, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(this.chainId, contract, auctionId, kind, author.toLowerCase(), uphold === null ? null : Number(uphold), body, reference, createdAt);
+      this.addDisputeAudit(contract, auctionId, author, `submit-${kind}`, Number(lastInsertRowid), createdAt);
+      return Number(lastInsertRowid);
+    });
+  }
+
+  addDisputeAudit(contractAddress, auctionId, actor, action, recordId = null, at = Date.now()) {
+    this.db.prepare(`
+      INSERT INTO dispute_audit (chain_id, contract_address, auction_id, actor, action, record_id, at) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(this.chainId, contractAddress.toLowerCase(), auctionId, actor.toLowerCase(), action, recordId, at);
+  }
+
+  getDisputeRecords(contractAddress, auctionId) {
+    return this.db.prepare('SELECT * FROM dispute_records WHERE chain_id = ? AND contract_address = ? AND auction_id = ? ORDER BY id')
+      .all(this.chainId, contractAddress.toLowerCase(), auctionId);
+  }
+
+  getDisputeAudit(contractAddress, auctionId) {
+    return this.db.prepare('SELECT * FROM dispute_audit WHERE chain_id = ? AND contract_address = ? AND auction_id = ? ORDER BY id')
+      .all(this.chainId, contractAddress.toLowerCase(), auctionId);
+  }
+
   getSettlementJob(contractAddress, auctionId) {
     return this.db.prepare('SELECT * FROM settlement_jobs WHERE chain_id = ? AND contract_address = ? AND auction_id = ?')
       .get(this.chainId, contractAddress.toLowerCase(), auctionId) || null;
   }
 
-  saveSettlementJob(contractAddress, auctionId, { status, txHash = null, attempts = 0, error = null, nextAttemptAt = null, updatedAt = Date.now() }) {
+  saveSettlementJob(contractAddress, auctionId, { status, txHash = null, attempts = 0, error = null, nextAttemptAt = null, updatedAt = Date.now(), action = 'settle' }) {
     this.db.prepare(`
-      INSERT INTO settlement_jobs (chain_id, contract_address, auction_id, status, tx_hash, attempts, last_error, next_attempt_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(chain_id, contract_address, auction_id) DO UPDATE SET status = excluded.status, tx_hash = excluded.tx_hash,
+      INSERT INTO settlement_jobs (chain_id, contract_address, auction_id, status, tx_hash, attempts, last_error, next_attempt_at, updated_at, action)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(chain_id, contract_address, auction_id) DO UPDATE SET status = excluded.status, tx_hash = excluded.tx_hash, action = excluded.action,
         attempts = excluded.attempts, last_error = excluded.last_error, next_attempt_at = excluded.next_attempt_at, updated_at = excluded.updated_at
-    `).run(this.chainId, contractAddress.toLowerCase(), auctionId, status, txHash, attempts, error, nextAttemptAt, updatedAt);
+    `).run(this.chainId, contractAddress.toLowerCase(), auctionId, status, txHash, attempts, error, nextAttemptAt, updatedAt, action);
   }
 
   /** Job counts by status and the most recently updated failing jobs. */

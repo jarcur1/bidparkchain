@@ -30,7 +30,8 @@ async function keeper({ db, wallet = chain.wallet(9), ...settings } = {}) {
     db, provider: chain.provider, profile: local, loadDeployment, abiFor: (d) => d.abi,
     settings: { wallet, intervalMs: 1000, retryBaseMs: 0, retryMaxMs: 0, dropAfterMs: 0, now: Date.now, ...settings },
   });
-  return { db, job, run: () => job.runOnce(), get: (id) => db.getSettlementJob(deployment.address, id) };
+  const sync = () => syncIndex({ db, provider: chain.provider, address: deployment.address, abi: deployment.abi, fromBlock: deployment.deploymentBlock });
+  return { db, job, sync, run: () => job.runOnce(), get: (id) => db.getSettlementJob(deployment.address, id) };
 }
 const automine = (on) => chain.provider.send('evm_setAutomine', [on]);
 const mine = () => chain.provider.send('evm_mine', []);
@@ -240,20 +241,112 @@ it('runs on a timer in the API, reports status and readiness, and drains on shut
   expect(api.db.db.isOpen).toBe(false);
 });
 
-it('settles a protected booking only before parking starts and leaves an expired one to expire()', async () => {
+const HOUR = 3600;
+const resolver = () => chain.wallet(4);
+/** A protected auction: bidding ends in 10 minutes, parking runs 40 to 100 minutes from now unless told otherwise. */
+async function protectedAuction({ bidEnd = 600, start = 2400, end = 6000 } = {}) {
   const c = deployment.contract;
   const now = await chain.latestTimestamp();
-  const settleable = (await c.nextAuctionId()).toString();
-  await (await c.createProtectedAuction(0, ethers.id('protected-a'), parse('0.01'), now + 600, now + 2400, now + 4000)).wait();
-  const expired = (await c.nextAuctionId()).toString();
-  await (await c.createProtectedAuction(0, ethers.id('protected-b'), parse('0.01'), now + 300, now + 2100, now + 4000)).wait();
+  const id = (await c.nextAuctionId()).toString();
+  await (await c.createProtectedAuction(0, ethers.id(`protected-${id}`), parse('0.01'), now + bidEnd, now + start, now + end)).wait();
+  return id;
+}
+const booking = (id) => deployment.contract.bookings(id);
+const OUTCOME = { None: 0n, Expired: 3n, DisputeExpired: 5n };
+
+it('settles a protected booking before parking starts and expires an unsettled one afterwards', async () => {
+  const settleable = await protectedAuction();
+  const late = await protectedAuction({ bidEnd: 300, start: 2100 });
   await bid(1, settleable, '0.02');
-  await bid(2, expired, '0.02');
-  await chain.increaseTime(2200);
+  await bid(2, late, '0.02');
+  await chain.increaseTime(700); // bidding closed, parking not started
   const k = await keeper();
   await k.run();
   expect((await onChain(settleable)).settled).toBe(true);
-  expect(k.get(expired)).toBe(null);
-  expect((await onChain(expired)).settled).toBe(false);
+  expect((await onChain(late)).settled).toBe(true);
+  expect(k.get(late)).toMatchObject({ action: 'settle', status: 'sent' });
+
+  // Parking starts without a settlement for this one: the keeper expires it and refunds the winner.
+  const missed = await protectedAuction({ bidEnd: 300, start: 2100 });
+  await bid(3, missed, '0.02');
+  await chain.increaseTime(2200);
+  const credit = await deployment.contract.pendingReturns(chain.wallet(3).address);
+  await k.sync();
+  expect(await k.run()).toMatchObject({ error: null });
+  expect((await booking(missed)).outcome).toBe(OUTCOME.Expired);
+  expect(await deployment.contract.pendingReturns(chain.wallet(3).address)).toBe(credit + parse('0.02'));
+  expect(k.get(missed)).toMatchObject({ action: 'expire', status: 'sent', attempts: 1 });
+  expect(await k.run()).toMatchObject({ pending: 0 });
+  expect(k.get(missed)).toMatchObject({ action: 'expire', status: 'confirmed' });
+  // Nothing is sent twice.
+  expect(await k.run()).toMatchObject({ pending: 0 });
+  expect(k.get(missed).attempts).toBe(1);
+  k.db.close();
+});
+
+it('leaves a host-cancelled protected booking alone', async () => {
+  const id = await protectedAuction();
+  await bid(1, id, '0.02');
+  await chain.increaseTime(700);
+  await (await deployment.contract.hostCancelBooking(id)).wait();
+  const k = await keeper();
+  expect(await k.run()).toMatchObject({ error: null });
+  expect(k.get(id)).toBeNull();
+  expect((await booking(id)).outcome).toBe(3n - 1n); // HostCancelled
+  k.db.close();
+});
+
+it('holds an open report until its resolution window ends, then expires it', async () => {
+  const c = deployment.contract;
+  await (await c.setResolver(resolver().address, true)).wait();
+  const id = await protectedAuction();
+  await bid(1, id, '0.02');
+  await chain.increaseTime(700);
+  const k = await keeper();
+  await k.run();
+  expect(k.get(id)).toMatchObject({ action: 'settle', status: 'sent' });
+  await k.run();
+  expect(k.get(id).status).toBe('confirmed');
+  await chain.increaseTime(7000); // parking over
+  await (await c.connect(chain.wallet(1)).reportSellerFailure(id, ethers.id('report'))).wait();
+
+  // Within the window the payout stays held and the keeper leaves the decision to a resolver.
+  expect(await k.run()).toMatchObject({ error: null, pending: 0 });
+  expect(k.get(id)).toMatchObject({ action: 'settle', status: 'confirmed' });
+  expect((await booking(id)).disputeReporter).toBe(chain.wallet(1).address);
+  await chain.increaseTime(70 * HOUR);
+  expect(await k.run()).toMatchObject({ pending: 0 });
+  expect((await booking(id)).outcome).toBe(OUTCOME.None);
+
+  await chain.increaseTime(3 * HOUR);
+  expect(await k.run()).toMatchObject({ error: null, pending: 1 });
+  expect((await booking(id)).outcome).toBe(OUTCOME.DisputeExpired);
+  expect(k.get(id)).toMatchObject({ action: 'expireDispute', status: 'sent', attempts: 1 });
+  expect(await k.run()).toMatchObject({ pending: 0 });
+  expect(k.get(id)).toMatchObject({ action: 'expireDispute', status: 'confirmed' });
+  k.db.close();
+});
+
+it('ignores reports that a resolver already decided, and settled bookings with no report', async () => {
+  const c = deployment.contract;
+  await (await c.setResolver(resolver().address, true)).wait();
+  const denied = await protectedAuction();
+  const quiet = await protectedAuction();
+  await bid(1, denied, '0.02');
+  await bid(2, quiet, '0.02');
+  await chain.increaseTime(700);
+  await (await c.settle(denied)).wait();
+  await (await c.settle(quiet)).wait();
+  await chain.increaseTime(7000);
+  await (await c.connect(chain.wallet(1)).reportSellerFailure(denied, ethers.id('report'))).wait();
+  await (await c.connect(resolver()).resolveDispute(denied, false, ethers.id('denied'))).wait();
+  await chain.increaseTime(100 * HOUR);
+  const k = await keeper();
+  expect(k.db.getSettlementCandidates(deployment.address)).not.toContain(denied);
+  expect(await k.run()).toMatchObject({ error: null });
+  for (const id of [denied, quiet]) {
+    expect((await booking(id)).outcome).toBe(OUTCOME.None);
+    expect(k.get(id)).toBeNull();
+  }
   k.db.close();
 });

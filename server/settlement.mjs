@@ -69,17 +69,42 @@ export function createSettlementJob({ db, provider, profile, loadDeployment, abi
   let running = null;
   let lastRun = null;
 
-  async function step(contract, address, id, head, confirmedTag) {
-    const job = db.getSettlementJob(address, id);
-    const save = (fields) => db.saveSettlementJob(address, id, {
-      status: job?.status, txHash: job?.tx_hash, attempts: job?.attempts ?? 0, updatedAt: now(), ...fields,
-    });
+  // Contract outcome (enum index) that completes each protected action.
+  const DONE_OUTCOME = { expire: 3, expireDispute: 5 };
+
+  async function step(contract, address, id, head, confirmedTag, resolutionWindow) {
+    const prior = db.getSettlementJob(address, id);
     const auction = await contract.auctions(id);
+    const booking = resolutionWindow === null ? null : await contract.bookings(id);
+    const isProtected = Boolean(booking?.isProtected);
+    // What the contract allows next. Protected bookings: settle before parkingStart, expire() once it
+    // has passed unsettled, expireDispute() once a report outlives the resolution window. Otherwise
+    // the dispute hold (open report, window still running) and resolvers' decisions are not ours.
+    let action = 'settle';
+    if (isProtected && !auction.cancelled && head.timestamp >= Number(auction.parkingStart) && !auction.settled &&
+        auction.highestBidder !== ethers.ZeroAddress) action = 'expire';
+    if (isProtected && !auction.cancelled && auction.settled && booking.disputeReporter !== ethers.ZeroAddress &&
+        head.timestamp >= Number(auction.parkingEnd) + resolutionWindow) action = 'expireDispute';
+    const job = prior && (prior.action ?? 'settle') === action ? prior : null;
+    const save = (fields) => db.saveSettlementJob(address, id, {
+      status: job?.status, txHash: job?.tx_hash, attempts: job?.attempts ?? 0, updatedAt: now(), action, ...fields,
+    });
     if (auction.cancelled) {
-      if (job) save({ status: 'cancelled', error: null, nextAttemptAt: null });
+      // A refund (expiry, host cancellation, upheld report) also marks the auction cancelled; ours is
+      // confirmed once its own outcome stands at the confirmation depth.
+      const own = prior && prior.action !== 'settle' ? DONE_OUTCOME[prior.action] : undefined;
+      if (prior && own !== undefined && Number(booking?.outcome) === own) {
+        const confirmed = confirmedTag === 'latest' || Number((await contract.bookings(id, { blockTag: confirmedTag })).outcome) === own;
+        if (confirmed && prior.status !== 'confirmed') {
+          db.saveSettlementJob(address, id, { status: 'confirmed', txHash: prior.tx_hash, attempts: prior.attempts, updatedAt: now(), action: prior.action });
+          log({ event: 'confirmed', auctionId: id, action: prior.action, txHash: prior.tx_hash });
+        }
+        return !confirmed;
+      }
+      if (prior && prior.status !== 'cancelled') db.saveSettlementJob(address, id, { status: 'cancelled', txHash: prior.tx_hash, attempts: prior.attempts, updatedAt: now(), action: prior.action ?? 'settle' });
       return false;
     }
-    if (auction.settled) {
+    if (auction.settled && action === 'settle') {
       const confirmed = confirmedTag === 'latest' || (await contract.auctions(id, { blockTag: confirmedTag })).settled;
       if (confirmed && job && job.status !== 'confirmed') {
         save({ status: 'confirmed', error: null, nextAttemptAt: null });
@@ -87,12 +112,11 @@ export function createSettlementJob({ db, provider, profile, loadDeployment, abi
       }
       return !confirmed;
     }
-    // Not due, or nothing to settle (no bids: the host may still cancel).
-    if (Number(auction.bidEnd) > head.timestamp || auction.highestBidder === ethers.ZeroAddress) return false;
-    // A protected booking can no longer be settled once parking starts; anyone may expire() it instead,
-    // which refunds the winner. The keeper leaves that to the participants.
-    if (Number(auction.parkingStart) <= head.timestamp && contract.interface.getFunction('bookings') &&
-        (await contract.bookings(id)).isProtected) return false;
+    if (action === 'settle') {
+      // Not due, or nothing to settle (no bids: the host may still cancel).
+      if (Number(auction.bidEnd) > head.timestamp || auction.highestBidder === ethers.ZeroAddress) return false;
+      // A protected booking never reaches here once parking starts (action is expire then).
+    }
 
     let attempts = job?.attempts ?? 0;
     if (job?.status === 'sent' && job.tx_hash) {
@@ -110,7 +134,7 @@ export function createSettlementJob({ db, provider, profile, loadDeployment, abi
     try {
       // Sign first and record the hash before broadcasting, so a crash or a lost RPC response after
       // the node accepted it still leaves a transaction to check rather than a reason to send again.
-      const signed = await signer.signTransaction(await signer.populateTransaction(await contract.settle.populateTransaction(id)));
+      const signed = await signer.signTransaction(await signer.populateTransaction(await contract[action].populateTransaction(id)));
       txHash = ethers.Transaction.from(signed).hash;
       save({ status: 'sent', txHash, attempts: attempts + 1, error: null, nextAttemptAt: null });
       await provider.broadcastTransaction(signed);
@@ -118,7 +142,8 @@ export function createSettlementJob({ db, provider, profile, loadDeployment, abi
     } catch (error) {
       const reason = reasonOf(contract, error);
       // Someone settled it first (or our clock is ahead of the chain's): not a failure.
-      if (reason === 'AlreadySettled' || reason === 'AuctionNotEnded') return reason === 'AlreadySettled';
+      if (['AlreadySettled', 'BookingFinalized', 'NoOpenDispute'].includes(reason)) return true;
+      if (['AuctionNotEnded', 'TooEarly', 'TooLate'].includes(reason)) return false;
       // The node may have accepted it before the connection failed: keep it as sent and check it next pass.
       if (txHash && ['NETWORK_ERROR', 'TIMEOUT', 'SERVER_ERROR'].includes(reason)) {
         log({ event: 'send_unconfirmed', auctionId: id, reason, txHash });
@@ -143,10 +168,11 @@ export function createSettlementJob({ db, provider, profile, loadDeployment, abi
       const head = await provider.getBlock('latest');
       if (!head) throw new Error('Chain head unavailable');
       const confirmedTag = profile.confirmation === 'finalized' ? 'finalized' : 'latest';
+      const resolutionWindow = contract.interface.getFunction('bookings') ? Number(await contract.RESOLUTION_WINDOW()) : null;
       let pending = 0;
       // ponytail: one live read per open auction with bids per pass; batch with multicall if that grows large.
       for (const id of db.getSettlementCandidates(address)) {
-        if (await step(contract, address, id, head, confirmedTag)) pending += 1;
+        if (await step(contract, address, id, head, confirmedTag, resolutionWindow)) pending += 1;
       }
       lastRun = { at: now(), error: null, pending };
       return lastRun;
