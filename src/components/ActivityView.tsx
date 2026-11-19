@@ -25,6 +25,8 @@ import {
 } from '../utils/formatters';
 import { getChainNowSec } from '../utils/eligibility';
 import { webProfile } from '../utils/networkProfile';
+import { reservationLifecycle, zoneNote } from '../utils/lifecycle';
+import { ReservationHistory } from './ReservationHistory';
 
 interface ActivityViewProps {
   currentAddress: string | null;
@@ -42,6 +44,8 @@ interface ActivityViewProps {
   onOpenBid: (listing: Listing) => void;
   onConnectWallet: () => void;
   isActionBusy: boolean;
+  /** Network and contract being read; enables the history section and its scoped links. */
+  deployment?: { chainId: number; contractAddress: string } | null;
 }
 
 export const ActivityView: React.FC<ActivityViewProps> = ({
@@ -60,6 +64,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
   onOpenBid,
   onConnectWallet,
   isActionBusy,
+  deployment,
 }) => {
   if (!currentAddress) {
     return (
@@ -82,13 +87,15 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
   const addrLower = currentAddress.toLowerCase();
 
   // 1. Confirmed reservations: strictly require settled === true
+  const ORDER = ['in-progress', 'upcoming', 'disputed', 'completed'];
+  const stateOf = (l: Listing) => reservationLifecycle(l, currentAddress, now);
   const confirmedReservations = listings.filter(
     (l) =>
       l.highestBidder &&
       l.highestBidder.toLowerCase() === addrLower &&
       !l.cancelled &&
       l.settled
-  );
+  ).sort((a, b) => ORDER.indexOf(stateOf(a)?.state ?? '') - ORDER.indexOf(stateOf(b)?.state ?? ''));
 
   // 2. Won auctions awaiting settlement (bidding closed, winning bidder, but not yet settled)
   const pendingSettlementWins = listings.filter(
@@ -280,6 +287,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                   <h4 className="settle-card-title">{listing.title}</h4>
                   <p className="settle-card-sub">{listing.address}</p>
                   <p className="settle-card-sub">Status: You won — pending settlement</p>
+                  <p className="settle-card-sub">{zoneNote(listing.timeZone)}</p>
 
                   <div className="settle-card-meta">
                     <div>
@@ -343,6 +351,9 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                     <span className="pass-id">AUCTION #{listing.id}</span>
                   </div>
                   <p className="pass-spot-address">Status: You won — confirmed on-chain</p>
+                  <p className="pass-spot-address">
+                    <strong data-testid="lifecycle-label">{stateOf(listing)?.label}</strong> · {stateOf(listing)?.detail} {zoneNote(listing.timeZone)}
+                  </p>
 
                   <div className="pass-body">
                     <div className="pass-spot-info">
@@ -470,7 +481,7 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
                       <td>
                         <span className="table-countdown-text">
                           <Clock size={12} />
-                          <span>{formatDateTime(listing.bidEnd)} ({time.text})</span>
+                          <span>{formatDateTime(listing.bidEnd, listing.timeZone)} ({time.text})</span>
                         </span>
                       </td>
                       <td>
@@ -643,6 +654,17 @@ export const ActivityView: React.FC<ActivityViewProps> = ({
             })}
           </div>
         </section>
+      )}
+
+      {deployment && (
+        <ReservationHistory
+          currentAddress={currentAddress}
+          listings={listings}
+          myBidAuctionIds={myBidAuctionIds}
+          nowSec={now}
+          deployment={deployment}
+          onOpenListingDetail={onOpenListingDetail}
+        />
       )}
 
       {/* 5. My Listed Parking Spots (Host View) */}

@@ -132,6 +132,13 @@ it('serves index freshness and per-auction history from the API', async () => {
     expect(events.map((e) => [e.event, e.amount])).toEqual([['AuctionCreated', null], ['BidPlaced', '0.02'], ['BidPlaced', '0.03']]);
     expect(events[1]).toMatchObject({ txHash: expect.stringMatching(/^0x/), blockNumber: expect.any(Number) });
     expect((await fetch(`${url}/api/auctions/0/events`)).status).toBe(400);
+    const block = await chain.provider.getBlock(events[1].blockNumber);
+    expect(events[1].blockTime).toBe(block.timestamp);
+    const mine = await get(`/api/accounts/${chain.wallet(1).address.toLowerCase()}/history`);
+    expect(mine).toMatchObject({ chainId: expect.any(Number), contractAddress: deployment.address, indexedBlock: head });
+    expect(mine.events.every((e) => typeof e.blockTime === 'number')).toBe(true);
+    expect(mine.events.some((e) => e.event === 'BidPlaced' && e.auctionId === '1')).toBe(true);
+    expect((await fetch(`${url}/api/accounts/nope/history`)).status).toBe(400);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     runtime.db.close();

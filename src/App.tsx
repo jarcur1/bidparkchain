@@ -167,7 +167,7 @@ export const AppContent: React.FC<{
   const chain = listingsView.deploymentChanged ? null : listingsView.chain;
 
   // Navigation & View
-  const [currentTab, setCurrentTab] = useState<AppTab>('marketplace');
+  const [currentTab, setCurrentTab] = useState<AppTab>(() => (new URLSearchParams(window.location.search).get('tab') === 'activity' ? 'activity' : 'marketplace'));
   const [viewMode, setViewMode] = useState<'split' | 'cards' | 'map'>('split');
   const [selectedListingId, setSelectedListingId] = useState<string | null>(null);
 
@@ -1322,6 +1322,7 @@ export const AppContent: React.FC<{
             onOpenBid={handleOpenBidModal}
             onConnectWallet={() => setIsWalletModalOpen(true)}
             isActionBusy={isActionBusy}
+            deployment={config ? { chainId: config.chainId, contractAddress: config.contractAddress } : null}
           />
         )}
         {currentTab === 'activity' && session && (

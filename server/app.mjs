@@ -867,7 +867,7 @@ export function createApp(options = {}) {
    * GET /api/auctions/:id/events: canonical public event history for one auction, with the index
    * checkpoint and last sync error so a client can tell "no events" from "not indexed yet" or stale.
    */
-  app.get('/api/auctions/:id/events', (req, res) => {
+  app.get('/api/auctions/:id/events', async (req, res) => {
     const id = canonicalizeAuctionId(req.params.id);
     const deployment = loadDeployment();
     if (!id || !deployment?.contractAddress) {
@@ -877,10 +877,50 @@ export function createApp(options = {}) {
     res.json({
       indexedBlock: db.getCheckpoint(deployment.contractAddress)?.block_number ?? null,
       syncError: lastSync?.error ?? null,
-      events: db.getAuctionEvents(deployment.contractAddress, id).map((e) => ({
-        event: e.event, account: e.account, amount: e.amount === null ? null : ethers.formatEther(e.amount),
-        blockNumber: e.block_number, blockHash: e.block_hash, txHash: e.tx_hash, logIndex: e.log_index,
-      })),
+      events: await withBlockTimes(db.getAuctionEvents(deployment.contractAddress, id)),
+    });
+  });
+
+  // Block timestamps by block hash (immutable per hash). null when the node cannot be read.
+  const blockTimes = new Map();
+  async function withBlockTimes(rows) {
+    const missing = [...new Map(rows.filter((e) => !blockTimes.has(e.block_hash)).map((e) => [e.block_hash, e.block_number]))];
+    await Promise.all(missing.slice(0, 200).map(async ([hash]) => {
+      const block = await provider.getBlock(hash).catch(() => null);
+      if (block) blockTimes.set(hash, block.timestamp);
+    }));
+    return rows.map((e) => ({
+      event: e.event, auctionId: e.auction_id, account: e.account, amount: e.amount === null ? null : ethers.formatEther(e.amount),
+      blockNumber: e.block_number, blockHash: e.block_hash, txHash: e.tx_hash, logIndex: e.log_index,
+      blockTime: blockTimes.get(e.block_hash) ?? null,
+    }));
+  }
+
+  /**
+   * GET /api/accounts/:address/history: public canonical events for one wallet on this deployment (its
+   * own, plus every bid on auctions it bid on, so lost auctions can be told apart), with block times
+   * and the deployment identity so a link is only ever read against the network and contract it names.
+   */
+  app.get('/api/accounts/:address/history', async (req, res) => {
+    let address;
+    try {
+      address = ethers.getAddress(req.params.address);
+    } catch {
+      res.status(400).json({ error: 'Valid wallet address is required' });
+      return;
+    }
+    const deployment = loadDeployment();
+    if (!deployment?.contractAddress) {
+      res.status(503).json({ error: 'Smart contract not deployed' });
+      return;
+    }
+    const checkpoint = db.getCheckpoint(deployment.contractAddress);
+    res.json({
+      chainId: profile.chainId,
+      contractAddress: deployment.contractAddress,
+      indexedBlock: checkpoint?.block_number ?? null,
+      syncError: lastSync?.error ?? null,
+      events: await withBlockTimes(db.getInboxEvents(deployment.contractAddress, address)),
     });
   });
 
