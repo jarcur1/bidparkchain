@@ -3812,7 +3812,22 @@ button.header-brand {
 
 .inbox-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+.inbox-preferences {
+  margin-top: 12px;
+}
+
+.inbox-preferences fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 8px 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
 }
 
 /* Host verification */
