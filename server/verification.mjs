@@ -27,13 +27,23 @@ const MAX_APPEAL = 500;
 /**
  * Records a registered listing's alias keys and flags the space against other hosts' spaces that share
  * one: a system `report` entry on both spaces' audit trails, once per pair. Returns the matched spaces
- * for the warning to the host. No state change and nothing blocks the listing.
+ * for the warning to the host. No state change and nothing blocks the listing. A matched space whose
+ * current owner is not the host its aliases were recorded for (a reorg reassigned the id, or it was
+ * transferred) is not a match: its aliases are forgotten until its owner registers a listing again.
+ * An owner that cannot be read keeps the match, since the flag is only advisory.
  */
-export function flagDuplicates(db, contract, spaceId, host, metadata) {
+export async function flagDuplicates(db, contract, spaceId, host, metadata, readOwner) {
   const matches = new Map();
-  for (const { spaceId: other, key } of db.recordSpaceAliases(contract, spaceId, host, aliasKeys(metadata))) {
+  const stale = new Map();
+  for (const { spaceId: other, key, host: recorded } of db.recordSpaceAliases(contract, spaceId, host, aliasKeys(metadata))) {
+    if (!stale.has(other)) {
+      const owner = await readOwner(other).then((o) => o.toLowerCase(), () => null);
+      stale.set(other, owner !== null && owner !== recorded);
+    }
+    if (stale.get(other)) continue;
     matches.set(other, [...(matches.get(other) ?? []), matchKind(key)]);
   }
+  for (const [other, isStale] of stale) if (isStale) db.deleteSpaceAliases(contract, other);
   for (const [other, kinds] of matches) {
     const how = [...new Set(kinds)].join(' and ');
     for (const [id, peer] of [[spaceId, other], [other, spaceId]]) {

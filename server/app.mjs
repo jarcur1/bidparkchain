@@ -859,7 +859,8 @@ export function createApp(options = {}) {
             metadataHash: canonicalHash, ...normalized });
           res.status(existing && !isReconciliation ? 200 : 201).json({
             listing: listingFromRow(canonicalId, onchain, { ...normalized, amenities: JSON.stringify(normalized.amenities) }, ...withBadge(deployment.contractAddress, space)),
-            duplicateSpaces: flagDuplicates(db, deployment.contractAddress, space.inventory.spaceId.toString(), space.inventory.owner, normalized),
+            duplicateSpaces: await flagDuplicates(db, deployment.contractAddress, space.inventory.spaceId.toString(), space.inventory.owner, normalized,
+              async (id) => (await readSpaceOwnership(id)).owner),
           });
         } catch {
           res.status(503).json({ error: 'Blockchain service unavailable' });
@@ -938,7 +939,8 @@ export function createApp(options = {}) {
 
       res.status(existing && !isReconciliation ? 200 : 201).json({
         listing,
-        duplicateSpaces: flagDuplicates(db, deployment.contractAddress, space.inventory.spaceId.toString(), space.inventory.owner, normalized),
+        duplicateSpaces: await flagDuplicates(db, deployment.contractAddress, space.inventory.spaceId.toString(), space.inventory.owner, normalized,
+          async (id) => (await readSpaceOwnership(id)).owner),
       });
     } catch (err) {
       next(err);
