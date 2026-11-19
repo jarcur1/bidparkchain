@@ -17,6 +17,14 @@ Open **http://127.0.0.1:5173**. The launcher starts the local Hardhat chain (313
 
 Ports 5173, 3001, and 8545 must be available. Services bind to loopback; this is not a deployment configuration.
 
+## Classroom demo
+
+What if one more dorm made good commuter parking so scarce that students started auctioning it off? BidPark uses that premise for an **unofficial, LSU-inspired classroom parody**. The dorm expansion is fictional, not a finding about LSU construction or parking supply. Listings, bids, and winning reservations are illustrative; no real money changes hands and no actual parking or access is provided.
+
+For class, use the default local profile: run `npm ci` ahead of time, then `npm run dev` and open the loopback URL above. In **Connect Wallet**, choose a built-in **local test wallet**. The auction and listing cards work without a browser wallet, public testnet, campus login, third-party data feed, or real student or vehicle information. If map tiles or listing photos are unavailable offline, use the cards view.
+
+The current seed uses illustrative Austin listings to exercise the auction. The fictional campus scenarios and presenter walkthrough are tracked in the [classroom demo milestone](https://github.com/jarcur1/bidparkchain/milestone/4).
+
 ## Try it
 
 - Browse the cards and map; search by location and filter parking types.
