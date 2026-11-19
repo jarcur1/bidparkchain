@@ -15,7 +15,7 @@ const { createScope, deployEscrow } = createRequire(`${process.cwd()}/package.js
 const metadata = { title: 'Private downtown driveway', address: '70 Rainey St, Austin, TX 78701', neighborhood: 'Downtown Austin', latitude: 30.2676, longitude: -97.7397, description: 'Level concrete driveway with good lighting and wide clearance.', image: 'https://example.test/parking.jpg', kind: 'driveway' as const, amenities: [] };
 let scope: Awaited<ReturnType<typeof createScope>>, chain: Awaited<ReturnType<Awaited<ReturnType<typeof createScope>>['startChain']>>, deployment: Awaited<ReturnType<typeof deployEscrow>>;
 let host: HTMLDivElement, root: Root, config: Config, records: Listing[], postFails: boolean;
-let account: string, sends: string[], release: (() => void) | undefined, hold: boolean;
+let account: string, sends: string[], events: string[] = [], release: (() => void) | undefined, hold: boolean;
 let fetchBoundary: ReturnType<typeof vi.fn>;
 const listeners = new Map<string, Set<(value: unknown) => void>>();
 const nativeFetch = globalThis.fetch;
@@ -56,14 +56,14 @@ afterAll(async () => { chain?.provider.destroy(); await scope?.close(); });
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   bridgeCrypto();
-  localStorage.clear(); records = []; postFails = false; sends = []; hold = false; release = undefined;
+  localStorage.clear(); records = []; postFails = false; sends = []; events = []; hold = false; release = undefined;
   Object.defineProperty(window, 'ethereum', { configurable: true, value: {
     request: async ({ method, params = [] }: { method: string; params?: unknown[] }) => {
       if (method === 'eth_accounts' || method === 'eth_requestAccounts') return [account];
       if (method === 'eth_sendTransaction') {
         const transaction = params[0];
         if (!transaction || typeof transaction !== 'object' || !('data' in transaction)) throw new Error('Missing transaction data');
-        sends.push(String(transaction.data));
+        sends.push(String(transaction.data)); events.push('send');
         if (hold) await new Promise<void>((resolve) => { release = resolve; });
       }
       return chain.provider.send(method, params);
@@ -73,6 +73,7 @@ beforeEach(() => {
   } });
   fetchBoundary = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     if (input === '/api/config') return Response.json(config);
+    if (input === '/api/listings/stage') { events.push('stage'); return Response.json({ metadataHash: '0x' }); }
     if (input === '/api/listings' && init?.method === 'POST') {
       if (postFails) return Response.json({ error: 'Registration service unavailable' }, { status: 503 });
       const { auctionId } = JSON.parse(String(init.body)) as { auctionId: string };
@@ -110,6 +111,8 @@ describe('real application transaction boundaries', () => {
     const { auctionId } = JSON.parse(original) as { auctionId: string };
     expect(await deployment.contract.nextAuctionId()).toBe(BigInt(auctionId) + 1n);
     expect(sends).toHaveLength(1);
+    // The metadata was staged exactly once, before the create transaction was signed.
+    expect(events).toEqual(['stage', 'send']);
     // Close and reopen through the durable in-session recovery banner.
     await click(query('.modal-create-dialog .modal-close-btn'));
     await click(query('.btn-retry-registration'));

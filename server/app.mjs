@@ -94,7 +94,7 @@ export function createApp(options = {}) {
   const rpcUrl = options.rpcUrl ?? runtime.rpcUrl;
   const profile = runtime.profile;
   if (supplied || !options.dbPath) assertProfileDirectory(runtime);
-  const db = new EscrowDatabase(options.dbPath ?? runtime.dbPath);
+  const db = new EscrowDatabase(options.dbPath ?? runtime.dbPath, { chainId: profile.chainId });
 
   const provider = new ethers.JsonRpcProvider(rpcUrl, {
     chainId: profile.chainId,
@@ -160,6 +160,65 @@ export function createApp(options = {}) {
     return iface.decodeFunctionResult('auctions', result);
   }
 
+  async function readFinalizedNextId(deployment, iface, finalized) {
+    const result = await provider.send('eth_call', [
+      { to: deployment.contractAddress, data: iface.encodeFunctionData('nextAuctionId', []) },
+      { blockHash: finalized.hash, requireCanonical: true },
+    ]);
+    return iface.decodeFunctionResult('nextAuctionId', result)[0];
+  }
+
+  /**
+   * Joins stored metadata with on-chain state. Every on-chain auction without matching stored
+   * metadata is either recovered from metadata staged under its hash or reported as unindexed,
+   * so an auction never silently disappears. RPC errors propagate to the caller.
+   */
+  async function buildListings(contractAddress, readAuction, nextId) {
+    const listings = [];
+    const unindexed = [];
+    const indexed = new Set();
+    for (const row of db.getAllListings(contractAddress)) {
+      const id = canonicalizeAuctionId(row.auction_id);
+      if (!id) continue;
+      const onchain = await readAuction(id);
+      // A stored hash that no longer matches (e.g. after a chain rollback reused the id) is not shown.
+      if (!onchain || onchain.owner === ethers.ZeroAddress ||
+          row.metadata_hash.toLowerCase() !== onchain.metadataHash.toLowerCase()) continue;
+      indexed.add(id);
+      listings.push(listingFromRow(id, onchain, row));
+    }
+    // ponytail: reads every auction id per request; the event indexer (#15) replaces this scan.
+    for (let n = 1n; n < BigInt(nextId); n++) {
+      const id = n.toString();
+      if (indexed.has(id)) continue;
+      const onchain = await readAuction(id);
+      if (!onchain || onchain.owner === ethers.ZeroAddress) continue;
+      const staged = db.getStagedMetadata(contractAddress, onchain.metadataHash);
+      if (staged) {
+        db.upsertListing({ ...staged, auctionId: id, contractAddress, metadataHash: onchain.metadataHash });
+        listings.push(listingFromRow(id, onchain, { ...staged, amenities: JSON.stringify(staged.amenities) }));
+      } else {
+        unindexed.push({
+          id, owner: onchain.owner, metadataHash: onchain.metadataHash,
+          highestBid: ethers.formatEther(onchain.highestBid), bidEnd: Number(onchain.bidEnd),
+          settled: Boolean(onchain.settled), cancelled: Boolean(onchain.cancelled),
+        });
+      }
+    }
+    listings.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+    return { listings, unindexed };
+  }
+
+  /** True when a client-supplied deployment identity names the deployment this API serves. */
+  function matchesDeployment(expected, deployment) {
+    return Boolean(expected) && expected.chainId === profile.chainId &&
+      expected.deploymentBlock === deployment.deploymentBlock &&
+      typeof expected.contractAddress === 'string' &&
+      expected.contractAddress.toLowerCase() === deployment.contractAddress.toLowerCase() &&
+      typeof expected.deploymentBlockHash === 'string' &&
+      expected.deploymentBlockHash.toLowerCase() === deployment.deploymentBlockHash.toLowerCase();
+  }
+
   function isLocalDeployment(deployment) {
     return Number(deployment.chainId) === profile.chainId &&
       (!deployment.profile || deployment.profile === profile.id);
@@ -203,6 +262,7 @@ export function createApp(options = {}) {
       try {
         const { finalized } = await readFinalizedDeployment(deployment);
         await assertCanonicalFinalized(finalized);
+        db.recordDeployment({ ...deployment, profile: profile.id });
         res.json({
           profile: profile.id,
           confirmation: profile.confirmation,
@@ -242,6 +302,7 @@ export function createApp(options = {}) {
       return;
     }
 
+    db.recordDeployment({ ...deployment, profile: profile.id });
     res.json({
       profile: profile.id,
       confirmation: profile.confirmation,
@@ -272,19 +333,14 @@ export function createApp(options = {}) {
       if (profile.id === 'sepolia') {
         try {
           const { finalized, iface } = await readFinalizedDeployment(deployment);
-          const rows = db.getAllListings(deployment.contractAddress);
-          const listings = [];
-          for (const row of rows) {
-            const id = canonicalizeAuctionId(row.auction_id);
-            if (!id) continue;
-            const onchain = await readFinalizedAuction(deployment, iface, finalized, id);
-            if (!onchain || onchain.owner === ethers.ZeroAddress ||
-                row.metadata_hash.toLowerCase() !== onchain.metadataHash.toLowerCase()) continue;
-            listings.push(listingFromRow(id, onchain, row));
-          }
+          const { listings, unindexed } = await buildListings(
+            deployment.contractAddress,
+            (id) => readFinalizedAuction(deployment, iface, finalized, id),
+            await readFinalizedNextId(deployment, iface, finalized),
+          );
           const chain = await readChainSnapshot(deployment, finalized);
           await assertCanonicalFinalized(finalized);
-          res.json({ listings, chain });
+          res.json({ listings, unindexed, chain });
         } catch {
           res.status(503).json({ error: 'Blockchain service unavailable' });
         }
@@ -313,33 +369,15 @@ export function createApp(options = {}) {
         return;
       }
 
-      const metadataRows = db.getAllListings(deployment.contractAddress);
-      const listings = [];
-
-      // Query onchain state for each stored listing.
-      // Do not suppress network RPC errors; allow them to throw 503.
+      // Do not suppress network RPC errors; a failed read is a 503, never an empty marketplace.
+      let built;
       let chain;
       try {
-        for (const row of metadataRows) {
-          const canonicalId = canonicalizeAuctionId(row.auction_id);
-          if (!canonicalId) {
-            continue;
-          }
-
-          const onchain = await contract.auctions(canonicalId);
-          // If auction does not exist onchain, skip row
-          if (!onchain || onchain.owner === ethers.ZeroAddress) {
-            continue;
-          }
-
-          // Strict verification: stored metadata hash MUST match current onchain hash
-          // Prevents associating stale metadata if chain rollback reused an auction ID
-          if (row.metadata_hash.toLowerCase() !== onchain.metadataHash.toLowerCase()) {
-            continue;
-          }
-
-          listings.push(listingFromRow(canonicalId, onchain, row));
-        }
+        built = await buildListings(
+          deployment.contractAddress,
+          (id) => contract.auctions(id),
+          await contract.nextAuctionId(),
+        );
         // Read the clock after the auction state so the clock is never older than the state it judges.
         chain = await readChainSnapshot(deployment);
       } catch (rpcErr) {
@@ -347,7 +385,32 @@ export function createApp(options = {}) {
         return;
       }
 
-      res.json({ listings, chain });
+      res.json({ listings: built.listings, unindexed: built.unindexed, chain });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  /**
+   * POST /api/listings/stage
+   * Stores validated metadata under its canonical hash before the auction is created, so a
+   * registration lost after the transaction can be recovered from the chain alone.
+   */
+  app.post('/api/listings/stage', async (req, res, next) => {
+    try {
+      const validation = validateSpotMetadata(req.body?.metadata);
+      if (!validation.valid || !validation.normalized) {
+        res.status(400).json({ error: validation.error || 'Invalid listing metadata' });
+        return;
+      }
+      const deployment = loadDeployment();
+      if (!deployment || (profile.id === 'sepolia' ? !matchesDeployment(req.body?.deployment, deployment) : !isLocalDeployment(deployment))) {
+        res.status(409).json({ error: 'Deployment identity does not match' });
+        return;
+      }
+      const metadataHash = ethers.keccak256(ethers.toUtf8Bytes(JSON.stringify(validation.normalized)));
+      db.stageMetadata(deployment.contractAddress, metadataHash, validation.normalized);
+      res.json({ metadataHash });
     } catch (err) {
       next(err);
     }
@@ -384,13 +447,7 @@ export function createApp(options = {}) {
       if (profile.id === 'sepolia') {
         try {
           const { finalized, iface } = await readFinalizedDeployment(deployment);
-          const expected = req.body?.deployment;
-          if (!expected || expected.chainId !== profile.chainId ||
-              expected.deploymentBlock !== deployment.deploymentBlock ||
-              typeof expected.contractAddress !== 'string' ||
-              expected.contractAddress.toLowerCase() !== deployment.contractAddress.toLowerCase() ||
-              typeof expected.deploymentBlockHash !== 'string' ||
-              expected.deploymentBlockHash.toLowerCase() !== deployment.deploymentBlockHash.toLowerCase()) {
+          if (!matchesDeployment(req.body?.deployment, deployment)) {
             res.status(409).json({ error: 'Deployment identity does not match' });
             return;
           }

@@ -66,7 +66,19 @@ export interface ChainSnapshot extends DeploymentIdentity {
   chainTime: number;
 }
 
+/** An auction that exists on-chain but has no registered metadata on this server. */
+export interface UnindexedAuction {
+  id: string;
+  owner: string;
+  metadataHash: string;
+  highestBid: string;
+  bidEnd: number;
+  settled: boolean;
+  cancelled: boolean;
+}
+
 export interface ListingsResponse {
   listings: Listing[];
+  unindexed: UnindexedAuction[];
   chain: ChainSnapshot | null;
 }

@@ -58,7 +58,7 @@ it('deploys, resumes and reseeds only the owned chain and temp data directory', 
 
     // Model an interrupted seed after auctions were mined but metadata commits were lost.
     db = new EscrowDatabase(path.join(dataDir, 'bidpark.db'));
-    db.db.prepare("DELETE FROM listings_metadata WHERE auction_id IN ('2', '4', '7')").run();
+    db.db.prepare("DELETE FROM listings WHERE auction_id IN ('2', '4', '7')").run();
     db.setMeta(`seed_status_${first.contractAddress}`, 'pending');
     expect(db.countListings(first.contractAddress)).toBe(4);
     db.close();

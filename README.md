@@ -91,7 +91,9 @@ Use **Connect Wallet** to choose an account with Enter or Space, **List a Spot**
 
 SQLite metadata and the deployment descriptor live under gitignored `data/`. Metadata is hash-bound to each auction on-chain; a registration with mismatched metadata is rejected. No privileged HTTP endpoint can alter auction ownership or bids.
 
-The local Hardhat chain is **in memory**. Stopping and restarting it resets auctions, balances, and reservations. A fresh deployment clears metadata from the prior chain session and recreates the seven samples. SQLite persistence supports API restarts while the same chain remains running; it does not make blockchain state persistent.
+Listing records are keyed by chain id, contract address and auction id, and keep the exact canonical JSON that hashes to the on-chain `metadataHash`. The schema is versioned (`PRAGMA user_version`), and older databases are migrated in place on startup without losing rows. Every deployment the API serves is recorded and never deleted. Before signing the create transaction, the app stages its metadata with `POST /api/listings/stage`. If registration is lost after that, the API recovers the listing from the new auction's hash. Any on-chain auction with no matching metadata is returned under `unindexed` in `GET /api/listings` and noted in the marketplace, rather than silently hidden.
+
+The local Hardhat chain is **in memory**. Stopping and restarting it resets auctions, balances, and reservations. A fresh local deployment explicitly resets that local chain's listings, keeping deployment history, and recreates the samples. Persistent profiles never reset listings. SQLite persistence supports API restarts while the same chain remains running; it does not make blockchain state persistent.
 
 For separate service terminals, run `npm run chain`, then `npm run deploy`, then `npm run api` and `npm run web`. Re-running deployment against the same active chain reuses the deployment.
 

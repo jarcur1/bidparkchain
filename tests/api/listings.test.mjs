@@ -67,6 +67,8 @@ describe('listing API with real SQLite and onchain auctions', () => {
     const { json: config } = await request('/api/config');
     expect(json).toEqual({
       listings: [],
+      // The auction exists on-chain before its metadata is registered: reported, not hidden.
+      unindexed: [expect.objectContaining({ id: '1', metadataHash: hash(metadata), owner: chain.wallet(0).address })],
       chain: expect.objectContaining({
         contractAddress: deployment.address,
         deploymentBlockHash: config.deploymentBlockHash,

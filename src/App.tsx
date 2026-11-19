@@ -14,7 +14,7 @@ import { SpotGrid } from './components/SpotGrid';
 import { Toast } from './components/Toast';
 import { WalletModal } from './components/WalletModal';
 import { useWallet, WalletProvider } from './context/WalletContext';
-import { createListingRecord, fetchConfig, fetchListings } from './services/api';
+import { createListingRecord, fetchConfig, fetchListings, stageListingMetadata } from './services/api';
 import {
   cancelAuction,
   claimPayout,
@@ -39,6 +39,7 @@ import type {
   ListingsResponse,
   SpotMetadata,
   ToastMessage,
+  UnindexedAuction,
 } from './types';
 import {
   deploymentKey,
@@ -69,6 +70,7 @@ import {
 interface ListingsState {
   deployment: string | null;
   data: Listing[];
+  unindexed: UnindexedAuction[];
   chain: ChainSnapshot | null;
   deploymentChanged: boolean;
   read: ReadState;
@@ -92,7 +94,7 @@ interface RefundState {
 }
 
 const EMPTY_LISTINGS: ListingsState = {
-  deployment: null, data: [], chain: null, deploymentChanged: false, read: LOADING_READ,
+  deployment: null, data: [], unindexed: [], chain: null, deploymentChanged: false, read: LOADING_READ,
 };
 const UNKNOWN_REFUND = { wei: null, bidIds: null, read: LOADING_READ };
 
@@ -257,6 +259,7 @@ export const AppContent: React.FC<{
       setListingsState({
         deployment: observedDeployment,
         data: snapshot.listings,
+        unindexed: snapshot.unindexed ?? [],
         chain: snapshot.chain,
         deploymentChanged: false,
         read: readSucceeded(snapshot.listings.length === 0),
@@ -561,6 +564,9 @@ export const AppContent: React.FC<{
     setIsActionBusy(true);
     try {
       await preflightWrite();
+      // Save the exact metadata before signing: if registration is lost after the transaction,
+      // the server can still match the new auction's hash to these details.
+      await stageListingMetadata(metadata, webProfile.id === 'sepolia' ? expectedDeployment : undefined);
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
       const { receipt, auctionId } = await createAuctionOnChain(
         contract,
@@ -964,6 +970,15 @@ export const AppContent: React.FC<{
       <main className="site-main">
         {currentTab === 'marketplace' && (
           <div className="marketplace-container">
+            {listingsView.unindexed.length > 0 && (
+              <div className="pending-registration-alert unindexed-alert" role="status">
+                <div className="pending-alert-content">
+                  {listingsView.unindexed.length === 1 ? 'One on-chain auction has' : `${listingsView.unindexed.length} on-chain auctions have`} no
+                  registered details yet (auction {listingsView.unindexed.map((a) => `#${a.id}`).join(', ')}). They exist and can
+                  hold bids, but can't be shown here until their seller completes registration.
+                </div>
+              </div>
+            )}
             <CampusScenarioBanner
               scenario={config?.seedScenario}
               listings={listings}

@@ -1,53 +1,112 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { normalizeMetadata } from '../shared/metadata.js';
 
 const DEFAULT_DATA_DIR = path.resolve(process.cwd(), 'data');
 const DEFAULT_DB_PATH = path.resolve(DEFAULT_DATA_DIR, 'bidpark.db');
+export const LOCAL_CHAIN_ID = 31337;
+
+const LISTING_COLUMNS = `
+  metadata_hash TEXT NOT NULL,
+  metadata_json TEXT,
+  title TEXT NOT NULL,
+  address TEXT NOT NULL,
+  neighborhood TEXT NOT NULL,
+  latitude REAL NOT NULL,
+  longitude REAL NOT NULL,
+  description TEXT NOT NULL,
+  image TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  amenities TEXT NOT NULL,
+  created_at INTEGER NOT NULL`;
+
+/**
+ * Ordered schema migrations; PRAGMA user_version records how many have run.
+ * Each runs once, inside a transaction, and must preserve existing data.
+ */
+const MIGRATIONS = [
+  // 1: listings keyed by (chain, contract, auction) with the exact canonical metadata JSON,
+  //    deployment history, and metadata staged before its auction is created.
+  //    Pre-migration rows (keyed by auction id alone) belong to this database's chain.
+  (db, chainId) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS deployment_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE listings (
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        auction_id TEXT NOT NULL,${LISTING_COLUMNS},
+        PRIMARY KEY (chain_id, contract_address, auction_id)
+      );
+      CREATE INDEX idx_listings_hash ON listings (chain_id, contract_address, metadata_hash);
+      CREATE TABLE deployments (
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        deployment_tx_hash TEXT NOT NULL DEFAULT '',
+        deployment_block INTEGER NOT NULL DEFAULT 0,
+        profile TEXT,
+        seed_scenario TEXT,
+        first_seen_at INTEGER NOT NULL,
+        PRIMARY KEY (chain_id, contract_address, deployment_tx_hash, deployment_block)
+      );
+      CREATE TABLE staged_metadata (
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        metadata_hash TEXT NOT NULL,
+        metadata_json TEXT NOT NULL,
+        staged_at INTEGER NOT NULL,
+        PRIMARY KEY (chain_id, contract_address, metadata_hash)
+      );
+    `);
+    const legacy = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'listings_metadata'").get();
+    if (legacy) {
+      db.prepare(`
+        INSERT INTO listings (chain_id, contract_address, auction_id, metadata_hash, metadata_json, title, address,
+          neighborhood, latitude, longitude, description, image, kind, amenities, created_at)
+        SELECT ?, LOWER(contract_address), auction_id, LOWER(metadata_hash), NULL, title, address,
+          neighborhood, latitude, longitude, description, image, kind, amenities, created_at
+        FROM listings_metadata
+      `).run(chainId);
+      db.exec('DROP TABLE listings_metadata');
+    }
+  },
+];
+export const SCHEMA_VERSION = MIGRATIONS.length;
 
 export class EscrowDatabase {
   /**
+   * One database serves one chain: every listing, staged metadata and deployment row is keyed by
+   * that chain id plus the contract address, so equal auction ids on other contracts never collide.
    * @param {string} [dbPath]
+   * @param {{ chainId?: number }} [options]
    */
-  constructor(dbPath = DEFAULT_DB_PATH) {
+  constructor(dbPath = DEFAULT_DB_PATH, { chainId = LOCAL_CHAIN_ID } = {}) {
     this.dbPath = dbPath;
+    this.chainId = chainId;
     const dir = path.dirname(dbPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
     this.db = new DatabaseSync(dbPath);
-    this._initSchema();
+    this._migrate();
   }
 
-  _initSchema() {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS deployment_meta (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS listings_metadata (
-        auction_id TEXT PRIMARY KEY,
-        contract_address TEXT NOT NULL,
-        metadata_hash TEXT NOT NULL,
-        title TEXT NOT NULL,
-        address TEXT NOT NULL,
-        neighborhood TEXT NOT NULL,
-        latitude REAL NOT NULL,
-        longitude REAL NOT NULL,
-        description TEXT NOT NULL,
-        image TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        amenities TEXT NOT NULL,
-        created_at INTEGER NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_listings_contract
-        ON listings_metadata (contract_address);
-
-      CREATE INDEX IF NOT EXISTS idx_listings_hash
-        ON listings_metadata (contract_address, metadata_hash);
-    `);
+  _migrate() {
+    const version = Number(this.db.prepare('PRAGMA user_version').get().user_version);
+    if (version > SCHEMA_VERSION) {
+      throw new Error(`Database schema version ${version} is newer than this code supports (${SCHEMA_VERSION}).`);
+    }
+    for (let next = version; next < SCHEMA_VERSION; next++) {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        MIGRATIONS[next](this.db, this.chainId);
+        this.db.exec(`PRAGMA user_version = ${next + 1}`);
+        this.db.exec('COMMIT');
+      } catch (error) {
+        this.db.exec('ROLLBACK');
+        throw error;
+      }
+    }
   }
 
   /**
@@ -56,8 +115,7 @@ export class EscrowDatabase {
    * @returns {string | null}
    */
   getMeta(key) {
-    const stmt = this.db.prepare('SELECT value FROM deployment_meta WHERE key = ?');
-    const row = stmt.get(key);
+    const row = this.db.prepare('SELECT value FROM deployment_meta WHERE key = ?').get(key);
     return row ? row.value : null;
   }
 
@@ -67,61 +125,73 @@ export class EscrowDatabase {
    * @param {string} value
    */
   setMeta(key, value) {
-    const stmt = this.db.prepare(`
-      INSERT INTO deployment_meta (key, value)
-      VALUES (?, ?)
+    this.db.prepare(`
+      INSERT INTO deployment_meta (key, value) VALUES (?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
-    `);
-    stmt.run(key, value);
+    `).run(key, value);
   }
 
   /**
-   * Cleans listings that do not match the currently active deployed contract.
-   * Maintains strict chain-to-DB consistency across redeployments.
-   * @param {string} activeContractAddress
+   * Records a deployment this database has served. History is append-only and never cleared.
    */
-  clearStaleListings(activeContractAddress) {
-    const stmt = this.db.prepare('DELETE FROM listings_metadata WHERE contract_address != ?');
-    const result = stmt.run(activeContractAddress);
-    return result.changes;
+  recordDeployment({ contractAddress, deploymentTxHash, deploymentBlock, profile, seedScenario }) {
+    this.db.prepare(`
+      INSERT OR IGNORE INTO deployments
+        (chain_id, contract_address, deployment_tx_hash, deployment_block, profile, seed_scenario, first_seen_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(this.chainId, contractAddress.toLowerCase(), deploymentTxHash ?? '', Number(deploymentBlock ?? 0),
+      profile ?? null, seedScenario ?? null, Math.floor(Date.now() / 1000));
+  }
+
+  getDeployments() {
+    return this.db.prepare('SELECT * FROM deployments WHERE chain_id = ? ORDER BY first_seen_at, deployment_block')
+      .all(this.chainId);
   }
 
   /**
-   * Clears all listing metadata records. Used on fresh chain deployments
-   * to guarantee pristine database consistency when local nodes restart.
-   * @returns {number} Number of deleted rows.
+   * Explicit local demo reset: drops this local chain's listings and staged metadata, keeping
+   * deployment history. Refused for any other chain, so persistent profiles never lose records.
+   * @returns {number} Number of deleted listing rows.
    */
-  clearAllListings() {
-    const stmt = this.db.prepare('DELETE FROM listings_metadata');
-    const result = stmt.run();
-    return result.changes;
+  resetLocalDemo() {
+    if (this.chainId !== LOCAL_CHAIN_ID) throw new Error('Demo reset is only allowed on the local chain.');
+    this.db.prepare('DELETE FROM staged_metadata WHERE chain_id = ?').run(this.chainId);
+    return this.db.prepare('DELETE FROM listings WHERE chain_id = ?').run(this.chainId).changes;
   }
 
   /**
-   * Inserts or reconciles a listing's off-chain metadata.
-   * If a record already exists for this auctionId, updates it with the new valid metadata.
-   * Handles chain rollback / ID reuse safely.
+   * Stores normalized metadata under its hash before the auction is created, so the details survive
+   * a lost registration. Content-addressed: re-staging the same metadata is a no-op.
+   */
+  stageMetadata(contractAddress, metadataHash, metadata) {
+    // ponytail: unbounded staging table; public-endpoint limits belong to the hosted deployment work (#23).
+    this.db.prepare(`
+      INSERT OR IGNORE INTO staged_metadata (chain_id, contract_address, metadata_hash, metadata_json, staged_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(this.chainId, contractAddress.toLowerCase(), metadataHash.toLowerCase(),
+      JSON.stringify(normalizeMetadata(metadata)), Math.floor(Date.now() / 1000));
+  }
+
+  getStagedMetadata(contractAddress, metadataHash) {
+    const row = this.db.prepare(
+      'SELECT metadata_json FROM staged_metadata WHERE chain_id = ? AND contract_address = ? AND metadata_hash = ?'
+    ).get(this.chainId, contractAddress.toLowerCase(), metadataHash.toLowerCase());
+    return row ? JSON.parse(row.metadata_json) : null;
+  }
+
+  /**
+   * Inserts or reconciles a listing's off-chain metadata for (chain, contract, auction).
+   * Keeps the exact canonical JSON that hashes to metadataHash.
    */
   upsertListing(record) {
-    const stmt = this.db.prepare(`
-      INSERT INTO listings_metadata (
-        auction_id,
-        contract_address,
-        metadata_hash,
-        title,
-        address,
-        neighborhood,
-        latitude,
-        longitude,
-        description,
-        image,
-        kind,
-        amenities,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(auction_id) DO UPDATE SET
-        contract_address = excluded.contract_address,
+    const normalized = normalizeMetadata(record);
+    this.db.prepare(`
+      INSERT INTO listings (chain_id, contract_address, auction_id, metadata_hash, metadata_json, title, address,
+        neighborhood, latitude, longitude, description, image, kind, amenities, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(chain_id, contract_address, auction_id) DO UPDATE SET
         metadata_hash = excluded.metadata_hash,
+        metadata_json = excluded.metadata_json,
         title = excluded.title,
         address = excluded.address,
         neighborhood = excluded.neighborhood,
@@ -132,82 +202,69 @@ export class EscrowDatabase {
         kind = excluded.kind,
         amenities = excluded.amenities,
         created_at = excluded.created_at
-    `);
-
-    stmt.run(
+    `).run(
+      this.chainId,
+      record.contractAddress.toLowerCase(),
       record.auctionId,
-      record.contractAddress,
-      record.metadataHash,
-      record.title,
-      record.address,
-      record.neighborhood,
-      record.latitude,
-      record.longitude,
-      record.description,
-      record.image,
-      record.kind,
-      JSON.stringify(record.amenities),
+      record.metadataHash.toLowerCase(),
+      JSON.stringify(normalized),
+      normalized.title,
+      normalized.address,
+      normalized.neighborhood,
+      normalized.latitude,
+      normalized.longitude,
+      normalized.description,
+      normalized.image,
+      normalized.kind,
+      JSON.stringify(normalized.amenities),
       record.createdAt || Math.floor(Date.now() / 1000)
     );
   }
 
   /**
-   * Inserts a listing's off-chain metadata, checking for existing identical records.
-   */
-  insertListing(record) {
-    return this.upsertListing(record);
-  }
-
-  /**
-   * Retrieves a single listing metadata record.
+   * Retrieves a single listing metadata record on this chain.
    * @param {string} auctionId
    * @param {string} [contractAddress]
    */
   getListing(auctionId, contractAddress) {
-    let sql = 'SELECT * FROM listings_metadata WHERE auction_id = ?';
-    const params = [auctionId];
+    let sql = 'SELECT * FROM listings WHERE chain_id = ? AND auction_id = ?';
+    const params = [this.chainId, auctionId];
     if (contractAddress) {
       sql += ' AND contract_address = ?';
-      params.push(contractAddress);
+      params.push(contractAddress.toLowerCase());
     }
-    const stmt = this.db.prepare(sql);
-    return stmt.get(...params) || null;
+    return this.db.prepare(sql).get(...params) || null;
   }
 
   /**
-   * Retrieves a listing metadata record matching a specific metadataHash for a contract.
+   * Retrieves a listing record matching a metadataHash for a contract.
    * Used for deterministic seed resumption without duplicate auctions.
-   * @param {string} contractAddress
-   * @param {string} metadataHash
    */
   getListingByMetadataHash(contractAddress, metadataHash) {
-    const stmt = this.db.prepare(
-      'SELECT * FROM listings_metadata WHERE contract_address = ? AND LOWER(metadata_hash) = LOWER(?) LIMIT 1'
-    );
-    return stmt.get(contractAddress, metadataHash) || null;
+    return this.db.prepare(
+      'SELECT * FROM listings WHERE chain_id = ? AND contract_address = ? AND metadata_hash = ? LIMIT 1'
+    ).get(this.chainId, contractAddress.toLowerCase(), metadataHash.toLowerCase()) || null;
   }
 
   /**
-   * Retrieves all listing metadata records for the specified contract.
+   * Retrieves all listing records for a contract on this chain.
    * @param {string} contractAddress
    */
   getAllListings(contractAddress) {
-    const stmt = this.db.prepare(
-      'SELECT * FROM listings_metadata WHERE contract_address = ? ORDER BY CAST(auction_id AS INTEGER) ASC'
-    );
-    return stmt.all(contractAddress);
+    return this.db.prepare(
+      'SELECT * FROM listings WHERE chain_id = ? AND contract_address = ? ORDER BY CAST(auction_id AS INTEGER) ASC'
+    ).all(this.chainId, contractAddress.toLowerCase());
   }
 
   /**
-   * Counts stored listings for a contract.
+   * Counts stored listings for a contract on this chain.
    * @param {string} contractAddress
    * @returns {number}
    */
   countListings(contractAddress) {
-    const stmt = this.db.prepare(
-      'SELECT COUNT(*) as cnt FROM listings_metadata WHERE contract_address = ?'
-    );
-    const row = stmt.get(contractAddress);
+    const row = this.db.prepare(
+      'SELECT COUNT(*) as cnt FROM listings WHERE chain_id = ? AND contract_address = ?'
+    ).get(this.chainId, contractAddress.toLowerCase());
     return row ? Number(row.cnt) : 0;
   }
 
