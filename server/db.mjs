@@ -107,6 +107,42 @@ const MIGRATIONS = [
       );
     `);
   },
+  // 4: auction event index. Every log is kept with its block and transaction identity; a reorg flips
+  //    `canonical` off instead of deleting, so orphaned history stays auditable. Public data only.
+  (db) => {
+    db.exec(`
+      CREATE TABLE index_checkpoints (
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        block_number INTEGER NOT NULL,
+        block_hash TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (chain_id, contract_address)
+      );
+      CREATE TABLE index_blocks (
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        block_number INTEGER NOT NULL,
+        block_hash TEXT NOT NULL,
+        PRIMARY KEY (chain_id, contract_address, block_number)
+      );
+      CREATE TABLE auction_events (
+        chain_id INTEGER NOT NULL,
+        contract_address TEXT NOT NULL,
+        block_number INTEGER NOT NULL,
+        block_hash TEXT NOT NULL,
+        tx_hash TEXT NOT NULL,
+        log_index INTEGER NOT NULL,
+        event TEXT NOT NULL,
+        auction_id TEXT,
+        account TEXT,
+        amount TEXT,
+        canonical INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (chain_id, contract_address, block_hash, log_index)
+      );
+      CREATE INDEX idx_events_auction ON auction_events (chain_id, contract_address, auction_id, canonical);
+    `);
+  },
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
