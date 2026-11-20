@@ -203,6 +203,7 @@ export const CreateListingModal: React.FC<CreateListingModalProps> = ({
       setSaveState('saved');
     }, () => {});
     return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- restore runs once per signed-in session; listing form state in the deps would re-run this effect on each edit and cancel an in-flight restore
   }, [isOpen, pendingRegistration, sessionAddress]);
 
   useEffect(() => {

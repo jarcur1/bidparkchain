@@ -46,9 +46,9 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return () => clearTimeout(timer);
   }, [stored]);
 
-  const matchesWallet = (s: Session) =>
+  const matchesWallet = useCallback((s: Session) =>
     walletState.address !== null && s.address.toLowerCase() === walletState.address.toLowerCase() &&
-    s.chainId === walletState.chainId;
+    s.chainId === walletState.chainId, [walletState.address, walletState.chainId]);
 
   // A session for a different account or network is ended on the server, not just hidden.
   useEffect(() => {
@@ -57,7 +57,7 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setStored(null);
     setError('Signed out because the wallet account or network changed.');
     void signOutSession().catch(() => {});
-  }, [stored, walletState.address, walletState.chainId, walletState.isConnecting]);
+  }, [stored, walletState.address, walletState.chainId, walletState.isConnecting, matchesWallet]);
 
   const signIn = useCallback(async () => {
     const address = walletState.address;

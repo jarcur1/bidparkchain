@@ -78,6 +78,7 @@ Tests do not need `npm run dev` and never touch its chain, API, web server, or `
 
 ```sh
 npm run build            # strict TypeScript check and production build
+npm run lint             # ESLint: src, server, shared, scripts, tests
 npm test                 # UI, contracts, API, and seed recovery
 npm run test:ui          # jsdom component tests
 npm run test:contracts   # escrow contract suite on an owned chain

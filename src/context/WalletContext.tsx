@@ -104,13 +104,13 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
     publish({ ...stateRef.current, type, localAccountIndex: index, address: null,
       balance: null, chainId: null, isReady: false, isConnecting: true, error: null });
     return id;
-  }, [publish, publishSigner]);
+  }, [publish, publishSigner, setBalanceRead]);
 
   const fail = useCallback((id: number, error: unknown) => {
     if (generation.current !== id) return;
     setBalanceRead(readFailed(LOADING_READ, error));
     publish({ ...stateRef.current, isReady: false, isConnecting: false, error: describeConnectionError(error) });
-  }, [publish]);
+  }, [publish, setBalanceRead]);
 
   const connectLocal = useCallback(async (accountIndex?: number) => {
     ++selection.current;
@@ -147,7 +147,7 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
         isReady: true, isConnecting: false, error: null, localAccountIndex: index });
       setBalanceRead(readSucceeded());
     } catch (error) { fail(id, error); }
-  }, [begin, fail, publish, publishSigner]);
+  }, [begin, fail, publish, publishSigner, setBalanceRead]);
 
   const connectBrowser = useCallback(async (requestAccess: boolean) => {
     const id = begin('injected');
@@ -177,7 +177,7 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
         isReady: !mismatch, isConnecting: false, error: null });
       setBalanceRead(mismatch ? readFailed(LOADING_READ, 'Wallet is not on the supported network.') : readSucceeded());
     } catch (error) { fail(id, error); }
-  }, [begin, fail, publish, publishSigner]);
+  }, [begin, fail, publish, publishSigner, setBalanceRead]);
 
   const connectInjected = useCallback(() => {
     ++selection.current;
@@ -252,7 +252,7 @@ export const WalletProvider: React.FC<{ config: Config | null; children: React.R
       setBalanceRead((prev) => readFailed(prev, error));
       return readFailure(error);
     }
-  }, [publish]);
+  }, [publish, setBalanceRead]);
 
   useEffect(() => {
     const ethereum = window.ethereum;
