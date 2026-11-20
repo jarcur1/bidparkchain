@@ -1,7 +1,8 @@
 // Gas snapshot for ParkingAuctionEscrow, measured on an owned Hardhat node.
 //   node tests/gas/gas-snapshot.mjs          check (CI): fails when a value drifts beyond TOLERANCE_PERCENT
 //   node tests/gas/gas-snapshot.mjs update   rewrite tests/gas/gas-snapshot.json and the README gas figures
-// Every block is stamped with an explicit timestamp, so measured gas does not depend on the wall clock.
+// Genesis is pinned before FIRST_BLOCK and every block is stamped with an explicit timestamp, so measured gas
+// does not depend on the wall clock.
 import fs from 'node:fs';
 import path from 'node:path';
 import { ethers } from 'ethers';
@@ -14,6 +15,7 @@ const README_BLOCK = /(<!-- gas:start -->)([\s\S]*?)(<!-- gas:end -->)/;
 const TOLERANCE_PERCENT = 1;
 const WINDOW_COUNT = 63;
 const FIRST_BLOCK = 2_000_000_000;
+const GENESIS_DATE = '2030-01-01T00:00:00Z'; // before FIRST_BLOCK (2033-05-18)
 const SCENARIO_SPAN = 100_000; // seconds between scenarios, longer than any scenario's own span
 const HOUR = 3600;
 const DAY = 86_400;
@@ -155,7 +157,7 @@ async function main(mode) {
   let chain;
   let measured;
   try {
-    chain = await scope.startChain();
+    chain = await scope.startChain({ initialDate: GENESIS_DATE });
     measured = await measure(chain);
   } finally {
     try {

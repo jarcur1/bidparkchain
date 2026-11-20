@@ -105,7 +105,7 @@ When the audit fails:
 1. For a direct dependency, upgrade to the patched version.
 2. For a transitive package, add an `overrides` entry for the patched version in `package.json` (see `tmp`), then run `npm install --package-lock-only --ignore-scripts`.
 3. Run `npm ci`, `npm run build`, and the suite that loads the changed package.
-4. Review `npm audit fix --force` output before applying it. It can propose a downgrade, such as `solc` 0.8.36 for the `tmp` advisory, which would move the exact `solc` pin backwards.
+4. Preview a forced fix with `npm audit fix --dry-run --force` before applying it. It can propose a downgrade, such as `solc` 0.8.36 for the `tmp` advisory, which would move the exact `solc` pin backwards.
 5. If no patched version exists, replace the package. If that is not possible, open an issue that records the advisory, exposure, and mitigation, and agree a time-limited exception with the maintainers before relaxing the audit gate.
 
 ### Read status

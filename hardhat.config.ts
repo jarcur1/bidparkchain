@@ -15,6 +15,8 @@ export default defineConfig({
       accounts: {
         mnemonic: "test test test test test test test test test test test junk",
       },
+      // The gas snapshot node pins genesis through this (tests/support/owned-env.mjs startChain); otherwise the wall clock.
+      ...(process.env.BIDPARK_HARDHAT_INITIAL_DATE ? { initialDate: process.env.BIDPARK_HARDHAT_INITIAL_DATE } : {}),
     },
   },
 });
