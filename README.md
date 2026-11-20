@@ -90,6 +90,20 @@ CI (`.github/workflows/ci.yml`) runs all of the above on every pull request usin
 
 `npm run health` is a separate, read-only check for a shared or public-testnet deployment: chain id, contract code, latest-block age, and API identity. It only issues read RPC methods. Configure it with `HEALTH_RPC_URL`, `HEALTH_CHAIN_ID`, `HEALTH_CONTRACT_ADDRESS`, and optionally `HEALTH_API_URL` / `HEALTH_MAX_BLOCK_AGE`; the **Deployment health** workflow runs it on demand.
 
+### Dependency audit
+
+The `audit` job in CI runs `npm audit --omit=dev --audit-level=high`. It fails on any high or critical advisory in the production dependency tree, including transitive packages. Development-only advisories are not gated.
+
+Dependabot (`.github/dependabot.yml`) checks npm and GitHub Actions for updates weekly. Minor and patch updates are grouped into one pull request per ecosystem, with at most three version-update pull requests open per ecosystem. `solc` stays out of the npm group because its exact pin is deliberate and `tests/contracts/compiler-profile.test.mjs` enforces it, so a compiler update is reviewed on its own.
+
+When the audit fails:
+
+1. For a direct dependency, upgrade to the patched version.
+2. For a transitive package, add an `overrides` entry for the patched version in `package.json` (see `tmp`), then run `npm install --package-lock-only --ignore-scripts`.
+3. Run `npm ci`, `npm run build`, and the suite that loads the changed package.
+4. Review `npm audit fix --force` output before applying it. It can propose a downgrade, such as `solc` 0.8.36 for the `tmp` advisory, which would move the exact `solc` pin backwards.
+5. If no patched version exists, replace the package. If that is not possible, open an issue that records the advisory, exposure, and mitigation, and agree a time-limited exception with the maintainers before relaxing the audit gate.
+
 ### Read status
 
 Configuration, listings, the claimable-refund read and the wallet balance each track their own state: loading, success, empty (a successful read with nothing in it), failed (nothing known), or stale (the last read failed but the previous value is kept, labeled with the last successful read time). Unknown refund or wallet balances are shown as unavailable, never as zero, and withdrawals and bids are only enabled from a successful current read. Each failed source has its own retry button, and manual refresh re-reads configuration too and reports exactly which sources updated. Switching account, chain, provider or deployment immediately hides values read for the previous identity and ignores late responses from it.
