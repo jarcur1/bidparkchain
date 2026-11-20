@@ -24,8 +24,9 @@ import { useWallet, WalletProvider } from './context/WalletContext';
 import { SessionProvider, useSession } from './context/SessionContext';
 import { useToasts } from './hooks/useToasts';
 import { useListingSearch } from './hooks/useListingSearch';
+import { useListings } from './hooks/useListings';
 import { useTransactions } from './hooks/useTransactions';
-import { createListingRecord, fetchConfig, fetchListings, stageListingMetadata } from './services/api';
+import { createListingRecord, fetchConfig, stageListingMetadata } from './services/api';
 import type { TxObserver } from './services/blockchain';
 import { patchTransaction, type TxRecord } from './utils/txStore';
 import { TransactionCenter } from './components/TransactionCenter';
@@ -58,13 +59,11 @@ import { parseEther } from 'ethers';
 import { BOOKING_ACTION_LABELS, type BookingAction } from './utils/booking';
 import type {
   AppTab,
-  ChainSnapshot,
   Config,
   DeploymentIdentity,
   Listing,
   ListingsResponse,
   SpotMetadata,
-  UnindexedAuction,
 } from './types';
 import {
   deploymentKey,
@@ -72,9 +71,7 @@ import {
   getChainNowSec,
   getMinimumBidWei,
   makeListingTarget,
-  resetChainClock,
   resolveListing,
-  syncChainClock,
   targetKey,
   type ListingTarget,
 } from './utils/eligibility';
@@ -93,17 +90,6 @@ import {
   type ReadState,
 } from './utils/readState';
 
-interface ListingsState {
-  deployment: string | null;
-  data: Listing[];
-  unindexed: UnindexedAuction[];
-  chain: ChainSnapshot | null;
-  deploymentChanged: boolean;
-  read: ReadState;
-}
-
-type ListingsReadResult = ReadResult & { snapshot?: ListingsResponse };
-
 interface RefundIdentity {
   address: string | null;
   chainId: number | null;
@@ -119,9 +105,6 @@ interface RefundState {
   read: ReadState;
 }
 
-const EMPTY_LISTINGS: ListingsState = {
-  deployment: null, data: [], unindexed: [], chain: null, deploymentChanged: false, read: LOADING_READ,
-};
 const UNKNOWN_REFUND = { wei: null, bidIds: null, read: LOADING_READ };
 const NO_HOST_SPACES: HostSpace[] = [];
 
@@ -151,7 +134,6 @@ export const AppContent: React.FC<{
   };
 
   // Primary state
-  const [listingsState, setListingsState] = useState<ListingsState>(EMPTY_LISTINGS);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isActionBusy, setIsActionBusy] = useState(false);
 
@@ -161,13 +143,9 @@ export const AppContent: React.FC<{
   const configRef = useRef(config);
   configRef.current = config;
   deploymentRef.current = configDeployment;
-  const listingsView =
-    configDeployment === null || listingsState.deployment === configDeployment ? listingsState : EMPTY_LISTINGS;
-  const listings = listingsView.data;
+  const { listingsView, listings, chain, calendarSnapshot, loadListings } = useListings({ deploymentRef, configDeployment, onRefreshConfig });
   const inbox = useInbox(session?.address ?? null);
   const verification = useVerifications(session?.address ?? null);
-  const chain = listingsView.deploymentChanged ? null : listingsView.chain;
-  const calendarSnapshot = listingsView.read.status === 'success' ? chain : null;
 
   // Navigation & View
   const [currentTab, setCurrentTab] = useState<AppTab>(() => (new URLSearchParams(window.location.search).get('tab') === 'activity' ? 'activity' : 'marketplace'));
@@ -275,74 +253,6 @@ export const AppContent: React.FC<{
       if (listing) handleOpenBidModal(listing);
     }
   }, [intent, walletState.isReady, listings, handleOpenBidModal]);
-
-  const listingsReqRef = useRef(0);
-  const bidReadRef = useRef<{ deployment: string | null; promise: Promise<ListingsReadResult> } | null>(null);
-
-  // Only the newest request for the current deployment may publish or re-anchor the clock.
-  const readListings = useCallback(async (): Promise<ListingsReadResult> => {
-    const reqId = ++listingsReqRef.current;
-    const requestedDeployment = deploymentRef.current;
-    const isSuperseded = () =>
-      reqId !== listingsReqRef.current || requestedDeployment !== deploymentRef.current;
-    const fail = (error: unknown, deploymentChanged = false) => {
-      setListingsState((prev) => {
-        const base = prev.deployment === requestedDeployment ? prev : EMPTY_LISTINGS;
-        return {
-          ...base,
-          deployment: requestedDeployment,
-          deploymentChanged: base.deploymentChanged || deploymentChanged,
-          read: readFailed(base.read, error),
-        };
-      });
-      return readFailure(error);
-    };
-    try {
-      const snapshot = await fetchListings();
-      if (isSuperseded()) return READ_SUPERSEDED;
-      if (snapshot.chain && snapshot.chain.chainId !== undefined && snapshot.chain.chainId !== webProfile.chainId) {
-        return fail('Listings are from a different network.');
-      }
-      if (webProfile.id === 'sepolia' && (!snapshot.chain || snapshot.chain.chainId !== webProfile.chainId)) {
-        return fail('Listings did not include the expected network.');
-      }
-      const observedDeployment = snapshot.chain ? deploymentKey(snapshot.chain) : null;
-      if (requestedDeployment !== null && observedDeployment !== requestedDeployment) {
-        if (observedDeployment === null) return fail('Listings did not include the current deployment.');
-        void onRefreshConfig();
-        return fail('The listings deployment changed. Refresh the marketplace configuration.', true);
-      }
-      if (snapshot.chain) syncChainClock(snapshot.chain.chainTime);
-      else resetChainClock();
-      setListingsState({
-        deployment: observedDeployment,
-        data: snapshot.listings,
-        unindexed: snapshot.unindexed ?? [],
-        chain: snapshot.chain,
-        deploymentChanged: false,
-        read: readSucceeded(snapshot.listings.length === 0),
-      });
-      return { ...READ_OK, snapshot };
-    } catch (err) {
-      console.error('Failed to load listings:', err);
-      if (isSuperseded()) return READ_SUPERSEDED;
-      return fail(err);
-    }
-  }, [onRefreshConfig]);
-
-  // A refresh can share a bid's in-flight read, but cannot supersede it on the same deployment.
-  const loadListings = useCallback((forBid = false, forceFresh = false): Promise<ListingsReadResult> => {
-    const deployment = deploymentRef.current;
-    const current = bidReadRef.current;
-    if (!forceFresh && current?.deployment === deployment) return current.promise;
-    const read = readListings();
-    if (!forBid) return read;
-    const promise = read.finally(() => {
-      if (bidReadRef.current?.promise === promise) bidReadRef.current = null;
-    });
-    bidReadRef.current = { deployment, promise };
-    return promise;
-  }, [readListings]);
 
   // Refund reads are scoped to account, chain, provider and contract; foreign values are never shown.
   const refundIdentity: RefundIdentity = {
