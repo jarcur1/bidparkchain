@@ -220,6 +220,23 @@ describe('listing API with real SQLite and onchain auctions', () => {
     expect((await request('/api/listings')).json.listings).toEqual([result.json.listing]);
     expect(runtime.db.getListing('1').title).toBe(replacement.title);
   });
+  it('adds bidCount only while the event index is at the block the listings were read at', async () => {
+    const id = await createAuction(metadata);
+    expect((await register(id)).status).toBe(201);
+    const read = async () => (await request('/api/listings')).json.listings.find((listing) => listing.id === id);
+    expect(await read()).not.toHaveProperty('bidCount');
+    await runtime.syncIndexOnce();
+    expect((await read()).bidCount).toBe(0);
+    await (await deployment.contract.connect(chain.wallet(1)).bid(id, { value: ethers.parseEther('0.02') })).wait();
+    await (await deployment.contract.connect(chain.wallet(2)).bid(id, { value: ethers.parseEther('0.03') })).wait();
+    // Two blocks past the checkpoint: the read brings the index up to the head first.
+    expect((await read()).bidCount).toBe(2);
+    // 51 blocks is past the default BIDPARK_SEARCH_INDEX_MAX_LAG of 50, so the count is left off.
+    for (let i = 0; i < 51; i++) await chain.provider.send('evm_mine', []);
+    expect(await read()).not.toHaveProperty('bidCount');
+    await runtime.syncIndexOnce();
+    expect((await read()).bidCount).toBe(2);
+  });
   it('returns listing and configuration outage errors when its chain stops', async () => {
     await chain.stop();
     for (const result of [await request('/api/listings'), await register()]) {

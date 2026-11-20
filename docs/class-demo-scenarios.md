@@ -11,7 +11,7 @@ BIDPARK_SCENARIO=campus-expansion npm run dev
 
 PowerShell: `$env:BIDPARK_SCENARIO='campus-expansion'; npm run dev`. Leaving it unset keeps the default `austin` listings. An unknown value fails before anything is deployed.
 
-In a campus scenario the marketplace opens with a banner: it calls the app an unofficial campus-parking parody, names the scenario, counts the near-campus spots actually listed, and says all prices, bids and wins are simulated. Each card shows its walking-distance tier as text. If map tiles do not load, choose **Cards** for a plain list; it works by keyboard at phone widths.
+In a campus scenario the marketplace opens with a banner: it calls the app an unofficial campus-parking parody, names the scenario, counts the near-campus spots actually listed, and says all prices, bids and wins are simulated. Under the count, a table gives each walking-distance tier its spots, spots with bids, total bids, and highest and average leading bid. Averages cover only the spots with bids. A tier with no bids reads `none yet`; a value that cannot be read reads `unavailable`, never zero. If a later read fails, the table keeps the last successful numbers and says so. Each card shows its walking-distance tier as text. If map tiles do not load, choose **Cards** for a plain list; it works by keyboard at phone widths, and the table scrolls sideways on narrow screens.
 
 Each scenario gets its own contract deployment. Switching scenarios on a running chain redeploys and clears the previous scenario's listings, so the two never mix. Re-running the same scenario reuses its deployment. The fixtures live in `scripts/helpers/seed-data.mjs`.
 

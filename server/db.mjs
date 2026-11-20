@@ -777,6 +777,16 @@ export class EscrowDatabase {
     return auctions;
   }
 
+  /** Canonical BidPlaced count per auction id, counting only events at or before `atBlock`. */
+  countBids(contractAddress, atBlock) {
+    const rows = this.db.prepare(`
+      SELECT auction_id, COUNT(*) AS bids FROM auction_events
+      WHERE chain_id = ? AND contract_address = ? AND canonical = 1 AND event = 'BidPlaced' AND block_number <= ?
+      GROUP BY auction_id
+    `).all(this.chainId, contractAddress.toLowerCase(), atBlock);
+    return new Map(rows.map((row) => [row.auction_id, row.bids]));
+  }
+
   /** Canonical events for one auction (or all, when auctionId is omitted), in chain order. */
   getAuctionEvents(contractAddress, auctionId, { includeOrphaned = false } = {}) {
     return this.db.prepare(`

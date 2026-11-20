@@ -16,7 +16,7 @@ Start `BIDPARK_SCENARIO=campus-baseline npm run dev` and open http://127.0.0.1:5
 
 Say: "This is a made-up campus, not any real university. Commuters bid for parking spots. Four spots are a short walk from class and three are a long way out."
 
-On screen: the banner reads *Near-campus spots listed: 4 of 7 (3 farther away)*.
+On screen: the banner reads *Near-campus spots listed: 4 of 7 (3 farther away)*. Its table shows no bids in either tier, with *none yet* for the leading bid.
 
 ![Baseline campus](presenter/01-baseline.png)
 
@@ -39,7 +39,7 @@ Optional: run `npm run demo -- compare` to show the same counts read straight fr
 
 Say: "Each bid sends the whole amount into the contract. Driver B just outbid driver A."
 
-On screen: N1 shows a highest bid of 0.050 ETH.
+On screen: N1 shows a highest bid of 0.050 ETH. The banner's near-campus row now reads 1 spot, 1 with bids, 2 total bids, and 0.050 ETH for both the highest and average leading bid.
 
 ![Competing bid](presenter/03-competing-bid.png)
 

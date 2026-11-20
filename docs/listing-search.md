@@ -106,6 +106,7 @@ stored row yet) are still found and reported in `unindexed`.
 - Each page is its own snapshot: `chain` names the block that page was read at. Unlike the search cursor it
   does not pin the block across pages.
 - A malformed `limit`, `cursor` or unknown parameter is 400 before any chain read.
+- Each listing's `bidCount` (canonical bids in the event index) is set only while the index is at that page's `chain` block, and is left off otherwise rather than guessed.
 
 ## Map area, location and time zones
 

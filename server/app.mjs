@@ -532,6 +532,8 @@ export function createApp(options = {}) {
    * (`limit`, default BIDPARK_LISTINGS_SCAN_LIMIT = 500; `cursor` = `nextCursor` of the previous page).
    * `nextCursor` is omitted once every auction id has been scanned.
    * Includes the deployment identity and chain clock (`chain`) the state was read at.
+   * Each listing gets `bidCount` (canonical bids from the event index) only while the index is at the same block;
+   * otherwise the field is omitted.
    * Compares stored metadata_hash with onchain.metadataHash and skips stale rows.
    * Fails with 503 if chain is unreachable.
    */
@@ -552,6 +554,7 @@ export function createApp(options = {}) {
           );
           const chain = { ...(await readChainSnapshot(deployment, finalized)), blockHash: finalized.hash };
           await assertCanonicalFinalized(finalized);
+          await addBidCounts(listings, deployment.contractAddress, finalized);
           res.json({ listings, unindexed, ...(nextCursor && { nextCursor }), chain });
         } catch {
           res.status(503).json({ error: 'Blockchain service unavailable' });
@@ -604,6 +607,7 @@ export function createApp(options = {}) {
         return;
       }
 
+      await addBidCounts(built.listings, deployment.contractAddress, pinned);
       res.json({ listings: built.listings, unindexed: built.unindexed, ...(built.nextCursor && { nextCursor: built.nextCursor }), chain });
     } catch (err) {
       next(err);
@@ -624,6 +628,17 @@ export function createApp(options = {}) {
     }
     const behind = lag(checkpoint);
     return behind >= 0 && behind <= settings.searchIndexMaxLag ? { number: checkpoint.block_number, hash: checkpoint.block_hash } : null;
+  }
+
+  /**
+   * Adds `bidCount` (canonical bids in the event index, per auction) to listings read at `head`. Set only while
+   * the index is at `head`; otherwise left off rather than guessed.
+   */
+  async function addBidCounts(listings, contractAddress, head) {
+    const checkpoint = await usableCheckpoint(contractAddress, head);
+    if (checkpoint?.hash !== head.hash) return;
+    const counts = db.countBids(contractAddress, head.number);
+    for (const listing of listings) listing.bidCount = counts.get(listing.id) ?? 0;
   }
 
   /**
