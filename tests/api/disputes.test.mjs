@@ -138,3 +138,33 @@ it('keeps records and the audit log append-only', () => {
   expect(() => db.db.exec('UPDATE dispute_audit SET actor = 1')).toThrow(/append-only/);
   expect(() => db.db.exec('DELETE FROM dispute_audit')).toThrow(/append-only/);
 });
+
+it('pages the resolver queue in auction id order without repeating or dropping reports', async () => {
+  const ids = [];
+  for (let i = 0; i < 3; i += 1) {
+    const id = await settledAuction();
+    const { reference } = await (await post(`/api/auctions/${id}/dispute/evidence`, WINNER, { text: `Space ${i} was occupied.` })).json();
+    await (await c.connect(chain.wallet(WINNER)).reportSellerFailure(id, reference)).wait();
+    ids.push(id);
+  }
+  const full = await (await get('/api/disputes/queue?limit=100', RESOLVER)).json();
+  const pages = [];
+  let offset = 0;
+  do {
+    const page = await (await get(`/api/disputes/queue?limit=2&offset=${offset}`, RESOLVER)).json();
+    pages.push(page);
+    offset = page.nextOffset;
+  } while (offset !== null);
+  const paged = pages.flatMap((page) => page.items.map((entry) => entry.auctionId));
+  const numeric = paged.map(Number);
+  expect(pages.length).toBeGreaterThan(1);
+  expect(pages.every((page) => page.total === full.total)).toBe(true);
+  expect(paged).toEqual(full.items.map((entry) => entry.auctionId));
+  expect(new Set(paged).size).toBe(paged.length);
+  expect(numeric).toEqual([...numeric].sort((a, b) => a - b));
+  expect(paged).toEqual(expect.arrayContaining(ids));
+  // Out-of-range parameters clamp: limit to 1, offset to 0.
+  const low = await (await get('/api/disputes/queue?limit=-5&offset=-3', RESOLVER)).json();
+  expect(low.items.map((entry) => entry.auctionId)).toEqual([paged[0]]);
+  expect(low.nextOffset).toBe(1);
+});

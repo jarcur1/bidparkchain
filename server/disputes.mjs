@@ -11,7 +11,6 @@ import { readSession } from './auth.mjs';
 export const REPORT_WINDOW = 24 * 3600;
 export const RESOLUTION_WINDOW = 72 * 3600;
 const MAX_TEXT = 2000;
-const MAX_QUEUE = 100;
 
 /** The opaque on-chain reference of a record: a hash over everything in it, so it can be recomputed. */
 export function disputeReference({ chainId, contract, auctionId, kind, author, uphold, body, createdAt }) {
@@ -125,7 +124,10 @@ export function mountDisputes(app, { db, chainId, contractAddress, readState, is
     } catch (err) { next(err); }
   });
 
-  /** GET /api/disputes/queue: open reports with their deadlines and the action that applies, for resolvers only. */
+  /**
+   * GET /api/disputes/queue?limit&offset: a page of open reports with their deadlines and the action that applies,
+   * for resolvers only. Pages run in auction id order; chain state is read for the rows on the page alone.
+   */
   app.get('/api/disputes/queue', async (req, res, next) => {
     try {
       const s = await scope(req, res, { auction: false });
@@ -138,7 +140,10 @@ export function mountDisputes(app, { db, chainId, contractAddress, readState, is
       await sync();
       const nowSec = await now();
       const items = [];
-      for (const id of db.getOpenDisputeAuctions(s.contract).slice(0, MAX_QUEUE)) {
+      const limit = Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 25));
+      const offset = Math.max(0, Number.parseInt(req.query.offset, 10) || 0);
+      const total = db.countOpenDisputeAuctions(s.contract);
+      for (const id of db.getOpenDisputeAuctions(s.contract, { limit, offset })) {
         const state = await readState(id);
         if (!state || noReport(state) || state.cancelled) continue;
         const resolveBy = state.parkingEnd + RESOLUTION_WINDOW;
@@ -150,7 +155,7 @@ export function mountDisputes(app, { db, chainId, contractAddress, readState, is
           action: nowSec >= resolveBy ? 'expireDispute' : 'resolveDispute',
         });
       }
-      res.json({ items: items.sort((a, b) => a.resolveBy - b.resolveBy) });
+      res.json({ total, nextOffset: offset + limit < total ? offset + limit : null, items });
     } catch (err) { next(err); }
   });
 }

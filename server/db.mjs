@@ -886,16 +886,26 @@ export class EscrowDatabase {
     `).all(this.chainId, contract, this.chainId, contract).map((row) => row.auction_id);
   }
 
-  /** Auctions whose indexed events show more reports than decisions and no refund: reports that may still be open. */
-  getOpenDisputeAuctions(contractAddress) {
+  /** FROM and WHERE for auctions whose indexed events show more reports than decisions and no refund: reports that may still be open. */
+  #openDisputeFrom() {
     const count = (event) => `(SELECT COUNT(*) FROM auction_events x WHERE x.chain_id = o.chain_id AND x.contract_address = o.contract_address
       AND x.auction_id = o.auction_id AND x.canonical = 1 AND x.event = '${event}')`;
-    return this.db.prepare(`
-      SELECT DISTINCT auction_id FROM auction_events o
+    return `FROM auction_events o
       WHERE chain_id = ? AND contract_address = ? AND canonical = 1 AND event = 'DisputeOpened'
-        AND ${count('DisputeOpened')} > ${count('DisputeResolved')} AND ${count('BookingRefunded')} = 0
-      ORDER BY CAST(auction_id AS INTEGER)
-    `).all(this.chainId, contractAddress.toLowerCase()).map((row) => row.auction_id);
+        AND ${count('DisputeOpened')} > ${count('DisputeResolved')} AND ${count('BookingRefunded')} = 0`;
+  }
+
+  /** One page of auctions with a report still open per the index, in auction id order. The chain confirms each one before it is listed. */
+  getOpenDisputeAuctions(contractAddress, { limit = 25, offset = 0 } = {}) {
+    return this.db.prepare(`
+      SELECT DISTINCT auction_id ${this.#openDisputeFrom()}
+      ORDER BY CAST(auction_id AS INTEGER) LIMIT ? OFFSET ?
+    `).all(this.chainId, contractAddress.toLowerCase(), limit, offset).map((row) => row.auction_id);
+  }
+
+  countOpenDisputeAuctions(contractAddress) {
+    return this.db.prepare(`SELECT COUNT(DISTINCT auction_id) AS n ${this.#openDisputeFrom()}`)
+      .get(this.chainId, contractAddress.toLowerCase()).n;
   }
 
   /** Appends a review record and its audit entry; returns the stored record. */
