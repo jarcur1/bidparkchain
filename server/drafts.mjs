@@ -4,8 +4,8 @@ import { isValidImageUrl } from '../shared/validation.js';
 /**
  * Listing drafts and reusable space templates, saved per signed-in wallet. They are private: every
  * route needs a session and only ever touches that wallet's rows. A draft holds form text, a photo
- * reference (https URL or safe local path, never an upload) and explicit local date-times; nothing
- * in it is published until the host signs the auction.
+ * reference (https URL, safe local path or an uploaded photo's path from POST /api/photos) and explicit
+ * local date-times; nothing in it is published until the host signs the auction.
  */
 const MAX_PER_WALLET = 50;
 const LOCAL_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;

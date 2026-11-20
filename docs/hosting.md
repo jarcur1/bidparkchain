@@ -36,7 +36,7 @@ Hosted mode is on whenever `BIDPARK_ALLOWED_ORIGINS` is set:
 These apply in every mode:
 - Writes to listing details need a signed-in wallet that owns the auction (#11).
 - Host verification review is limited to the wallets in `BIDPARK_MODERATORS`; see [host verification](host-verification.md).
-- Bodies are capped at 100 KB, URLs at 2,048 characters, and query strings are parsed flat.
+- Bodies are capped at 100 KB, except photo uploads (2 MB, see Photos under [host workspace](#host-workspace)), URLs at 2,048 characters, and query strings are parsed flat.
 - Every RPC call times out after `BIDPARK_RPC_TIMEOUT_MS` (10 s).
 - `GET /api/listings/search` returns at most 50 listings a page, reads at most `BIDPARK_SEARCH_SCAN_LIMIT` (500) candidates from the chain (422 beyond that), and gives up after `BIDPARK_SEARCH_DEADLINE_MS` (20 s) with 503. See [listing search](listing-search.md).
 - Responses carry `nosniff`, `no-referrer`, `DENY` framing and `no-store`. The API gets a `default-src 'none'` CSP, and the web app a CSP limited to its own scripts, Google Fonts and https images.
@@ -94,7 +94,7 @@ The My Activity tab holds a host workspace for a connected wallet:
 - **Spaces.** Spaces the wallet owns or may list on (approved lister), read from contract events and state, with held windows, blocked windows and verification status. Owners can set the IANA time zone, approve or revoke listers, block or unblock dates and transfer the space; each is a wallet transaction shown in the transaction center.
 - **Drafts and templates.** Saved on the server per signed-in wallet (`/api/drafts`, migration 8), private to that wallet, at most 50 each. They hold form text, a photo reference and wall-clock dates, never a signature or a secret. They are included in backups.
   The browser clears the open editor when the connected wallet, deployment, or app sign-in changes. Saved copies remain available to their owner.
-- **Photos.** A photo is only a reference: an https URL or a local path starting with `/`. There is no upload and no storage service, so the host keeps the image online. An empty or unreachable photo falls back to the default illustrative photo.
+- **Photos.** A photo is an https URL, a local path starting with `/`, or an upload from the workspace file picker. An upload is sent as raw bytes to `POST /api/photos`, and the declared `Content-Type` is ignored. The API accepts a JPEG, PNG or WebP of at most 2 MB, checked by its magic bytes: a larger file gets 413 and any other content gets 415. It stores the file as `<BIDPARK_DATA_DIR>/photos/<sha256>.<jpg|png|webp>` (owner-only, never deleted by the API) and returns `/api/photos/<sha256>.<ext>`, which the photo field then holds. Uploaded photos are public by URL and are not part of `npm run backup`; copy `photos/` with each backup (see [backups](operations-backup.md)). An external URL is only as available as the site serving it. An empty or unreachable photo falls back to the default illustrative photo. A failed or cancelled upload leaves the previous photo unchanged.
 - **Scheduling.** Cutoff, start and end are entered as wall-clock times in the space's time zone (the browser's zone while none is set), converted to UTC seconds, and checked against held and blocked windows before signing. The contract rechecks at signing and remains the authority. The quick "List a Spot" dialog uses the same explicit dates, zone and conflict check (it starts with a default window an hour out).
 - **Autosave.** While signed in, the quick listing form saves one private draft named "Autosaved listing" about 1.5 seconds after the last change, shows `Unsaved changes`, `Saving`, `Draft saved.` or a failure, and restores it after a reload or sign-in. Without a session nothing is saved and the form says so. Making the listing deletes the draft.
 - **Reports and moderation.** A signed-in wallet can report a listing from its detail dialog. Moderators page through the queue 25 at a time (`/api/moderation/verifications?limit&offset`).
@@ -125,7 +125,7 @@ Private arrival instructions are encrypted at rest with AES-256-GCM (`node:crypt
 1. `npm run backup` (with `BIDPARK_DATA_DIR` set). See [backups](operations-backup.md).
 2. Build the new release in its own `releases/<sha>` directory, then switch the `current` link to it.
 3. `sudo systemctl restart bidpark`. In-flight requests drain first. On start, pending schema migrations run after a pre-migration snapshot.
-4. Gate on `/api/health/ready`. The data directory, database and `deployment.json` are never touched by a deploy, so auctions, listings and the contract identity carry over. `npm run deploy` without `--create` only verifies and reuses the recorded contract.
+4. Gate on `/api/health/ready`. The data directory (including `photos/`), database and `deployment.json` are never touched by a deploy, so auctions, listings, uploaded photos and the contract identity carry over. `npm run deploy` without `--create` only verifies and reuses the recorded contract.
 
 ## Restart
 

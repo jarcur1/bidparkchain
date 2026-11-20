@@ -3899,6 +3899,17 @@ button.header-brand {
   border-radius: 6px;
 }
 
+.workspace-upload {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.workspace-upload progress {
+  width: 160px;
+}
+
 .workspace-conflicts {
   margin: 0;
   padding: 8px 12px;

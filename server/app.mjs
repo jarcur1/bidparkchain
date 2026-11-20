@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import express from 'express';
 import { ethers } from 'ethers';
 import { EscrowDatabase } from './db.mjs';
@@ -13,6 +14,7 @@ import { CATEGORY_NAMES, deriveInbox, INBOX_CATEGORIES, INBOX_ID, mergeFeed, own
 import { createSettlementJob, settlementSettings } from './settlement.mjs';
 import { PRICE_NOTE, QueryError, encodeCursor, filterAndSort, matchesMetadata, parseSearchQuery } from './search.mjs';
 import { mountDrafts } from './drafts.mjs';
+import { mountPhotos } from './photos.mjs';
 import { mountReplacements } from './replacements.mjs';
 import { mountArrival } from './arrival.mjs';
 import { parseArrivalKey } from './arrival-crypto.mjs';
@@ -176,11 +178,12 @@ export function createApp(options = {}) {
   if (supplied && (supplied.dbPath !== runtime.dbPath || supplied.deploymentPath !== runtime.deploymentPath)) {
     throw new Error('Invalid runtime paths');
   }
-  if (runtime.profile.id === 'sepolia' && (options.dbPath || options.deploymentPath || options.rpcUrl)) {
+  if (runtime.profile.id === 'sepolia' && (options.dbPath || options.deploymentPath || options.rpcUrl || options.photoDir)) {
     throw new Error('Sepolia runtime overrides are not allowed');
   }
   const deploymentPath = options.deploymentPath ?? runtime.deploymentPath;
   const rpcUrl = options.rpcUrl ?? runtime.rpcUrl;
+  const photoDir = options.photoDir ?? path.join(runtime.dataDir, 'photos');
   const profile = runtime.profile;
   if (supplied || !options.dbPath) assertProfileDirectory(runtime);
   const db = new EscrowDatabase(options.dbPath ?? runtime.dbPath, { chainId: profile.chainId });
@@ -245,6 +248,9 @@ export function createApp(options = {}) {
     }
     next();
   });
+
+  // Photo uploads are raw bytes whatever their Content-Type, so they are mounted before the JSON parser.
+  mountPhotos(app, { db, photoDir });
 
   // JSON body parser with bounded payload size
   app.use(express.json({ limit: '100kb' }));
