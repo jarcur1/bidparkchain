@@ -138,7 +138,6 @@ test('map-area search sends the viewport as a bbox, can be cleared, and keeps th
 test('location is optional: it is sent only in the query, kept out of the URL, and a refusal is explained', async ({ page, stack, context }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   // Nothing asks for location until the button is pressed.
-  let asked = false;
   await page.addInitScript(() => {
     const original = navigator.geolocation.getCurrentPosition.bind(navigator.geolocation);
     navigator.geolocation.getCurrentPosition = (...args) => { window.__geoAsked = true; return original(...args); };
@@ -147,7 +146,7 @@ test('location is optional: it is sent only in the query, kept out of the URL, a
   await page.getByTitle('Cards view only').click();
   const cards = page.getByRole('article', { name: /^Listing: / });
   await expect(cards).toHaveCount(7);
-  asked = await page.evaluate(() => Boolean(window.__geoAsked));
+  const asked = await page.evaluate(() => Boolean(window.__geoAsked));
   expect(asked).toBe(false);
 
   // Refused: a plain explanation and the manual destination still works.
