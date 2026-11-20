@@ -1142,9 +1142,10 @@ export const AppContent: React.FC<{
   const hostSpaces = hostSpacesState.key === hostSpacesKey ? hostSpacesState.spaces : NO_HOST_SPACES;
 
   // The wallet's spaces and the windows each still holds, mirroring the contract's holdsWindow rule.
+  const ownedNowSec = getChainNowSec();
   const ownedSpaces = useMemo<OwnedSpace[]>(() => {
     if (!walletState.address) return [];
-    const now = getChainNowSec();
+    const now = ownedNowSec;
     const addr = walletState.address.toLowerCase();
     const spaces = new Map<string, OwnedSpace>();
     for (const l of listings) {
@@ -1164,7 +1165,7 @@ export const AppContent: React.FC<{
       space.blocked = chainSpace?.blocked ?? [];
     }
     return [...spaces.values()].sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
-  }, [listings, hostSpaces, walletState.address]);
+  }, [listings, hostSpaces, walletState.address, ownedNowSec]);
 
   // Space-control transactions (listers, transfer, time zone, blocked dates): sign, then re-read the chain.
   const handleSpaceAction = async (action: SpaceAction, label: string): Promise<boolean> => {
