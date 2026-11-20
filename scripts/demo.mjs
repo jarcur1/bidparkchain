@@ -18,16 +18,15 @@ export const DEMO_ROLES = { host: 0, driverA: 1, driverB: 2 };
 /** Scripted amounts, chosen for the demo; they are not derived from the fixtures. */
 export const DEMO_BIDS = { driverA: '0.03', driverB: '0.05' };
 
-async function openDemo(rpcUrl, dataDir) {
+async function openDemo(rpcUrl, deploymentPath) {
   if (process.env.BIDPARK_PROFILE && process.env.BIDPARK_PROFILE !== 'local') {
     throw new Error('Demo helpers only run with the local profile.');
   }
   if (!LOOPBACK.has(new URL(rpcUrl).hostname)) throw new Error(`Refusing non-loopback RPC ${rpcUrl}.`);
   const provider = getProvider(rpcUrl);
   await assertLocalChain(provider);
-  const file = path.join(dataDir, 'deployment.json');
-  if (!fs.existsSync(file)) throw new Error('No local deployment found. Start the stack with npm run dev first.');
-  const deployment = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (!fs.existsSync(deploymentPath)) throw new Error('No local deployment found. Start the stack with npm run dev first.');
+  const deployment = JSON.parse(fs.readFileSync(deploymentPath, 'utf8'));
   if ((await provider.getCode(deployment.contractAddress)) === '0x') {
     throw new Error('The deployment in this data directory is not on this chain. Restart npm run dev.');
   }
@@ -45,15 +44,27 @@ async function advanceTo(provider, timestamp) {
   await provider.send('evm_mine', []);
 }
 
-/** Moves chain time to one second past the latest open bidding deadline. */
-export async function advancePastBidding({ rpcUrl = HARDHAT_RPC_URL, dataDir }) {
-  const { provider, contract } = await openDemo(rpcUrl, dataDir);
+/**
+ * Chain-time skip targets. Each moves chain time past the latest deadline still in play for that target:
+ * bidding closes auctions that are neither settled nor cancelled; parking ends every auction that is not cancelled.
+ */
+export const SKIP_TARGETS = {
+  bidding: { deadline: 'bidEnd', inPlay: (a) => !a.settled && !a.cancelled },
+  parking: { deadline: 'parkingEnd', inPlay: (a) => !a.cancelled },
+};
+
+/** Moves chain time to one second past the latest open deadline for `target` (a SKIP_TARGETS key). */
+export async function skipChainTime({ rpcUrl = HARDHAT_RPC_URL, deploymentPath, target }) {
+  if (!Object.hasOwn(SKIP_TARGETS, target)) throw new Error(`Unknown skip target: ${target}`);
+  const rule = SKIP_TARGETS[target];
+  const { provider, contract } = await openDemo(rpcUrl, deploymentPath);
   try {
     const now = await chainNow(provider);
     let latest = 0;
     for (let id = 1n; id < (await contract.nextAuctionId()); id++) {
       const a = await contract.auctions(id);
-      if (!a.settled && !a.cancelled && Number(a.bidEnd) > now) latest = Math.max(latest, Number(a.bidEnd));
+      const deadline = Number(a[rule.deadline]);
+      if (rule.inPlay(a) && deadline > now) latest = Math.max(latest, deadline);
     }
     if (latest) await advanceTo(provider, latest + 1);
     return { advancedSeconds: latest ? latest + 1 - now : 0, chainTime: await chainNow(provider) };
@@ -62,12 +73,17 @@ export async function advancePastBidding({ rpcUrl = HARDHAT_RPC_URL, dataDir }) 
   }
 }
 
+/** Moves chain time to one second past the latest open bidding deadline. */
+export async function advancePastBidding({ rpcUrl = HARDHAT_RPC_URL, dataDir }) {
+  return skipChainTime({ rpcUrl, deploymentPath: path.join(dataDir, 'deployment.json'), target: 'bidding' });
+}
+
 /**
  * Driver A bids, driver B outbids, A withdraws the displaced bid, bidding closes, B settles.
  * Requires a fresh campus scenario; restart npm run dev to run it again.
  */
 export async function runWalkthrough({ rpcUrl = HARDHAT_RPC_URL, dataDir, log = () => {} }) {
-  const { provider, contract, scenario } = await openDemo(rpcUrl, dataDir);
+  const { provider, contract, scenario } = await openDemo(rpcUrl, path.join(dataDir, 'deployment.json'));
   try {
     if (!scenario.startsWith('campus-')) throw new Error('Run the walkthrough with BIDPARK_SCENARIO=campus-baseline or campus-expansion.');
     const spot = getSeededListings(0, scenario).find((l) => l.fixtureId === 'N1');
@@ -135,7 +151,7 @@ export const SCRIPTED_RAISE = '0.01';
  * spot at its opening bid. Bidding closes, every auction with a bid is settled, winners are read back.
  */
 export async function runCommuters({ rpcUrl = HARDHAT_RPC_URL, dataDir, log = () => {} }) {
-  const { provider, contract, scenario } = await openDemo(rpcUrl, dataDir);
+  const { provider, contract, scenario } = await openDemo(rpcUrl, path.join(dataDir, 'deployment.json'));
   try {
     if (!scenario.startsWith('campus-')) throw new Error('Run commuters with BIDPARK_SCENARIO=campus-baseline or campus-expansion.');
     const ids = new Map();

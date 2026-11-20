@@ -6,6 +6,7 @@ import { DetailModal } from './components/DetailModal';
 import { CampusScenarioBanner } from './components/CampusScenarioBanner';
 import { DisclosuresBanner } from './components/DisclosuresBanner';
 import { FilterBar } from './components/FilterBar';
+import { PresenterSkip } from './components/PresenterSkip';
 import {
   DEFAULT_FILTERS,
   MY_LOCATION_LABEL,
@@ -1354,6 +1355,7 @@ export const AppContent: React.FC<{
               listings={listings}
               listingsStatus={listingsView.read.status}
             />
+            {import.meta.env.VITE_BIDPARK_PROFILE === 'local' && <PresenterSkip onRefresh={handleRefreshAll} />}
             {pendingRegistration && (
               <div className="pending-registration-alert">
                 <div className="pending-alert-content">

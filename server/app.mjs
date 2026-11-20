@@ -3,7 +3,7 @@ import express from 'express';
 import { ethers } from 'ethers';
 import { EscrowDatabase } from './db.mjs';
 import { validateSpotMetadata } from '../shared/validation.js';
-import { assertProfileDirectory, resolveRuntimeProfile } from '../scripts/helpers/runtime-profile.mjs';
+import { assertProfileDirectory, isLoopback, resolveRuntimeProfile } from '../scripts/helpers/runtime-profile.mjs';
 import { verifyPersistentDeployment } from '../scripts/helpers/persistent-deployment.mjs';
 import { compileEscrowContract } from '../scripts/helpers/compiler.mjs';
 import { getNetworkProfile } from '../shared/network-profiles.mjs';
@@ -18,6 +18,7 @@ import { mountArrival } from './arrival.mjs';
 import { parseArrivalKey } from './arrival-crypto.mjs';
 import { mountDisputes } from './disputes.mjs';
 import { flagDuplicates, mountVerification, parseModerators, publicVerification } from './verification.mjs';
+import { mountPresenter } from './presenter.mjs';
 
 let sepoliaArtifact;
 
@@ -1326,6 +1327,9 @@ export function createApp(options = {}) {
       ready, profile: profile.id, chainId: profile.chainId, contractAddress: deployment?.contractAddress ?? null, checks,
     });
   });
+
+  // Local demo clock: only on the local profile with a loopback RPC; presenter.mjs also checks chain id 31337 per request.
+  if (profile.id === 'local' && isLoopback(new URL(rpcUrl).hostname)) mountPresenter(app, { rpcUrl, deploymentPath });
 
   // Catch-all 404 for unknown API routes
   app.use('/api', (req, res) => {

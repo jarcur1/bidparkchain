@@ -23,7 +23,7 @@ What if one more dorm made good commuter parking so scarce that students started
 
 Run `npm ci` ahead of time. Start with `BIDPARK_SCENARIO=campus-baseline npm run dev`, then stop it and run `BIDPARK_SCENARIO=campus-expansion npm run dev` to show what changed. In PowerShell, set `$env:BIDPARK_SCENARIO = 'campus-baseline'` (or `'campus-expansion'`) before running `npm run dev`. Leaving the variable unset shows the Austin sample listings, not the classroom scenarios.
 
-Open the loopback URL above and select a built-in **local test wallet** under **Connect Wallet**. No wallet extension, public testnet, or external data feed is needed. Use **Cards** if the map does not load. See the [scenario setup](docs/class-demo-scenarios.md) and [presenter walkthrough](docs/class-demo-presenter.md).
+Open the loopback URL above and select a built-in **local test wallet** under **Connect Wallet**. No wallet extension, public testnet, or external data feed is needed. Use **Cards** if the map does not load. On the local chain the marketplace also has **Skip to bidding close** and **Skip to parking end** buttons, so the clock can move forward without a terminal. See the [scenario setup](docs/class-demo-scenarios.md) and [presenter walkthrough](docs/class-demo-presenter.md).
 
 ## Try it
 

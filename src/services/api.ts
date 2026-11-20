@@ -120,6 +120,19 @@ export async function stageListingMetadata(metadata: SpotMetadata, deployment?: 
   if (!res.ok) throw new ApiError(await extractErrorMessage(res), res.status);
 }
 
+export type SkipTarget = 'bidding' | 'parking';
+
+/** Local demo only. Moves the local chain clock past the latest open deadline for `target`; the server refuses elsewhere. */
+export async function skipChainTime(target: SkipTarget): Promise<{ advancedSeconds: number; chainTime: number }> {
+  const res = await fetch('/api/presenter/skip', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target }),
+  });
+  if (!res.ok) throw new ApiError(await extractErrorMessage(res), res.status);
+  return res.json();
+}
+
 /** Another host's space that shares this listing's address or location. Advisory; moderators are told. */
 export interface DuplicateSpace { spaceId: string; match: ('address' | 'location')[] }
 

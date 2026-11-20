@@ -55,7 +55,7 @@ On screen: under **Outbid**, N1 reads *Outbid — bidding still open*, and the r
 
 ### 5. Close bidding and settle, about 1 min
 
-In a second terminal run `npm run demo -- advance`, then press **Refresh data** (the circular arrow) in the app.
+Press **Skip to bidding close** under the scenario banner (local runs only); the app refreshes itself. From a terminal instead, run `npm run demo -- advance` in a second terminal, then press **Refresh data** (the circular arrow) in the app.
 
 Switch to **Account #2**. **My Activity** shows *Status: You won — pending settlement*.
 
