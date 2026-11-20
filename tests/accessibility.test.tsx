@@ -279,7 +279,6 @@ describe('native controls', () => {
       <FilterBar
         filters={DEFAULT_FILTERS}
         onFilterChange={() => {}}
-        totalSpots={1}
         filteredCount={1}
         listingsStatus="success"
         viewMode="cards"

@@ -2,7 +2,6 @@ import {
   Contract,
   type EventLog,
   Interface,
-  JsonRpcProvider,
   type BrowserProvider,
   type JsonRpcSigner,
   keccak256,
@@ -96,7 +95,7 @@ async function waitForTransaction(
           }
         }
       } catch (error) {
-        if (error instanceof CanonicalRevert) throw new Error(`Transaction ${tx.hash} reverted in a finalized block`);
+        if (error instanceof CanonicalRevert) throw new Error(`Transaction ${tx.hash} reverted in a finalized block`, { cause: error });
         throw new TransactionOutcomeUnknown(tx.hash, error instanceof Error ? error.message : String(error));
       }
       await new Promise((resolve) => setTimeout(resolve, FINALITY_POLL_MS));
