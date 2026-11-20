@@ -1020,12 +1020,17 @@ export class EscrowDatabase {
     return changed ? id : null;
   }
 
-  /** Records that `original` was replaced by `replacement`. False when the original already has a replacement. */
+  /**
+   * Records that `original` was replaced by `replacement`. Returns 'created'; 'existing' when the same pair is
+   * already recorded (nothing changes); or 'conflict' when the original has a different replacement.
+   */
   saveReplacement(contractAddress, originalId, replacementId, host) {
-    return this.db.prepare(`
+    const { changes } = this.db.prepare(`
       INSERT OR IGNORE INTO listing_replacements (chain_id, contract_address, original_id, replacement_id, host, created_at)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(this.chainId, contractAddress.toLowerCase(), originalId, replacementId, host.toLowerCase(), Date.now()).changes > 0;
+    `).run(this.chainId, contractAddress.toLowerCase(), originalId, replacementId, host.toLowerCase(), Date.now());
+    if (changes > 0) return 'created';
+    return this.getReplacements(contractAddress, [originalId])[0]?.replacement_id === replacementId ? 'existing' : 'conflict';
   }
 
   /** Replacements recorded for the given original auction ids. */

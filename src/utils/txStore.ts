@@ -26,6 +26,10 @@ export interface TxRecord {
   metadata?: SpotMetadata;
   /** For creates: whether the listing details are registered with the API. */
   registered?: boolean;
+  /** For a create that replaces an auction with bids: the auction it replaces. */
+  replaces?: string;
+  /** For a replacement create: whether the API has recorded its link to the replaced auction. */
+  linked?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -57,7 +61,7 @@ export function recordTransaction(record: Omit<TxRecord, 'createdAt' | 'updatedA
 }
 
 /** Applies a status update or field patch. Committed metadata never changes after submission. */
-export function patchTransaction(id: string, patch: Partial<Pick<TxRecord, 'auctionId' | 'registered' | 'metadata'>> & Partial<TxUpdate>): TxRecord | null {
+export function patchTransaction(id: string, patch: Partial<Pick<TxRecord, 'auctionId' | 'registered' | 'linked' | 'metadata'>> & Partial<TxUpdate>): TxRecord | null {
   let updated: TxRecord | null = null;
   write(readTransactions().map((r) => {
     if (r.id !== id) return r;

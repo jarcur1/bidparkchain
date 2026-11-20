@@ -39,7 +39,7 @@ afterAll(async () => {
   await scope?.close();
 });
 
-it('links a replacement for the host only, once, and tells the original bidders', async () => {
+it('links a replacement for the host only, accepts a repeat of the same link, and tells the original bidders once', async () => {
   const original = await createAuction();
   const replacement = await createAuction();
   const unbid = await createAuction();
@@ -56,14 +56,17 @@ it('links a replacement for the host only, once, and tells the original bidders'
   expect((await post(0, `/api/auctions/${unbid}/replacement`, { replacementId: noBids })).status).toBe(409);
 
   expect((await post(0, route, { replacementId: replacement })).status).toBe(201);
-  expect((await post(0, route, { replacementId: replacement })).status).toBe(409);
+  expect((await post(0, route, { replacementId: replacement })).status).toBe(200);
+  // A different replacement for the same original is refused, and the recorded link is kept.
+  expect((await post(0, route, { replacementId: await createAuction() })).status).toBe(409);
   expect(await (await fetch(`${url}${route}`)).json()).toEqual({ replacementId: replacement });
 
-  const entry = async (index) => (await (await fetch(`${url}/api/inbox`, { headers: { cookie: cookies[index] } })).json())
-    .items.find((item) => item.kind === 'replaced');
-  // Both the outbid and the current high bidder are told; the host (who never bid) is not.
+  const replaced = async (index) => (await (await fetch(`${url}/api/inbox`, { headers: { cookie: cookies[index] } })).json())
+    .items.filter((item) => item.kind === 'replaced');
+  // Both the outbid and the current high bidder are told, once each; the host (who never bid) is not.
   for (const index of [1, 2]) {
-    await expect.poll(() => entry(index), { timeout: 15000 }).toMatchObject({ auctionId: original, replacementId: replacement, category: 'bids' });
+    await expect.poll(async () => (await replaced(index))[0], { timeout: 15000 }).toMatchObject({ auctionId: original, replacementId: replacement, category: 'bids' });
+    expect(await replaced(index)).toHaveLength(1);
   }
-  expect(await entry(0)).toBeUndefined();
+  expect(await replaced(0)).toEqual([]);
 });

@@ -12,7 +12,7 @@ const same = (a, b) => a.toLowerCase() === b.toLowerCase();
  * replacement must be a later auction. Nothing here moves funds or cancels anything.
  */
 export function mountReplacements(app, { db, pinnedReader, contractAddress }) {
-  /** POST /api/auctions/:id/replacement { replacementId } */
+  /** POST /api/auctions/:id/replacement { replacementId }: repeating the same pair succeeds and changes nothing. */
   app.post('/api/auctions/:id/replacement', async (req, res) => {
     const session = readSession(db, req);
     if (!session) return res.status(401).json({ error: 'Sign in with your wallet first' });
@@ -39,10 +39,9 @@ export function mountReplacements(app, { db, pinnedReader, contractAddress }) {
       if (original.onchain.highestBidder === ethers.ZeroAddress) {
         return res.status(409).json({ error: 'The original auction has no bids, so it can be cancelled instead' });
       }
-      if (!db.saveReplacement(contract, originalId, replacementId, session.address)) {
-        return res.status(409).json({ error: 'This auction already has a replacement recorded' });
-      }
-      res.status(201).json({ linked: true });
+      const saved = db.saveReplacement(contract, originalId, replacementId, session.address);
+      if (saved === 'conflict') return res.status(409).json({ error: 'This auction already has a different replacement recorded' });
+      res.status(saved === 'created' ? 201 : 200).json({ linked: true });
     } catch {
       res.status(503).json({ error: 'Blockchain service unavailable' });
     }
