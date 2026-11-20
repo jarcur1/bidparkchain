@@ -62,6 +62,10 @@ All are optional. Unknown, repeated (except `amenity`) or malformed parameters g
 Kind, amenities, area and text are filtered from stored metadata first. Each RPC call is bounded by
 `BIDPARK_RPC_TIMEOUT_MS`.
 
+## When the search request fails
+
+If the search request fails, the marketplace shows a non-blocking **Server search unavailable** notice with a **Retry search** button and filters the listings already loaded in the browser instead. That local result is not a server search: it covers only the listings loaded so far. The notice belongs to the query that failed and clears when that query changes, when a search succeeds, or when the query is cleared.
+
 ## Served from the event index
 
 `source` says how the answer was built.

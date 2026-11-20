@@ -22,6 +22,7 @@ import {
 import { Footer } from './components/Footer';
 import { Header } from './components/Header';
 import { ReadStatusBanner, type ReadSource } from './components/ReadStatusBanner';
+import { SearchFailureNotice } from './components/SearchFailureNotice';
 import { ParkingMap } from './components/ParkingMap';
 import { SpotGrid } from './components/SpotGrid';
 import { Toast } from './components/Toast';
@@ -1054,7 +1055,7 @@ export const AppContent: React.FC<{
   );
 
   // The server answers the same filters with bounded, block-pinned pages. Until its answer for the
-  // current query and deployment arrives (or if it fails), the loaded snapshot is filtered locally.
+  // current query and deployment arrives (or if it fails, with a notice), the loaded snapshot is filtered locally.
   const searchKey = searchQuery(filters, destination);
   const [serverSearch, setServerSearch] = useState<{
     key: string; deployment: string | null; listings: SearchListing[]; total: number; nextCursor: string | null; loadingMore: boolean;
@@ -1064,6 +1065,8 @@ export const AppContent: React.FC<{
   const serverSearchRef = useRef(serverSearch);
   serverSearchRef.current = serverSearch;
   const [searchNonce, setSearchNonce] = useState(0);
+  // The query and deployment of the last search that failed. Any answer clears it; the notice shows only for that query.
+  const [searchFailure, setSearchFailure] = useState<{ key: string; deployment: string | null; error: string } | null>(null);
   const snapshotBlock = listingsView.chain?.blockNumber;
   const listingsDeployment = listingsView.deployment;
   useEffect(() => {
@@ -1076,16 +1079,22 @@ export const AppContent: React.FC<{
       searchListingsPages(searchKey, keep)
         .then((r) => {
           if (!live) return;
+          setSearchFailure(null);
           const deployment = r.chain ? deploymentKey(r.chain) : null;
           setServerSearch(deployment === listingsDeployment
             ? { key: searchKey, deployment, listings: r.listings, total: r.total, nextCursor: r.nextCursor, loadingMore: false, pages: keep }
             : null);
         })
-        .catch(() => { if (live) setServerSearch(null); });
+        .catch((err: unknown) => {
+          if (!live) return;
+          setServerSearch(null);
+          setSearchFailure({ key: searchKey, deployment: listingsDeployment, error: err instanceof Error ? err.message : String(err) });
+        });
     }, 150);
     return () => { live = false; clearTimeout(timer); };
   }, [searchKey, snapshotBlock, listingsDeployment, searchNonce]);
   const serverResult = serverSearch?.key === searchKey && serverSearch.deployment === listingsDeployment ? serverSearch : null;
+  const searchNotice = searchFailure?.key === searchKey && searchFailure.deployment === listingsDeployment ? searchFailure : null;
   const shownListings: Listing[] = serverResult ? serverResult.listings : filteredListings;
   const shownDistances = useMemo(
     () => serverResult
@@ -1368,6 +1377,10 @@ export const AppContent: React.FC<{
                   Complete Metadata Registration
                 </button>
               </div>
+            )}
+
+            {searchNotice && (
+              <SearchFailureNotice error={searchNotice.error} onRetry={() => setSearchNonce((n) => n + 1)} />
             )}
 
             {/* Filter Toolbar */}
