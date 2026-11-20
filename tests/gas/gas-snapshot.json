@@ -1,0 +1,18 @@
+{
+  "toolchain": {
+    "solc": "0.8.38",
+    "evmVersion": "shanghai",
+    "optimizerRuns": 200,
+    "hardhat": "3.21.2"
+  },
+  "gas": {
+    "createAuction": 268797,
+    "createSpaceAuction.0windows": 242824,
+    "createSpaceAuction.63windows": 391166,
+    "createSpaceAuction.prune63": 804756,
+    "bid.first": 79090,
+    "bid.outbid": 67179,
+    "settle": 39858,
+    "withdrawRefund": 32370
+  }
+}

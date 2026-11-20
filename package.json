@@ -17,6 +17,8 @@
     "test": "vitest run && npm run test:seed",
     "test:ui": "vitest run --project ui",
     "test:contracts": "vitest run --project contracts",
+    "test:gas": "node tests/gas/gas-snapshot.mjs",
+    "gas:snapshot": "node tests/gas/gas-snapshot.mjs update",
     "test:api": "vitest run --project api && npm run test:seed",
     "test:seed": "node --test tests/seed-recovery.test.mjs",
     "test:e2e": "playwright test",
@@ -48,5 +50,8 @@
     "typescript-eslint": "^8.73.0",
     "vite": "^6.3.0",
     "vitest": "^4.1.12"
+  },
+  "overrides": {
+    "tmp": "0.2.7"
   }
 }
