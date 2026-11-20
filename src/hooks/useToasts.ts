@@ -1,6 +1,8 @@
 import { useCallback, useState } from 'react';
 import type { ToastMessage } from '../types';
 
+export type AddToast = (type: 'success' | 'error' | 'info', title: string, message?: string, txHash?: string) => void;
+
 export function useToasts() {
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const addToast = useCallback(
