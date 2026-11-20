@@ -42,6 +42,8 @@ interface UseRefundsOptions {
   configDeployment: string | null;
 }
 
+export type LoadPendingRefunds = () => Promise<ReadResult>;
+
 export function useRefunds({ walletState, provider, config, configDeployment }: UseRefundsOptions) {
   // Activity & Refunds
   const [refundState, setRefundState] = useState<RefundState | null>(null);

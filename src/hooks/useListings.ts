@@ -23,7 +23,8 @@ interface ListingsState {
   read: ReadState;
 }
 
-type ListingsReadResult = ReadResult & { snapshot?: ListingsResponse };
+export type ListingsReadResult = ReadResult & { snapshot?: ListingsResponse };
+export type LoadListings = (forBid?: boolean, forceFresh?: boolean) => Promise<ListingsReadResult>;
 
 const EMPTY_LISTINGS: ListingsState = {
   deployment: null, data: [], unindexed: [], chain: null, deploymentChanged: false, read: LOADING_READ,
