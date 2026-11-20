@@ -156,7 +156,7 @@ The API pins confirmed listings and registration checks to finalized state; mini
 
 ## Boundaries before real use
 
-This is a functional local prototype, **not an audited or production-ready payment system**. It does not verify listing ownership, availability, identities, municipal permission, gate access, or parking delivery. It has no fiat payments or production authentication/operations. Protected bookings enforce cancellation and dispute deadlines on chain, but the off-chain evidence review channel does not exist yet and no protection has been independently reviewed. A wallet address is not proof of property ownership.
+This is a functional local prototype, **not an audited or production-ready payment system**. It does not verify listing ownership, availability, identities, municipal permission, gate access, or parking delivery. It has no fiat payments or production authentication/operations. Protected bookings enforce cancellation and dispute deadlines on chain, and the off-chain evidence review channel is built. Resolvers are addresses the deploying account trusts, and no protection has been independently reviewed. A wallet address is not proof of property ownership.
 
 See the [shared testnet pilot policy](docs/pilot-policy.md) for the proposed pilot scope, the [booking and escrow policy](docs/booking-policy.md), and the approvals required before any real booking or funds. These decisions do not change the local prototype or enable a public deployment.
 
