@@ -17,6 +17,9 @@ interface UseTransactionsOptions {
 
 export type TrackFn = (kind: TxKind, label: string, extra?: Partial<TxRecord>) => { id: string | null; observe?: TxObserver };
 
+export type MarkRegistered = (auctionId: string) => void;
+export type LinkReplacementRecord = (recordId: string | null, replaces: string, auctionId: string, deployment: DeploymentIdentity) => Promise<void>;
+
 export function useTransactions({ account, config, configDeployment, provider, listings, addToast }: UseTransactionsOptions) {
   const [txVersion, setTxVersion] = useState(0);
   const sessionTxIds = useRef(new Set<string>());
