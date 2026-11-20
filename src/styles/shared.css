@@ -1,0 +1,23 @@
+.form-checkbox-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  margin-top: 0.75rem;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.booking-protection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.history-controls { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0 12px; }
+.history-controls label { display: flex; flex-direction: column; gap: 4px; }
+.history-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.history-row { border: 1px solid var(--border, #d9d9d9); border-radius: 8px; padding: 10px 12px; }
+.history-row-head { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.history-row-meta { margin: 4px 0 0; font-size: 0.85rem; opacity: 0.85; }
+.history-row-actions { display: flex; gap: 8px; margin-top: 8px; }
+.history-pager { display: flex; align-items: center; gap: 12px; margin-top: 12px; }

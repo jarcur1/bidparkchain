@@ -50,7 +50,7 @@ export function assertProfileDirectory(runtime) {
       return true;
     } catch (error) {
       if (error.code === 'ENOENT') return false;
-      throw new Error('Unable to inspect network profile data directory');
+      throw new Error('Unable to inspect network profile data directory', { cause: error });
     }
   };
 

@@ -131,6 +131,7 @@ const EMPTY_LISTINGS: ListingsState = {
   deployment: null, data: [], unindexed: [], chain: null, deploymentChanged: false, read: LOADING_READ,
 };
 const UNKNOWN_REFUND = { wei: null, bidIds: null, read: LOADING_READ };
+const NO_HOST_SPACES: HostSpace[] = [];
 
 const sameRefundIdentity = (a: RefundIdentity, b: RefundIdentity) =>
   a.address === b.address && a.chainId === b.chainId && a.provider === b.provider &&
@@ -234,9 +235,9 @@ export const AppContent: React.FC<{
   // account and deployment, so a reload never loses a submitted transaction or committed metadata.
   const [txVersion, setTxVersion] = useState(0);
   const sessionTxIds = useRef(new Set<string>());
-  const txScope = walletState.address && config && configDeployment
+  const txScope = useMemo(() => walletState.address && config && configDeployment
     ? { account: walletState.address, chainId: config.chainId, contract: config.contractAddress, deployment: configDeployment }
-    : null;
+    : null, [walletState.address, config, configDeployment]);
   const track = (kind: TxKind, label: string, extra: Partial<TxRecord> = {}): { id: string | null; observe?: TxObserver } => {
     if (!txScope) return { id: null };
     const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -290,7 +291,7 @@ export const AppContent: React.FC<{
       if (live) setTxVersion((v) => v + 1);
     })();
     return () => { live = false; };
-  }, [txScope?.account, txScope?.deployment, provider, config, listings]);
+  }, [txScope, provider, config, listings]);
 
   const markRegistered = (auctionId: string) => {
     for (const r of readTransactions()) {
@@ -667,14 +668,14 @@ export const AppContent: React.FC<{
     } catch (err) {
       if (err instanceof TransactionOutcomeUnknown) {
         reportUnknown(err);
-        throw new Error('Transaction submitted; finality not established. Check the explorer before bidding again.');
+        throw new Error('Transaction submitted; finality not established. Check the explorer before bidding again.', { cause: err });
       }
       if (err instanceof BidPreflightError) throw err;
       const msg = parseContractError(err, config?.abi);
       addToast('error', 'Bid Submission Failed', msg);
       // The chain may have moved (competing bid, cutoff); refresh so the open dialog shows current state.
       void loadListings();
-      throw new Error(msg);
+      throw new Error(msg, { cause: err });
     } finally {
       setIsActionBusy(false);
     }
@@ -746,7 +747,7 @@ export const AppContent: React.FC<{
         setPendingRegistration({ auctionId, metadata, deployment: expectedDeployment, txHash: receipt.hash });
         const errDetail = postErr instanceof Error ? postErr.message : String(postErr);
         throw new Error(
-          `Auction #${auctionId} is confirmed on-chain, but metadata registration failed: ${errDetail}. You can retry registration below without re-creating the auction.`
+          `Auction #${auctionId} is confirmed on-chain, but metadata registration failed: ${errDetail}. You can retry registration below without re-creating the auction.`, { cause: postErr }
         );
       }
 
@@ -776,11 +777,11 @@ export const AppContent: React.FC<{
           setUnconfirmedCreation(err.hash);
         }
         reportUnknown(err);
-        throw new Error('Transaction submitted; finality not established. Check the explorer before creating another auction.');
+        throw new Error('Transaction submitted; finality not established. Check the explorer before creating another auction.', { cause: err });
       }
       const msg = parseContractError(err, config?.abi);
       addToast('error', 'Listing Notice', msg);
-      throw new Error(msg);
+      throw new Error(msg, { cause: err });
     } finally {
       setIsActionBusy(false);
     }
@@ -833,7 +834,7 @@ export const AppContent: React.FC<{
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       addToast('error', 'Retry Registration Failed', msg);
-      throw new Error(msg);
+      throw new Error(msg, { cause: err });
     } finally {
       setIsActionBusy(false);
     }
@@ -1146,13 +1147,14 @@ export const AppContent: React.FC<{
       (err) => { if (live) setHostSpacesState({ key: hostSpacesKey, spaces: [], error: err instanceof Error ? err.message : String(err) }); },
     );
     return () => { live = false; };
-  }, [hostSpacesKey, spacesNonce, provider, config]);
-  const hostSpaces = hostSpacesState.key === hostSpacesKey ? hostSpacesState.spaces : [];
+  }, [hostSpacesKey, spacesNonce, provider, config, walletState.address]);
+  const hostSpaces = hostSpacesState.key === hostSpacesKey ? hostSpacesState.spaces : NO_HOST_SPACES;
 
   // The wallet's spaces and the windows each still holds, mirroring the contract's holdsWindow rule.
+  const ownedNowSec = getChainNowSec();
   const ownedSpaces = useMemo<OwnedSpace[]>(() => {
     if (!walletState.address) return [];
-    const now = getChainNowSec();
+    const now = ownedNowSec;
     const addr = walletState.address.toLowerCase();
     const spaces = new Map<string, OwnedSpace>();
     for (const l of listings) {
@@ -1172,7 +1174,7 @@ export const AppContent: React.FC<{
       space.blocked = chainSpace?.blocked ?? [];
     }
     return [...spaces.values()].sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
-  }, [listings, hostSpaces, walletState.address]);
+  }, [listings, hostSpaces, walletState.address, ownedNowSec]);
 
   // Space-control transactions (listers, transfer, time zone, blocked dates): sign, then re-read the chain.
   const handleSpaceAction = async (action: SpaceAction, label: string): Promise<boolean> => {
@@ -1254,7 +1256,7 @@ export const AppContent: React.FC<{
       void loadListings();
     } catch (err) {
       if (err instanceof TransactionOutcomeUnknown) throw err;
-      throw new Error(parseContractError(err, config.abi));
+      throw new Error(parseContractError(err, config.abi), { cause: err });
     } finally {
       setIsActionBusy(false);
     }
@@ -1393,7 +1395,6 @@ export const AppContent: React.FC<{
               locationMessage={locationMessage}
               locating={locating}
               amenityChoices={amenityOptions(listings, filters.amenities)}
-              totalSpots={listings.length}
               filteredCount={serverResult ? serverResult.total : filteredListings.length}
               listingsStatus={listingsView.read.status}
               viewMode={viewMode}

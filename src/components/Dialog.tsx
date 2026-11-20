@@ -191,7 +191,7 @@ export const Dialog: React.FC<DialogProps> = ({
       }
       host.remove();
     };
-    // The dialog mounts only while open; focus targets belong to this opening.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the dialog mounts only while open; focus targets belong to this opening
   }, [host]);
 
   return createPortal(

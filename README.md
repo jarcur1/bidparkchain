@@ -69,7 +69,7 @@ A host can select **Protected booking** in **List a Spot** or in **My Activity â
 - The owner can approve or revoke listers (`setSpaceLister`). A lister's auction is its own: it cancels it and receives the payout. Revoking a lister only stops new listings; its auctions with bids stand, and the space owner may cancel its bidless ones. `transferSpace` hands the space to a new owner and drops every approved lister; existing auctions and their payouts do not change.
 - `setSpaceTimeZone` records the IANA time zone name of the space's location (for example `America/Chicago`). The contract checks only the name's shape; `GET /api/listings` returns it as `timeZone` (empty until set), and the app shows that listing's parking times in it. An unset or unknown name falls back to the viewer's zone.
 - `blockSpaceWindow(spaceId, start, end)` blocks dates so nothing can be listed over them (`SpaceWindowUnavailable`) until `unblockSpaceWindow`. A block cannot cover a window the space still holds, and never affects existing auctions. Availability is every time that is neither held nor blocked.
-- The overlap check is bounded: each space keeps at most `MAX_SPACE_WINDOWS` (64) upcoming held or blocked windows (`SpaceCalendarFull` beyond that), and windows that ended or were released are pruned as new ones are checked. Measured on the local chain, listing with 63 upcoming windows costs about 389k gas, against 226k for an empty space; the listing that prunes 63 stale windows costs about 809k once.
+- The overlap check is bounded: each space keeps at most `MAX_SPACE_WINDOWS` (64) upcoming held or blocked windows (`SpaceCalendarFull` beyond that), and windows that ended or were released are pruned as new ones are checked. Measured on the local chain, <!-- gas:start -->listing with 63 upcoming windows costs about 391k gas, against 243k for an empty space; the listing that prunes 63 stale windows costs about 805k once.<!-- gas:end -->
 - `spaceAuctions(spaceId)` returns every auction on the space, oldest first. In verified-inventory mode, a verifier binds each physical stall to one opaque identity and one on-chain calendar. Unverified spaces cannot get new auctions or bids. The local demo keeps its normal one-off listings. See [host verification](docs/host-verification.md#verified-inventory-deployments) for the operator flow and its limits.
 
 ## Verify
@@ -78,9 +78,11 @@ Tests do not need `npm run dev` and never touch its chain, API, web server, or `
 
 ```sh
 npm run build            # strict TypeScript check and production build
+npm run lint             # ESLint: src, server, shared, scripts, tests
 npm test                 # UI, contracts, API, and seed recovery
 npm run test:ui          # jsdom component tests
 npm run test:contracts   # escrow contract suite on an owned chain
+npm run test:gas         # gas snapshot on an owned chain; fails beyond 1% drift
 npm run test:api         # API, metadata, and deploy/seed integration
 npx playwright install chromium   # once
 npm run test:e2e         # browser host/driver journey on an owned stack
@@ -88,7 +90,23 @@ npm run test:e2e         # browser host/driver journey on an owned stack
 
 CI (`.github/workflows/ci.yml`) runs all of the above on every pull request using `npm ci`.
 
+The gas figures in the parking section come from `tests/gas/gas-snapshot.json`. `npm run test:gas` runs in CI as the `gas` entry of the `test` matrix. It fails when a measured value drifts more than 1% from the snapshot, or when the README figures stop matching it. After an intended contract change, refresh both with `npm run gas:snapshot`. Solidity coverage is not produced: Hardhat 3.21 reports coverage only for Solidity tests (`hardhat --coverage test solidity`), emits no branch data, and cannot instrument this suite, which compiles with solc directly and drives owned `hardhat node` chains.
+
 `npm run health` is a separate, read-only check for a shared or public-testnet deployment: chain id, contract code, latest-block age, and API identity. It only issues read RPC methods. Configure it with `HEALTH_RPC_URL`, `HEALTH_CHAIN_ID`, `HEALTH_CONTRACT_ADDRESS`, and optionally `HEALTH_API_URL` / `HEALTH_MAX_BLOCK_AGE`; the **Deployment health** workflow runs it on demand.
+
+### Dependency audit
+
+The `audit` job in CI runs `npm audit --omit=dev --audit-level=high`. It fails on any high or critical advisory in the production dependency tree, including transitive packages. Development-only advisories are not gated.
+
+Dependabot (`.github/dependabot.yml`) checks npm and GitHub Actions for updates weekly. Minor and patch updates are grouped into one pull request per ecosystem, with at most three version-update pull requests open per ecosystem. `solc` stays out of the npm group because its exact pin is deliberate and `tests/contracts/compiler-profile.test.mjs` enforces it, so a compiler update is reviewed on its own.
+
+When the audit fails:
+
+1. For a direct dependency, upgrade to the patched version.
+2. For a transitive package, add an `overrides` entry for the patched version in `package.json` (see `tmp`), then run `npm install --package-lock-only --ignore-scripts`.
+3. Run `npm ci`, `npm run build`, and the suite that loads the changed package.
+4. Preview a forced fix with `npm audit fix --dry-run --force` before applying it. It can propose a downgrade, such as `solc` 0.8.36 for the `tmp` advisory, which would move the exact `solc` pin backwards.
+5. If no patched version exists, replace the package. If that is not possible, open an issue that records the advisory, exposure, and mitigation, and agree a time-limited exception with the maintainers before relaxing the audit gate.
 
 ### Read status
 
@@ -158,7 +176,7 @@ The API pins confirmed listings and registration checks to finalized state; mini
 
 ## Boundaries before real use
 
-This is a functional local prototype, **not an audited or production-ready payment system**. It does not verify listing ownership, availability, identities, municipal permission, gate access, or parking delivery. It has no fiat payments or production authentication/operations. Protected bookings enforce cancellation and dispute deadlines on chain, but the off-chain evidence review channel does not exist yet and no protection has been independently reviewed. A wallet address is not proof of property ownership.
+This is a functional local prototype, **not an audited or production-ready payment system**. It does not verify listing ownership, availability, identities, municipal permission, gate access, or parking delivery. It has no fiat payments or production authentication/operations. Protected bookings enforce cancellation and dispute deadlines on chain, and the off-chain evidence review channel is built. Resolvers are addresses the deploying account trusts, and no protection has been independently reviewed. A wallet address is not proof of property ownership.
 
 See the [shared testnet pilot policy](docs/pilot-policy.md) for the proposed pilot scope, the [booking and escrow policy](docs/booking-policy.md), and the approvals required before any real booking or funds. These decisions do not change the local prototype or enable a public deployment.
 

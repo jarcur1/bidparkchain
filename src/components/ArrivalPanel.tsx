@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import type { Listing } from '../types';
 import { checkInArrival, getArrival, saveArrival, type ArrivalView } from '../services/workspace';
 import { ARRIVAL_OPENS_BEFORE, CHECK_IN_OPENS_BEFORE } from '../utils/booking';
@@ -23,7 +23,7 @@ export const ArrivalPanel: React.FC<{ listing: Listing; currentAddress: string |
   const [auctionText, setAuctionText] = useState('');
   const [spaceText, setSpaceText] = useState('');
 
-  async function load() {
+  const load = useCallback(async () => {
     setStatus(null);
     try {
       const next = await getArrival(listing.id);
@@ -35,12 +35,12 @@ export const ArrivalPanel: React.FC<{ listing: Listing; currentAddress: string |
     } catch (err) {
       setStatus(message(err));
     }
-  }
+  }, [listing.id]);
   useEffect(() => {
     setView(null);
     setStatus(null);
     if (isHost && signedIn) void load();
-  }, [listing.id, isHost, signedIn]);
+  }, [load, isHost, signedIn]);
 
   if (!isHost && !isWinner) return null;
   const zone = listing.timeZone;
