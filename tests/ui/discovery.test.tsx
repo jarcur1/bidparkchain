@@ -98,7 +98,6 @@ describe('discovery filters', () => {
         <FilterBar
           filters={f({ arrive: epochToLocal(T0 + 3600), depart: epochToLocal(T0) })}
           onFilterChange={() => {}}
-          totalSpots={2}
           filteredCount={2}
           listingsStatus="success"
           viewMode="cards"
@@ -159,7 +158,7 @@ describe('discovery filters', () => {
   it('offers location only when given a handler and shows why it was refused', () => {
     const host = document.createElement('div');
     const root = createRoot(host);
-    const props = { filters: DEFAULT_FILTERS, onFilterChange: () => {}, totalSpots: 2, filteredCount: 2, listingsStatus: 'ready' as const, viewMode: 'split' as const, onViewModeChange: () => {} };
+    const props = { filters: DEFAULT_FILTERS, onFilterChange: () => {}, filteredCount: 2, listingsStatus: 'ready' as const, viewMode: 'split' as const, onViewModeChange: () => {} };
     const buttons = () => [...host.querySelectorAll('button')].filter((b) => b.textContent === 'Use my location');
     act(() => root.render(<FilterBar {...props} />));
     expect(buttons()).toHaveLength(0);
@@ -189,14 +188,16 @@ describe('active filter chips', () => {
   const destinations = destinationOptions(all);
   const amenities = amenityOptions(all);
   // FilterBar holds no filter state of its own, so the harness keeps it the way App does.
-  const mount = (initial: FilterState) => {
+  const mount = (initial: FilterState, onChange: (next: FilterState) => void = () => {}) => {
     const Harness = () => {
       const [filters, setFilters] = React.useState(initial);
       return (
         <FilterBar
           filters={filters}
-          onFilterChange={setFilters}
-          totalSpots={2}
+          onFilterChange={(next) => {
+            onChange(next);
+            setFilters(next);
+          }}
           filteredCount={1}
           listingsStatus="success"
           viewMode="cards"
@@ -244,6 +245,20 @@ describe('active filter chips', () => {
     expect(notApplied.labels()).toEqual([]);
     expect(notApplied.clearAll()).toBeNull();
     notApplied.unmount();
+  });
+
+  it('removing the destination chip resets a distance sort, so the select and the link match the order shown', () => {
+    let latest = f({});
+    const view = mount(f({ destination: '1 Near St', sortBy: 'distance' }), (next) => {
+      latest = next;
+    });
+    const select = () => view.el.querySelector<HTMLSelectElement>('#sort-select')!;
+    expect(select().value).toBe('distance');
+    act(() => view.chip('Near 1 Near St')?.click());
+    expect(select().value).toBe('ending-soon');
+    expect(latest.sortBy).toBe('ending-soon');
+    expect(filtersToSearch(latest, '').includes('sort=')).toBe(false);
+    view.unmount();
   });
 
   it('a chip clears only its own filter and moves focus to the chip that takes its place', () => {

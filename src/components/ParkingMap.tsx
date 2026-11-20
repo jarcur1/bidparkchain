@@ -226,12 +226,13 @@ export const ParkingMap: React.FC<ParkingMapProps> = ({
       });
       resizeObserver.observe(mapContainerRef.current);
 
+      const markerIndex = markersMapRef.current;
       return () => {
         resizeObserver.disconnect();
         map.remove();
         mapInstanceRef.current = null;
         markersLayerRef.current = null;
-        markersMapRef.current.clear();
+        markerIndex.clear();
       };
     } catch (err) {
       console.error('Failed to initialize Leaflet map:', err);
@@ -320,6 +321,7 @@ export const ParkingMap: React.FC<ParkingMapProps> = ({
         currentMap.set(listing.id, { marker, listing });
       }
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- selection is applied by the effect below, so markers and popups are not rebuilt on each selection; callbacks are read through callbacksRef
   }, [listings, currentAddress, eligibilityKey]); // NOT selectedListingId or callbacks!
 
   // Update selection CSS class and map pan without clearing markers or closing popups

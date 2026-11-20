@@ -9,12 +9,11 @@ import {
 } from 'lucide-react';
 import type { ReadStatus } from '../utils/readState';
 import type { FilterState, SortOption, SpotKindFilter, AuctionStatusFilter } from '../types';
-import { DEFAULT_FILTERS, RADIUS_OPTIONS_KM, activeFilterChips, validateFilters, type Place } from '../utils/discovery';
+import { DEFAULT_FILTERS, RADIUS_OPTIONS_KM, activeFilterChips, resolveDestination, validateFilters, type Place } from '../utils/discovery';
 
 interface FilterBarProps {
   filters: FilterState;
   onFilterChange: (filters: FilterState) => void;
-  totalSpots: number;
   filteredCount: number;
   listingsStatus: ReadStatus;
   viewMode: 'split' | 'cards' | 'map';
@@ -33,7 +32,6 @@ interface FilterBarProps {
 export const FilterBar: React.FC<FilterBarProps> = ({
   filters,
   onFilterChange,
-  totalSpots,
   filteredCount,
   listingsStatus,
   viewMode,
@@ -50,7 +48,16 @@ export const FilterBar: React.FC<FilterBarProps> = ({
   );
   const errors = validateFilters(filters);
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const set = (patch: Partial<FilterState>) => onFilterChange({ ...filters, ...patch });
+  // Distance sort needs a resolved destination; once the patch leaves none, fall back to the default sort so
+  // the select and the shared link match the order actually shown.
+  const set = (patch: Partial<FilterState>) => {
+    const next = { ...filters, ...patch };
+    if (next.sortBy === 'distance' && !resolveDestination(next.destination, destinationChoices)) {
+      next.sortBy = DEFAULT_FILTERS.sortBy;
+    }
+    onFilterChange(next);
+  };
+  const effectiveSort = filters.sortBy === 'distance' && !destination ? DEFAULT_FILTERS.sortBy : filters.sortBy;
   const toggleAmenity = (a: string) =>
     set({
       amenities: filters.amenities.includes(a)
@@ -312,7 +319,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
               <select
                 id="sort-select"
                 className="filter-select"
-                value={filters.sortBy}
+                value={effectiveSort}
                 onChange={(e) =>
                   onFilterChange({
                     ...filters,
@@ -352,7 +359,10 @@ export const FilterBar: React.FC<FilterBarProps> = ({
                   aria-label={`Remove filter: ${chip.label}`}
                   onClick={() => removeChip(i)}
                 >
-                  {chip.label} <span aria-hidden="true">×</span>
+                  <span className="chip-label" title={chip.label}>
+                    {chip.label}
+                  </span>
+                  <span aria-hidden="true">×</span>
                 </button>
               ))}
               {chips.length > 1 && (
