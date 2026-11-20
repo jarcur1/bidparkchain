@@ -1,3 +1,4 @@
+import type { DeploymentIdentity } from '../types';
 export type SpotKind = 'garage' | 'driveway' | 'covered';
 /** Fields of a saved listing draft or template; the dates are wall-clock text in the space's time zone. */
 export interface DraftFields {

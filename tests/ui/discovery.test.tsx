@@ -98,7 +98,6 @@ describe('discovery filters', () => {
         <FilterBar
           filters={f({ arrive: epochToLocal(T0 + 3600), depart: epochToLocal(T0) })}
           onFilterChange={() => {}}
-          totalSpots={2}
           filteredCount={2}
           listingsStatus="success"
           viewMode="cards"
@@ -159,7 +158,7 @@ describe('discovery filters', () => {
   it('offers location only when given a handler and shows why it was refused', () => {
     const host = document.createElement('div');
     const root = createRoot(host);
-    const props = { filters: DEFAULT_FILTERS, onFilterChange: () => {}, totalSpots: 2, filteredCount: 2, listingsStatus: 'ready' as const, viewMode: 'split' as const, onViewModeChange: () => {} };
+    const props = { filters: DEFAULT_FILTERS, onFilterChange: () => {}, filteredCount: 2, listingsStatus: 'ready' as const, viewMode: 'split' as const, onViewModeChange: () => {} };
     const buttons = () => [...host.querySelectorAll('button')].filter((b) => b.textContent === 'Use my location');
     act(() => root.render(<FilterBar {...props} />));
     expect(buttons()).toHaveLength(0);

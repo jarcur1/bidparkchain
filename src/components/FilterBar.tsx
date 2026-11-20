@@ -14,7 +14,6 @@ import { DEFAULT_FILTERS, RADIUS_OPTIONS_KM, validateFilters, type Place } from 
 interface FilterBarProps {
   filters: FilterState;
   onFilterChange: (filters: FilterState) => void;
-  totalSpots: number;
   filteredCount: number;
   listingsStatus: ReadStatus;
   viewMode: 'split' | 'cards' | 'map';
@@ -33,7 +32,6 @@ interface FilterBarProps {
 export const FilterBar: React.FC<FilterBarProps> = ({
   filters,
   onFilterChange,
-  totalSpots,
   filteredCount,
   listingsStatus,
   viewMode,

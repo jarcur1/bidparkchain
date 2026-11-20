@@ -8,8 +8,10 @@ import { signInCookie } from '../support/auth.mjs';
 let scope, chain, deployment, runtime, server, url;
 const cookies = {};
 const parse = ethers.parseEther;
+let identity;
+// Every link request names the deployment the host created the replacement on.
 const post = (index, route, body) => fetch(`${url}${route}`, {
-  method: 'POST', headers: { cookie: cookies[index], 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  method: 'POST', headers: { cookie: cookies[index], 'Content-Type': 'application/json' }, body: JSON.stringify({ deployment: identity, ...body }),
 });
 
 async function createAuction(signerIndex = 0) {
@@ -29,6 +31,8 @@ beforeAll(async () => {
   server = runtime.app.listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
   url = `http://127.0.0.1:${server.address().port}`;
+  const config = await (await fetch(`${url}/api/config`)).json();
+  identity = { chainId: config.chainId, contractAddress: config.contractAddress, deploymentBlock: config.deploymentBlock, deploymentBlockHash: config.deploymentBlockHash };
   for (const index of [0, 1, 2]) cookies[index] = await signInCookie(url, chain.wallet(index));
 });
 afterAll(async () => {
@@ -50,6 +54,10 @@ it('links a replacement for the host only, accepts a repeat of the same link, an
 
   expect((await fetch(`${url}${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status).toBe(401);
   expect((await post(0, route, { replacementId: original })).status).toBe(400);
+  // A request naming another deployment (a reset chain, a different contract, or none) is refused before anything is recorded.
+  for (const deployment of [{ ...identity, deploymentBlockHash: `0x${'11'.repeat(32)}` }, { ...identity, contractAddress: ethers.ZeroAddress }, undefined]) {
+    expect((await post(0, route, { replacementId: replacement, deployment })).status).toBe(409);
+  }
   expect((await post(1, route, { replacementId: replacement })).status).toBe(403);
   expect((await post(0, `/api/auctions/${unbid}/replacement`, { replacementId: String(Number(unbid) + 50) })).status).toBe(404);
   const noBids = await createAuction();

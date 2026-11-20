@@ -48,8 +48,13 @@ export function readTransactions(): TxRecord[] {
   } catch { /* fall back to memory */ }
   return memory;
 }
+/** A confirmed replacement whose link is not yet recorded: its only retry control is this record, so it is never evicted. */
+const hasPendingLink = (r: TxRecord) => Boolean(r.replaces && r.auctionId && !r.linked);
+
 function write(records: TxRecord[]) {
-  memory = records.slice(-LIMIT);
+  // Only the newest LIMIT other records are kept; pending links stay, however many newer transactions follow.
+  let others = records.filter((r) => !hasPendingLink(r)).length - LIMIT;
+  memory = records.filter((r) => hasPendingLink(r) || others-- <= 0);
   try { localStorage.setItem(KEY, JSON.stringify(memory)); } catch { /* memory only */ }
 }
 

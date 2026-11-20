@@ -11,8 +11,8 @@ const same = (a, b) => a.toLowerCase() === b.toLowerCase();
  * (auction owner, or its space's owner or approved lister), the original must have a bid, and the
  * replacement must be a later auction. Nothing here moves funds or cancels anything.
  */
-export function mountReplacements(app, { db, pinnedReader, contractAddress }) {
-  /** POST /api/auctions/:id/replacement { replacementId }: repeating the same pair succeeds and changes nothing. */
+export function mountReplacements(app, { db, pinnedReader, contractAddress, isActiveDeployment }) {
+  /** POST /api/auctions/:id/replacement { replacementId, deployment }: 409 unless `deployment` is the active one; repeating the same pair succeeds and changes nothing. */
   app.post('/api/auctions/:id/replacement', async (req, res) => {
     const session = readSession(db, req);
     if (!session) return res.status(401).json({ error: 'Sign in with your wallet first' });

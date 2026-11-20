@@ -599,7 +599,7 @@ export function createApp(options = {}) {
         // Read the clock after the auction state so the clock is never older than the state it judges.
         chain = { ...(await readChainSnapshot(deployment, pinned)), blockHash: pinned.hash };
         await assertCanonicalFinalized(pinned);
-      } catch (rpcErr) {
+      } catch {
         res.status(503).json({ error: 'Failed to read listing state from blockchain node' });
         return;
       }
@@ -896,7 +896,7 @@ export function createApp(options = {}) {
       let onchain, space;
       try {
         [onchain, space] = await Promise.all([contract.auctions(canonicalId), readLocalSpace(contract, canonicalId)]);
-      } catch (err) {
+      } catch {
         res.status(503).json({ error: 'Failed to query auction from smart contract' });
         return;
       }
@@ -1268,7 +1268,16 @@ export function createApp(options = {}) {
       : 'BIDPARK_ARRIVAL_KEY is not set: arrival instructions are stored unencrypted (local/demo mode only).' }),
   }));
 
-  mountReplacements(app, { db, pinnedReader, contractAddress: () => loadDeployment()?.contractAddress ?? null });
+  mountReplacements(app, {
+    db,
+    pinnedReader,
+    contractAddress: () => loadDeployment()?.contractAddress ?? null,
+    /** Whether a client-supplied identity names the deployment (chain, contract, deployment block and hash) this API serves. */
+    isActiveDeployment: async (expected) => {
+      const deployment = loadDeployment();
+      return Boolean(deployment) && matchesDeployment(expected, await readChainSnapshot(deployment));
+    },
+  });
 
   mountArrival(app, {
     db, requireKey: settings.hosted, tokenKey: parseArrivalKey(options.arrivalTokenKey ?? process.env.BIDPARK_ARRIVAL_TOKEN_KEY), pinnedReader, contractAddress: () => loadDeployment()?.contractAddress ?? null });
@@ -1333,7 +1342,7 @@ export function createApp(options = {}) {
   });
 
   // Centralized JSON error handler - no internal stack leak
-  app.use((err, req, res, next) => {
+  app.use((err, req, res, _next) => {
     const status = typeof err.status === 'number' && err.status >= 400 && err.status < 600 ? err.status : 500;
     const message = status === 500 ? 'Internal server error' : err.message || 'Request failed';
     res.status(status).json({ error: message });
