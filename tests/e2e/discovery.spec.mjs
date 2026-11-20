@@ -46,14 +46,14 @@ test('discovery filters work by keyboard on a narrow screen and survive a reload
   }, sec);
   const depart = mueller.parkingEnd - 600;
   await page.getByLabel('Arrive').fill(await local(depart - 3600));
-  await page.getByLabel('Depart').fill(await local(depart));
+  await page.getByLabel('Depart', { exact: true }).fill(await local(depart));
   await expect(cards).toHaveCount(1);
   await expect(page.getByRole('article', { name: `Listing: ${MUELLER}`, exact: true })).toBeVisible();
   await page.getByLabel('Arrive').fill(await local(depart + 3600));
   await expect(page.getByText('Departure must be after arrival. The visit filter is not applied.')).toBeVisible();
   await expect(cards).toHaveCount(7);
   await page.getByLabel('Arrive').fill('');
-  await page.getByLabel('Depart').fill('');
+  await page.getByLabel('Depart', { exact: true }).fill('');
 
   // Amenities: the disclosure and checkboxes work from the keyboard.
   await page.getByText('Amenities', { exact: true }).focus();
@@ -75,6 +75,45 @@ test('discovery filters work by keyboard on a narrow screen and survive a reload
   await page.getByRole('button', { name: 'Reset all filters' }).click();
   await expect(cards).toHaveCount(7);
   await expect(page).toHaveURL(stack.webUrl.endsWith('/') ? stack.webUrl : `${stack.webUrl}/`);
+});
+
+test('active filters show as chips: a chip clears only its filter from the keyboard, and Clear all resets the rest', async ({ page, stack }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(stack.webUrl);
+  await page.getByTitle('Cards view only').click();
+  const cards = page.getByRole('article', { name: /^Listing: / });
+  await expect(cards).toHaveCount(7);
+  const chip = (label) => page.getByRole('button', { name: `Remove filter: ${label}`, exact: true });
+  const clearAll = page.getByRole('button', { name: 'Clear all', exact: true });
+
+  await page.getByRole('radio', { name: 'Garage', exact: true }).click();
+  await page.getByLabel('Max', { exact: true }).fill('0.05');
+  await expect(chip('Type: garage')).toBeVisible();
+  await expect(chip('Current price up to 0.05 ETH')).toBeVisible();
+  await expect(clearAll).toBeVisible();
+
+  // Keyboard: a chip removes only its filter, and focus moves to the chip that takes its place.
+  await chip('Type: garage').focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('radio', { name: 'All Spaces', exact: true })).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByLabel('Max', { exact: true })).toHaveValue('0.05');
+  await expect(chip('Current price up to 0.05 ETH')).toBeFocused();
+  await expect(clearAll).toHaveCount(0);
+
+  // The last chip returns focus to the search field.
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#spot-search')).toBeFocused();
+  await expect(cards).toHaveCount(7);
+
+  // Clear all resets every filter at once.
+  await page.getByRole('radio', { name: 'Garage', exact: true }).click();
+  await page.getByLabel('Max', { exact: true }).fill('0.05');
+  await clearAll.click();
+  await expect(page.getByLabel('Max', { exact: true })).toHaveValue('');
+  await expect(page.getByRole('radio', { name: 'All Spaces', exact: true })).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByRole('group', { name: 'Active filters' })).toHaveCount(0);
+  await expect(page.locator('#spot-search')).toBeFocused();
+  await expect(cards).toHaveCount(7);
 });
 
 test('discovery keeps filtering the loaded listings when the search service fails', async ({ page, stack }) => {

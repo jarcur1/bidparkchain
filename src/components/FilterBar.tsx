@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import type { ReadStatus } from '../utils/readState';
 import type { FilterState, SortOption, SpotKindFilter, AuctionStatusFilter } from '../types';
-import { DEFAULT_FILTERS, RADIUS_OPTIONS_KM, validateFilters, type Place } from '../utils/discovery';
+import { DEFAULT_FILTERS, RADIUS_OPTIONS_KM, activeFilterChips, validateFilters, type Place } from '../utils/discovery';
 
 interface FilterBarProps {
   filters: FilterState;
@@ -60,6 +60,28 @@ export const FilterBar: React.FC<FilterBarProps> = ({
 
   const handleReset = () => onFilterChange(DEFAULT_FILTERS);
 
+  const chips = activeFilterChips(filters, destination);
+  const searchRef = React.useRef<HTMLInputElement>(null);
+  const chipsRef = React.useRef<HTMLDivElement>(null);
+  // Focus after a chip is removed: the chip that takes its place (or the new last chip), or the search field when none remain.
+  const pendingFocus = React.useRef<number | null>(null);
+  React.useEffect(() => {
+    if (pendingFocus.current === null) return;
+    const index = pendingFocus.current;
+    pendingFocus.current = null;
+    const buttons = chipsRef.current?.querySelectorAll<HTMLButtonElement>('.chip-btn') ?? [];
+    if (buttons.length) buttons[Math.min(index, buttons.length - 1)].focus();
+    else searchRef.current?.focus();
+  }, [filters]);
+  const removeChip = (index: number) => {
+    pendingFocus.current = index;
+    set(chips[index].reset);
+  };
+  const clearAll = () => {
+    pendingFocus.current = 0;
+    handleReset();
+  };
+
   return (
     <div className="filter-toolbar">
       {/* Top row: search & primary kind pills */}
@@ -69,6 +91,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           <input
             type="text"
             id="spot-search"
+            ref={searchRef}
             aria-label="Search parking spots"
             className="search-input"
             placeholder="Search by neighborhood, street address, venue, amenities..."
@@ -319,6 +342,26 @@ export const FilterBar: React.FC<FilterBarProps> = ({
                   : `${filteredCount} ${filteredCount === 1 ? 'spot' : 'spots'} ${listingsStatus === 'stale' ? 'last known' : 'available'}`}
             </span>
           </div>
+          {chips.length > 0 && (
+            <div className="chips-row active-filters" role="group" aria-label="Active filters" ref={chipsRef}>
+              {chips.map((chip, i) => (
+                <button
+                  key={chip.label}
+                  type="button"
+                  className="chip-btn"
+                  aria-label={`Remove filter: ${chip.label}`}
+                  onClick={() => removeChip(i)}
+                >
+                  {chip.label} <span aria-hidden="true">×</span>
+                </button>
+              ))}
+              {chips.length > 1 && (
+                <button type="button" className="btn-reset-filters" onClick={clearAll}>
+                  Clear all
+                </button>
+              )}
+            </div>
+          )}
 
           {isFiltered && (
             <button

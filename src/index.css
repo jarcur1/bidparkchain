@@ -2168,6 +2168,11 @@ a {
   border-color: var(--color-forest-tint-border);
 }
 
+.active-filters {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
 .bid-escrow-explainer {
   display: flex;
   align-items: flex-start;
