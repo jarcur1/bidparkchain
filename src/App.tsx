@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityView } from './components/ActivityView';
 import { BidModal } from './components/BidModal';
-import { CreateListingModal, type OwnedSpace } from './components/CreateListingModal';
+import { CreateListingModal } from './components/CreateListingModal';
 import { DetailModal } from './components/DetailModal';
 import { CampusScenarioBanner } from './components/CampusScenarioBanner';
 import { DisclosuresBanner } from './components/DisclosuresBanner';
@@ -27,24 +27,23 @@ import { useListingSearch } from './hooks/useListingSearch';
 import { useListings } from './hooks/useListings';
 import { useRefunds } from './hooks/useRefunds';
 import { useTransactions } from './hooks/useTransactions';
+import { useHostSpaces } from './hooks/useHostSpaces';
 import { createListingRecord, fetchConfig, stageListingMetadata } from './services/api';
 import type { TxObserver } from './services/blockchain';
 import { patchTransaction, type TxRecord } from './utils/txStore';
 import { TransactionCenter } from './components/TransactionCenter';
 import { Inbox, InboxAnnouncer, useInbox } from './components/Inbox';
-import { HostWorkspace, heldWindows, ZoneList } from './components/HostWorkspace';
+import { HostWorkspace, ZoneList } from './components/HostWorkspace';
 import { ResolverQueue, REVIEW_ACTIONS, submitReview } from './components/Disputes';
 import { HostVerificationPanel, ModerationPanel, useVerifications } from './components/Verification';
 import {
   cancelAuction,
   claimPayout,
   createAuctionOnChain,
-  fetchHostSpaces,
   fetchSpaceAttestation,
   sendSpaceAttestation,
   type SpaceAttestation,
   sendSpaceAction,
-  type HostSpace,
   type SpaceAction,
   getContractInstance,
   parseContractError,
@@ -87,8 +86,6 @@ import {
   type ReadResult,
   type ReadState,
 } from './utils/readState';
-
-const NO_HOST_SPACES: HostSpace[] = [];
 
 export const deploymentKeyOf = (config: Config | null) =>
   config
@@ -789,47 +786,7 @@ export const AppContent: React.FC<{
     ).length;
   }, [listings, walletState.address]);
 
-  // Spaces this wallet owns or may list on, read from the chain, reloaded after each space action.
-  const [spacesNonce, setSpacesNonce] = useState(0);
-  const [hostSpacesState, setHostSpacesState] = useState<{ key: string; spaces: HostSpace[]; error: string | null }>({ key: '', spaces: [], error: null });
-  const hostSpacesKey = walletState.address && configDeployment && walletState.isReady ? `${walletState.address}|${configDeployment}` : '';
-  useEffect(() => {
-    if (!hostSpacesKey || !provider || !config?.contractAddress) return;
-    let live = true;
-    const contract = getContractInstance(config.contractAddress, config.abi, provider);
-    fetchHostSpaces(contract, walletState.address as string, config.deploymentBlock, config.confirmation).then(
-      (spaces) => { if (live) setHostSpacesState({ key: hostSpacesKey, spaces, error: null }); },
-      (err) => { if (live) setHostSpacesState({ key: hostSpacesKey, spaces: [], error: err instanceof Error ? err.message : String(err) }); },
-    );
-    return () => { live = false; };
-  }, [hostSpacesKey, spacesNonce, provider, config, walletState.address]);
-  const hostSpaces = hostSpacesState.key === hostSpacesKey ? hostSpacesState.spaces : NO_HOST_SPACES;
-
-  // The wallet's spaces and the windows each still holds, mirroring the contract's holdsWindow rule.
-  const ownedNowSec = getChainNowSec();
-  const ownedSpaces = useMemo<OwnedSpace[]>(() => {
-    if (!walletState.address) return [];
-    const now = ownedNowSec;
-    const addr = walletState.address.toLowerCase();
-    const spaces = new Map<string, OwnedSpace>();
-    for (const l of listings) {
-      if (l.owner.toLowerCase() === addr && !spaces.has(l.spaceId)) spaces.set(l.spaceId, { id: l.spaceId, title: l.title, held: [] });
-    }
-    for (const h of hostSpaces) {
-      if (!spaces.has(h.id)) {
-        const latest = listings.find((l) => l.spaceId === h.id);
-        spaces.set(h.id, { id: h.id, title: latest?.title ?? 'No listings yet', held: [], lister: h.isLister });
-      }
-    }
-    for (const space of spaces.values()) {
-      space.title = listings.find((l) => l.spaceId === space.id)?.title ?? space.title;
-      space.held = heldWindows(listings, space.id, now);
-      const chainSpace = hostSpaces.find((h) => h.id === space.id);
-      space.timeZone = chainSpace?.timeZone ?? '';
-      space.blocked = chainSpace?.blocked ?? [];
-    }
-    return [...spaces.values()].sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
-  }, [listings, hostSpaces, walletState.address, ownedNowSec]);
+  const { hostSpacesKey, hostSpacesState, hostSpaces, ownedSpaces, setSpacesNonce } = useHostSpaces({ walletState, provider, config, configDeployment, listings });
 
   // Space-control transactions (listers, transfer, time zone, blocked dates): sign, then re-read the chain.
   const handleSpaceAction = async (action: SpaceAction, label: string): Promise<boolean> => {
