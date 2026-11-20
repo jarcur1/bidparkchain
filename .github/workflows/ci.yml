@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: [ui, contracts, api]
+        project: [ui, contracts, api, gas]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
