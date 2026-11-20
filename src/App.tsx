@@ -30,6 +30,7 @@ import { Toast } from './components/Toast';
 import { WalletModal } from './components/WalletModal';
 import { useWallet, WalletProvider } from './context/WalletContext';
 import { SessionProvider, useSession } from './context/SessionContext';
+import { useToasts } from './hooks/useToasts';
 import { linkReplacement } from './services/workspace';
 import { ApiError, createListingRecord, fetchConfig, fetchListings, searchListings, searchListingsPages, stageListingMetadata } from './services/api';
 import type { TxObserver } from './services/blockchain';
@@ -72,7 +73,6 @@ import type {
   ListingsResponse,
   SearchListing,
   SpotMetadata,
-  ToastMessage,
   UnindexedAuction,
 } from './types';
 import {
@@ -220,7 +220,7 @@ export const AppContent: React.FC<{
   const [refundState, setRefundState] = useState<RefundState | null>(null);
 
   // Notifications
-  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const { toasts, addToast, dismissToast } = useToasts();
 
   // Search & Filter State
   const [filters, setFilters] = useState<FilterState>(() => filtersFromSearch(window.location.search));
@@ -320,18 +320,6 @@ export const AppContent: React.FC<{
     const ids = listing.duplicateSpaces.map((d) => `#${d.spaceId}`).join(', ');
     addToast('info', 'Possible duplicate space', `Another host's space (${ids}) has the same address or location. Moderators have been notified; make sure you are not listing someone else's space.`);
   };
-
-  const addToast = useCallback(
-    (type: 'success' | 'error' | 'info', title: string, message?: string, txHash?: string) => {
-      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      setToasts((prev) => [...prev, { id, type, title, message, txHash }]);
-    },
-    []
-  );
-
-  const dismissToast = useCallback((id: string) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  }, []);
 
   // Stable navigation/selection callbacks
   const handleSelectListing = useCallback((listing: Listing) => {
