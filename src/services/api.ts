@@ -92,20 +92,26 @@ export async function searchListings(query: string, cursor?: string): Promise<Li
   return data as ListingSearchResponse;
 }
 
+/** A search reloaded across pages: how many it read, and why it stopped early (its nextCursor is the one that failed). */
+export interface ListingSearchPages extends ListingSearchResponse {
+  pagesLoaded: number;
+  pageError?: ApiError;
+}
+
 /**
  * The first `pages` pages of a search, each continuing the previous one's cursor so they share one block.
- * A failure after the first page keeps what was read; the first page failing is the search failing.
+ * A failure after the first page keeps what was read and reports it as pageError; the first page failing is the search failing.
  */
-export async function searchListingsPages(query: string, pages: number): Promise<ListingSearchResponse> {
-  let result = await searchListings(query);
+export async function searchListingsPages(query: string, pages: number): Promise<ListingSearchPages> {
+  let result: ListingSearchPages = { ...(await searchListings(query)), pagesLoaded: 1 };
   for (let n = 1; n < pages && result.nextCursor; n++) {
     let page: ListingSearchResponse;
     try {
       page = await searchListings(query, result.nextCursor);
-    } catch {
-      break;
+    } catch (err) {
+      return { ...result, pageError: err instanceof ApiError ? err : new ApiError(err instanceof Error ? err.message : String(err), 0) };
     }
-    result = { ...page, listings: [...result.listings, ...page.listings] };
+    result = { ...page, listings: [...result.listings, ...page.listings], pagesLoaded: n + 1 };
   }
   return result;
 }

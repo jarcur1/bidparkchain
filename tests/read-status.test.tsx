@@ -2,7 +2,8 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Config, Listing, ListingSearchResponse, ListingsResponse } from '../src/types';
+import type { Config, Listing, ListingsResponse } from '../src/types';
+import type { ListingSearchPages } from '../src/services/api';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -90,7 +91,8 @@ function snapshot(listings: Listing[], config = CONFIG_A): ListingsResponse {
 }
 
 // No chain, so the marketplace keeps filtering the loaded snapshot locally rather than using server results.
-const searchAnswer = (): ListingSearchResponse => ({
+const searchAnswer = (): ListingSearchPages => ({
+  pagesLoaded: 1,
   listings: [],
   total: 0,
   nextCursor: null,
@@ -648,12 +650,13 @@ describe('server search read status', () => {
     await mount(<App />);
     await searchSettles();
 
-    expect(notice()?.getAttribute('role')).toBe('status');
+    expect(notice()?.closest('[role="status"]')).not.toBeNull();
     expect(text()).toContain('Server search unavailable');
     expect(text()).toContain('Search service down');
     expect(text()).toContain('Sunny Garage');
 
-    mockSearch.mockResolvedValue(searchAnswer());
+    // An answer for this deployment is accepted and clears the notice.
+    mockSearch.mockResolvedValue({ ...searchAnswer(), chain: snapshot([]).chain, listings: [listing('1', 'Sunny Garage')], total: 1 });
     const callsBeforeRetry = mockSearch.mock.calls.length;
     await click(button('Retry search'));
     await searchSettles();
@@ -671,6 +674,8 @@ describe('server search read status', () => {
     await mount(<App />);
     await searchSettles();
     expect(notice()).toBeNull();
+    // The live region is mounted before any failure so its text is announced when it appears.
+    expect(notice()).toBeNull();
 
     await typeSearch('garage');
     expect(notice()).not.toBeNull();
@@ -679,9 +684,44 @@ describe('server search read status', () => {
     expect(notice()).toBeNull();
   });
 
+  it('an answer from another deployment is discarded without clearing the notice', async () => {
+    mockListings.mockResolvedValue(snapshot([listing('1', 'Sunny Garage')]));
+    mockSearch.mockRejectedValue(new Error('Search service down'));
+    await mount(<App />);
+    await searchSettles();
+    expect(notice()).not.toBeNull();
+
+    mockSearch.mockResolvedValue({ ...searchAnswer(), chain: snapshot([], { ...CONFIG_A, chainId: CONFIG_A.chainId + 1 }).chain });
+    await click(button('Retry search'));
+    await searchSettles();
+    expect(notice()).not.toBeNull();
+  });
+
+  it('returning to a failed query before the other query settles does not bring the old notice back', async () => {
+    mockListings.mockResolvedValue(snapshot([listing('1', 'Sunny Garage')]));
+    const pending = deferred<ListingSearchPages>();
+    let garageCalls = 0;
+    mockSearch.mockImplementation((query) => {
+      if (query.includes('q=garage')) return ++garageCalls === 1 ? Promise.reject(new Error('Search service down')) : pending.promise;
+      return query.includes('q=') ? pending.promise : Promise.resolve(searchAnswer());
+    });
+    await mount(<App />);
+    await searchSettles();
+    await typeSearch('garage');
+    expect(notice()).not.toBeNull();
+
+    await typeSearch('other');
+    expect(notice()).toBeNull();
+    await typeSearch('garage');
+    // The earlier failure is gone: the notice waits for the new request's own outcome.
+    expect(notice()).toBeNull();
+    // The query lives in the URL; leave it clear for the next test.
+    await typeSearch('');
+  });
+
   it('a failure from a search superseded by a newer query shows no notice', async () => {
     mockListings.mockResolvedValue(snapshot([listing('1', 'Sunny Garage')]));
-    const stale = deferred<ListingSearchResponse>();
+    const stale = deferred<ListingSearchPages>();
     mockSearch.mockImplementation((query) => (query.includes('q=') ? Promise.resolve(searchAnswer()) : stale.promise));
     await mount(<App />);
     await searchSettles();

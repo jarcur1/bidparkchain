@@ -1062,14 +1062,17 @@ export const AppContent: React.FC<{
     key: string; deployment: string | null; listings: SearchListing[]; total: number; nextCursor: string | null; loadingMore: boolean;
     /** Pages loaded, so a listings refresh can reload as many. */
     pages: number;
+    /** Why the last cursor request failed; the pages already shown stay. */
+    pageError: string | null;
   } | null>(null);
   const serverSearchRef = useRef(serverSearch);
   serverSearchRef.current = serverSearch;
   const [searchNonce, setSearchNonce] = useState(0);
-  // The query and deployment of the last search that failed. Any answer clears it; the notice shows only for that query.
+  // The query and deployment of the last search that failed. An accepted answer or a new query clears it.
   const [searchFailure, setSearchFailure] = useState<{ key: string; deployment: string | null; error: string } | null>(null);
   const snapshotBlock = listingsView.chain?.blockNumber;
   const listingsDeployment = listingsView.deployment;
+  useEffect(() => { setSearchFailure(null); }, [searchKey, listingsDeployment]);
   useEffect(() => {
     if (snapshotBlock === undefined) return;
     let live = true;
@@ -1080,11 +1083,13 @@ export const AppContent: React.FC<{
       searchListingsPages(searchKey, keep)
         .then((r) => {
           if (!live) return;
-          setSearchFailure(null);
           const deployment = r.chain ? deploymentKey(r.chain) : null;
-          setServerSearch(deployment === listingsDeployment
-            ? { key: searchKey, deployment, listings: r.listings, total: r.total, nextCursor: r.nextCursor, loadingMore: false, pages: keep }
-            : null);
+          if (deployment !== listingsDeployment) { setServerSearch(null); return; }
+          setSearchFailure(null);
+          setServerSearch({
+            key: searchKey, deployment, listings: r.listings, total: r.total, nextCursor: r.nextCursor, loadingMore: false,
+            pages: r.pagesLoaded, pageError: r.pageError ? r.pageError.message : null,
+          });
         })
         .catch((err: unknown) => {
           if (!live) return;
@@ -1106,16 +1111,18 @@ export const AppContent: React.FC<{
   const loadMoreResults = useCallback(async () => {
     const current = serverSearch;
     if (!current?.nextCursor || current.loadingMore) return;
-    setServerSearch({ ...current, loadingMore: true });
+    setServerSearch({ ...current, loadingMore: true, pageError: null });
     try {
       const page = await searchListings(current.key, current.nextCursor);
       setServerSearch((s) => s?.key === current.key && s.nextCursor === current.nextCursor
-        ? { ...s, listings: [...s.listings, ...page.listings], nextCursor: page.nextCursor, loadingMore: false, pages: s.pages + 1 }
+        ? { ...s, listings: [...s.listings, ...page.listings], nextCursor: page.nextCursor, loadingMore: false, pages: s.pages + 1, pageError: null }
         : s);
     } catch (err) {
       // A cursor whose block was replaced starts the search again from the first page.
-      if (err instanceof ApiError && err.status === 409) setSearchNonce((n) => n + 1);
-      setServerSearch((s) => (s === null ? s : { ...s, loadingMore: false }));
+      const replaced = err instanceof ApiError && err.status === 409;
+      if (replaced) setSearchNonce((n) => n + 1);
+      const message = err instanceof Error ? err.message : String(err);
+      setServerSearch((s) => (s === null ? s : { ...s, loadingMore: false, pageError: replaced ? null : message }));
     }
   }, [serverSearch]);
 
@@ -1381,9 +1388,7 @@ export const AppContent: React.FC<{
               </div>
             )}
 
-            {searchNotice && (
-              <SearchFailureNotice error={searchNotice.error} onRetry={() => setSearchNonce((n) => n + 1)} />
-            )}
+            <SearchFailureNotice error={searchNotice?.error ?? null} onRetry={() => setSearchNonce((n) => n + 1)} />
 
             {/* Filter Toolbar */}
             <FilterBar
@@ -1424,6 +1429,7 @@ export const AppContent: React.FC<{
                     more={serverResult && {
                       remaining: serverResult.total - serverResult.listings.length,
                       loading: serverResult.loadingMore,
+                      error: serverResult.pageError,
                       onLoad: () => void loadMoreResults(),
                     }}
                   />

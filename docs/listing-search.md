@@ -64,7 +64,7 @@ Kind, amenities, area and text are filtered from stored metadata first. Each RPC
 
 ## When the search request fails
 
-If the search request fails, the marketplace shows a non-blocking **Server search unavailable** notice with a **Retry search** button and filters the listings already loaded in the browser instead. That local result is not a server search: it covers only the listings loaded so far. The notice belongs to the query that failed and clears when that query changes, when a search succeeds, or when the query is cleared.
+If the search request fails, the marketplace shows a non-blocking **Server search unavailable** notice with a **Retry search** button and filters the listings already loaded in the browser instead. That local result is not a server search: it covers only the listings loaded so far. The notice belongs to the query that failed and clears when that query changes, when a search succeeds, or when the query is cleared. If only a later page fails (**Show more**, or a refresh reloading the pages already shown), the pages already shown stay, the error is shown, and **Retry loading more** retries; a cursor whose block was replaced (409) restarts the search instead.
 
 ## Served from the event index
 

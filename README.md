@@ -114,7 +114,7 @@ Configuration, listings, the claimable-refund read and the wallet balance each t
 
 If a listings response belongs to a different deployment, the interface keeps any previous listings marked stale, closes their dialogs, and refreshes configuration. Bid preflight will not sign if the wallet changes while the fresh listing is being read.
 
-Marketplace search has its own notice. When a search request fails, the marketplace keeps filtering the listings already loaded in the browser and shows a non-blocking **Server search unavailable** notice with a **Retry search** button. The notice belongs to the query that failed: it clears when that query changes, when a search succeeds, or when the query is cleared. A search that was superseded (the query changed, or the page unmounted) never shows one.
+Marketplace search has its own notice. When a search request fails, the marketplace keeps filtering the listings already loaded in the browser and shows a non-blocking **Server search unavailable** notice with a **Retry search** button. The notice belongs to the query that failed: it clears when that query changes, when a search succeeds, or when the query is cleared. A search that was superseded (the query changed, or the page unmounted) never shows one, and neither does an answer from another deployment. If only a later page fails (**Show more**, or reloading the pages already shown), the pages already shown stay and a **Retry loading more** button appears.
 
 `npm run test:ui` covers competing bids, closure during editing, wallet and deployment changes, and agreement between cards and map popups.
 
