@@ -115,13 +115,19 @@ export async function createScope(name) {
       return { stop: () => handle.stop(), exited: handle.exited };
     },
 
-    /** Starts a dedicated Hardhat node on a free port and returns connected helpers. */
-    async startChain() {
+    /**
+     * Starts a dedicated Hardhat node on a free port and returns connected helpers.
+     * @param {{ initialDate?: string }} [options] genesis timestamp (ISO 8601); defaults to the wall clock
+     */
+    async startChain({ initialDate } = {}) {
       const port = await findFreePort();
       const rpcUrl = `http://127.0.0.1:${port}`;
       const service = await scope.startService({
         label: `Hardhat node :${port}`,
-        args: [HARDHAT_CLI, 'node', '--hostname', '127.0.0.1', '--port', String(port)],
+        // `hardhat node` defaults to the built-in `node` network; a pinned genesis comes from the configured
+        // `hardhat` network (same chain id and mnemonic) reading BIDPARK_HARDHAT_INITIAL_DATE.
+        args: [HARDHAT_CLI, ...(initialDate ? ['--network', 'hardhat'] : []), 'node', '--hostname', '127.0.0.1', '--port', String(port)],
+        env: initialDate ? { BIDPARK_HARDHAT_INITIAL_DATE: initialDate } : {},
         ready: async () => (await rpcChainId(rpcUrl)) === ethers.toQuantity(HARDHAT_CHAIN_ID),
       });
       const provider = getProvider(rpcUrl);

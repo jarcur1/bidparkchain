@@ -6,8 +6,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { ethers } from 'ethers';
-import { assertLocalChain, getProvider, getWallet, HARDHAT_RPC_URL } from './helpers/chain.mjs';
+import { ethers, FetchRequest } from 'ethers';
+import { assertLocalChain, getProvider, getWallet, HARDHAT_CHAIN_ID, HARDHAT_RPC_URL } from './helpers/chain.mjs';
 import { CAMPUS_EXPANSION_REMOVED, getSeededListings } from './helpers/seed-data.mjs';
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -18,12 +18,26 @@ export const DEMO_ROLES = { host: 0, driverA: 1, driverB: 2 };
 /** Scripted amounts, chosen for the demo; they are not derived from the fixtures. */
 export const DEMO_BIDS = { driverA: '0.03', driverB: '0.05' };
 
+// An RPC that redirects could carry privileged calls (evm_*) to another host, so any 3xx is an error.
+function getNoRedirectProvider(rpcUrl) {
+  const request = new FetchRequest(rpcUrl);
+  const send = FetchRequest.createGetUrlFunc();
+  request.getUrlFunc = async (req, signal) => {
+    const response = await send(req, signal);
+    if (response.statusCode >= 300 && response.statusCode < 400) {
+      throw new Error(`Refusing RPC redirect (HTTP ${response.statusCode}).`);
+    }
+    return response;
+  };
+  return new ethers.JsonRpcProvider(request, { chainId: HARDHAT_CHAIN_ID, name: 'hardhat' }, { cacheTimeout: -1, staticNetwork: true });
+}
+
 async function openDemo(rpcUrl, deploymentPath) {
   if (process.env.BIDPARK_PROFILE && process.env.BIDPARK_PROFILE !== 'local') {
     throw new Error('Demo helpers only run with the local profile.');
   }
   if (!LOOPBACK.has(new URL(rpcUrl).hostname)) throw new Error(`Refusing non-loopback RPC ${rpcUrl}.`);
-  const provider = getProvider(rpcUrl);
+  const provider = getNoRedirectProvider(rpcUrl);
   await assertLocalChain(provider);
   if (!fs.existsSync(deploymentPath)) throw new Error('No local deployment found. Start the stack with npm run dev first.');
   const deployment = JSON.parse(fs.readFileSync(deploymentPath, 'utf8'));
@@ -53,8 +67,20 @@ export const SKIP_TARGETS = {
   parking: { deadline: 'parkingEnd', inPlay: (a) => !a.cancelled },
 };
 
-/** Moves chain time to one second past the latest open deadline for `target` (a SKIP_TARGETS key). */
-export async function skipChainTime({ rpcUrl = HARDHAT_RPC_URL, deploymentPath, target }) {
+// Skips run one at a time so two requests cannot read the same head and both move the clock.
+let skipQueue = Promise.resolve();
+
+/**
+ * Moves chain time to one second past the latest open deadline for `target` (a SKIP_TARGETS key).
+ * The target is an absolute timestamp, so repeating a skip is a no-op once the head has passed it.
+ */
+export function skipChainTime(options) {
+  const run = skipQueue.then(() => skipChainTimeOnce(options));
+  skipQueue = run.catch(() => {});
+  return run;
+}
+
+async function skipChainTimeOnce({ rpcUrl = HARDHAT_RPC_URL, deploymentPath, target }) {
   if (!Object.hasOwn(SKIP_TARGETS, target)) throw new Error(`Unknown skip target: ${target}`);
   const rule = SKIP_TARGETS[target];
   const { provider, contract } = await openDemo(rpcUrl, deploymentPath);
@@ -66,8 +92,13 @@ export async function skipChainTime({ rpcUrl = HARDHAT_RPC_URL, deploymentPath, 
       const deadline = Number(a[rule.deadline]);
       if (rule.inPlay(a) && deadline > now) latest = Math.max(latest, deadline);
     }
-    if (latest) await advanceTo(provider, latest + 1);
-    return { advancedSeconds: latest ? latest + 1 - now : 0, chainTime: await chainNow(provider) };
+    if (latest) {
+      // evm_setNextBlockTimestamp is absolute and rejects a timestamp at or before the head, so it cannot overshoot.
+      await provider.send('evm_setNextBlockTimestamp', [latest + 1]);
+      await provider.send('evm_mine', []);
+    }
+    const chainTime = await chainNow(provider);
+    return { advancedSeconds: latest ? Math.max(0, chainTime - now) : 0, chainTime };
   } finally {
     provider.destroy();
   }

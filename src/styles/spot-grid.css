@@ -1,0 +1,51 @@
+/* Spot Cards Grid */
+.spot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
+  gap: 20px;
+}
+
+/* Card Skeleton Loader */
+.spot-grid-loading {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
+  gap: 20px;
+}
+
+.card-skeleton {
+  background: #ffffff;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  height: 420px;
+}
+
+.skeleton-media {
+  height: 190px;
+  background: #ede8dc;
+  animation: pulse 1.5s infinite;
+}
+
+.skeleton-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.skeleton-line {
+  background: #ede8dc;
+  border-radius: 4px;
+  animation: pulse 1.5s infinite;
+}
+
+.line-short { width: 35%; height: 12px; }
+.line-title { width: 85%; height: 20px; }
+.line-desc { width: 60%; height: 14px; }
+.skeleton-box { height: 70px; background: #ede8dc; border-radius: 8px; margin-top: 12px; animation: pulse 1.5s infinite; }
+
+@keyframes pulse {
+  0% { opacity: 0.6; }
+  50% { opacity: 1; }
+  100% { opacity: 0.6; }
+}

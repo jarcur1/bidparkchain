@@ -99,7 +99,6 @@ export const DetailModal: React.FC<DetailModalProps> = ({
     listing.highestBidder.toLowerCase() === currentAddress?.toLowerCase();
 
   const hasBids = parseFloat(listing.highestBid) > 0;
-  const myLifecycle = currentAddress ? reservationLifecycle(listing, currentAddress, now) : null;
   const calendarLifecycle = currentAddress && snapshotTime !== undefined
     ? reservationLifecycle(listing, currentAddress, snapshotTime) : null;
   const currentPriceEth = hasBids ? listing.highestBid : listing.minBid;

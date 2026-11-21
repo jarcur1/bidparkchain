@@ -7,11 +7,19 @@ async function isLocalChain(rpcUrl) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] }),
+    redirect: 'error', // never follow a redirect off this host
     signal: AbortSignal.timeout(5_000),
   });
   if (!res.ok) throw new Error(`Chain id probe failed with HTTP ${res.status}`);
   const { result } = await res.json();
   return BigInt(result) === BigInt(HARDHAT_CHAIN_ID);
+}
+
+// The socket peer only; X-Forwarded-For is attacker-controlled and deliberately ignored.
+export function isLoopbackPeer(address) {
+  if (typeof address !== 'string') return false;
+  const ip = address.replace(/^::ffff:/i, '');
+  return ip === '::1' || /^127(?:\.\d{1,3}){3}$/.test(ip);
 }
 
 /**
@@ -21,6 +29,7 @@ async function isLocalChain(rpcUrl) {
 export function mountPresenter(app, { rpcUrl, deploymentPath }) {
   app.post('/api/presenter/skip', async (req, res, next) => {
     try {
+      if (!isLoopbackPeer(req.socket?.remoteAddress)) return next();
       if (!(await isLocalChain(rpcUrl))) return next();
       const target = req.body?.target;
       if (typeof target !== 'string' || !Object.hasOwn(SKIP_TARGETS, target)) {
