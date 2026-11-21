@@ -1,7 +1,7 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Listing } from '../../src/types';
+import type { FilterState, Listing } from '../../src/types';
 import { FilterBar } from '../../src/components/FilterBar';
 import { SpotCard } from '../../src/components/SpotCard';
 import { searchListingsPages } from '../../src/services/api';
@@ -184,11 +184,122 @@ describe('discovery filters', () => {
   });
 });
 
+describe('active filter chips', () => {
+  const destinations = destinationOptions(all);
+  const amenities = amenityOptions(all);
+  // FilterBar holds no filter state of its own, so the harness keeps it the way App does.
+  const mount = (initial: FilterState, onChange: (next: FilterState) => void = () => {}) => {
+    const Harness = () => {
+      const [filters, setFilters] = React.useState(initial);
+      return (
+        <FilterBar
+          filters={filters}
+          onFilterChange={(next) => {
+            onChange(next);
+            setFilters(next);
+          }}
+          filteredCount={1}
+          listingsStatus="success"
+          viewMode="cards"
+          onViewModeChange={() => {}}
+          destinationChoices={destinations}
+          destination={resolveDestination(filters.destination, destinations)}
+          amenityChoices={amenities}
+        />
+      );
+    };
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    const root = createRoot(el);
+    act(() => root.render(<Harness />));
+    return {
+      el,
+      labels: () => [...el.querySelectorAll<HTMLButtonElement>('button[aria-label^="Remove filter: "]')].map((b) => b.getAttribute('aria-label')),
+      chip: (label: string) => el.querySelector<HTMLButtonElement>(`button[aria-label="Remove filter: ${label}"]`),
+      clearAll: () => [...el.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === 'Clear all') ?? null,
+      unmount: () => {
+        act(() => root.unmount());
+        el.remove();
+      },
+    };
+  };
+
+  it('shows each applied filter as a chip, and none for a filter that is not applied', () => {
+    const initial = f({
+      search: 'gated', kind: 'garage', status: 'active', destination: '1 Near St', radiusKm: '2',
+      arrive: epochToLocal(T0 + 3600), depart: epochToLocal(T0 + 7200), area: '30.2,-97.8,30.4,-97.6',
+      amenities: ['EV'], maxPrice: '0.05',
+    });
+    const view = mount(initial);
+    expect(view.labels()).toEqual(
+      describeFilters(initial, resolveDestination(initial.destination, destinations)).map((l) => `Remove filter: ${l}`),
+    );
+    expect(view.labels()).toHaveLength(8);
+    expect(view.labels()).toContain('Remove filter: Within 2 km of 1 Near St');
+    expect(view.chip('Current price up to 0.05 ETH')).not.toBeNull();
+    expect(view.clearAll()).not.toBeNull();
+    view.unmount();
+
+    // A reversed visit, a radius without a destination and an unknown destination are not applied, so there is no chip.
+    const notApplied = mount(f({ arrive: epochToLocal(T0 + 7200), depart: epochToLocal(T0), radiusKm: '2', destination: 'Nowhere' }));
+    expect(notApplied.labels()).toEqual([]);
+    expect(notApplied.clearAll()).toBeNull();
+    notApplied.unmount();
+  });
+
+  it('removing the destination chip resets a distance sort, so the select and the link match the order shown', () => {
+    let latest = f({});
+    const view = mount(f({ destination: '1 Near St', sortBy: 'distance' }), (next) => {
+      latest = next;
+    });
+    const select = () => view.el.querySelector<HTMLSelectElement>('#sort-select')!;
+    expect(select().value).toBe('distance');
+    act(() => view.chip('Near 1 Near St')?.click());
+    expect(select().value).toBe('ending-soon');
+    expect(latest.sortBy).toBe('ending-soon');
+    expect(filtersToSearch(latest, '').includes('sort=')).toBe(false);
+    view.unmount();
+  });
+
+  it('a chip clears only its own filter and moves focus to the chip that takes its place', () => {
+    const view = mount(f({ search: 'gated', kind: 'garage', amenities: ['EV'], maxPrice: '0.05' }));
+    act(() => view.chip('Amenities: EV')?.click());
+    expect(view.labels()).toEqual([
+      'Remove filter: Text "gated"',
+      'Remove filter: Type: garage',
+      'Remove filter: Current price up to 0.05 ETH',
+    ]);
+    expect(document.activeElement).toBe(view.chip('Current price up to 0.05 ETH'));
+    expect((view.el.querySelector('#spot-search') as HTMLInputElement).value).toBe('gated');
+    // Removing the last chip focuses the chip before it.
+    act(() => view.chip('Current price up to 0.05 ETH')?.click());
+    expect(document.activeElement).toBe(view.chip('Type: garage'));
+    view.unmount();
+  });
+
+  it('Clear all resets every filter; removing the last chip moves focus to the search field', () => {
+    const view = mount(f({ search: 'gated', kind: 'garage', maxPrice: '0.05' }));
+    act(() => view.clearAll()?.click());
+    expect(view.labels()).toEqual([]);
+    expect(view.clearAll()).toBeNull();
+    expect((view.el.querySelector('#spot-search') as HTMLInputElement).value).toBe('');
+    expect(document.activeElement).toBe(view.el.querySelector('#spot-search'));
+    view.unmount();
+
+    const single = mount(f({ maxPrice: '0.05' }));
+    expect(single.clearAll()).toBeNull(); // Clear all needs two or more chips
+    act(() => single.chip('Current price up to 0.05 ETH')?.click());
+    expect(single.labels()).toEqual([]);
+    expect(document.activeElement).toBe(single.el.querySelector('#spot-search'));
+    single.unmount();
+  });
+});
+
 describe('search pages', () => {
   afterEach(() => vi.unstubAllGlobals());
   const page = (n: number, next: string | null) => ({ listings: [{ id: String(n) }], total: 3, nextCursor: next, chain: null });
 
-  it('reloads as many pages as were shown, on one cursor chain, and keeps what it has if a later page fails', async () => {
+  it('reloads as many pages as were shown, on one cursor chain, and keeps what it has, reporting the error, if a later page fails', async () => {
     const calls: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       calls.push(url);
@@ -203,5 +314,7 @@ describe('search pages', () => {
     // The cursor for page 3 is refused: the pages already read are kept.
     const three = await searchListingsPages('limit=1', 3);
     expect(three.listings.map((l) => l.id)).toEqual(['1', '2']);
+    expect(three.pagesLoaded).toBe(2);
+    expect(three.pageError?.status).toBe(409);
   });
 });

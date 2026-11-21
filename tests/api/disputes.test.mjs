@@ -138,3 +138,37 @@ it('keeps records and the audit log append-only', () => {
   expect(() => db.db.exec('UPDATE dispute_audit SET actor = 1')).toThrow(/append-only/);
   expect(() => db.db.exec('DELETE FROM dispute_audit')).toThrow(/append-only/);
 });
+
+it('pages the resolver queue in auction id order without repeating or dropping reports', async () => {
+  const ids = [];
+  for (let i = 0; i < 3; i += 1) {
+    const id = await settledAuction();
+    const { reference } = await (await post(`/api/auctions/${id}/dispute/evidence`, WINNER, { text: `Space ${i} was occupied.` })).json();
+    await (await c.connect(chain.wallet(WINNER)).reportSellerFailure(id, reference)).wait();
+    ids.push(id);
+  }
+  const full = await (await get('/api/disputes/queue?limit=100', RESOLVER)).json();
+  expect(full.nextAfter).toBeNull();
+  const pages = [];
+  let after = null;
+  do {
+    const page = await (await get(`/api/disputes/queue?limit=2${after === null ? '' : `&after=${after}`}`, RESOLVER)).json();
+    pages.push(page);
+    after = page.nextAfter;
+  } while (after !== null);
+  const paged = pages.flatMap((page) => page.items.map((entry) => entry.auctionId));
+  const numeric = paged.map(Number);
+  expect(pages.length).toBeGreaterThan(1);
+  expect(paged).toEqual(full.items.map((entry) => entry.auctionId));
+  expect(new Set(paged).size).toBe(paged.length);
+  expect(numeric).toEqual([...numeric].sort((a, b) => a - b));
+  expect(paged).toEqual(expect.arrayContaining(ids));
+  // A report closed between two page loads must not shift the next page.
+  const first = await (await get('/api/disputes/queue?limit=1', RESOLVER)).json();
+  const rest = await (await get(`/api/disputes/queue?limit=100&after=${first.nextAfter}`, RESOLVER)).json();
+  expect(rest.items.map((entry) => entry.auctionId)).toEqual(paged.slice(1));
+  // Invalid parameters are rejected, never silently defaulted.
+  for (const q of ['limit=0', 'limit=101', 'limit=-5', 'limit=abc', 'limit=1.5', 'after=-3', 'after=x', 'after=99999999999999999999']) {
+    expect((await get(`/api/disputes/queue?${q}`, RESOLVER)).status, q).toBe(400);
+  }
+});

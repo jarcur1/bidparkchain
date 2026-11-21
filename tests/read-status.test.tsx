@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Config, Listing, ListingsResponse } from '../src/types';
+import type { ListingSearchPages } from '../src/services/api';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -37,6 +38,7 @@ vi.mock('../src/services/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/services/api')>()),
   fetchConfig: vi.fn(),
   fetchListings: vi.fn(),
+  searchListingsPages: vi.fn(),
 }));
 
 vi.mock('../src/services/blockchain', async (importOriginal) => ({
@@ -50,7 +52,7 @@ vi.mock('../src/components/ParkingMap', () => ({ ParkingMap: () => null }));
 import { App, AppContent } from '../src/App';
 import { BidModal } from '../src/components/BidModal';
 import { useWallet, WalletProvider, type WalletContextValue } from '../src/context/WalletContext';
-import { fetchConfig, fetchListings } from '../src/services/api';
+import { fetchConfig, fetchListings, searchListingsPages } from '../src/services/api';
 import { fetchPendingReturns } from '../src/services/blockchain';
 import { READ_OK, readSucceeded } from '../src/utils/readState';
 
@@ -58,6 +60,7 @@ const ETH = 10n ** 18n;
 const mockConfig = vi.mocked(fetchConfig);
 const mockListings = vi.mocked(fetchListings);
 const mockRefund = vi.mocked(fetchPendingReturns);
+const mockSearch = vi.mocked(searchListingsPages);
 
 const configFor = (contractAddress: string, deploymentBlockHash = '0xhash1'): Config => ({
   profile: 'local',
@@ -86,6 +89,17 @@ function snapshot(listings: Listing[], config = CONFIG_A): ListingsResponse {
     chain: { chainId, contractAddress, deploymentBlock, deploymentBlockHash, blockNumber: 1, blockTimestamp: chainTime, chainTime },
   };
 }
+
+// No chain, so the marketplace keeps filtering the loaded snapshot locally rather than using server results.
+const searchAnswer = (): ListingSearchPages => ({
+  pagesLoaded: 1,
+  listings: [],
+  total: 0,
+  nextCursor: null,
+  chain: null,
+  skipped: 0,
+  pricing: 'Opening and current bids are not final booking prices.',
+});
 
 const listing = (id: string, title: string): Listing => ({
   id,
@@ -167,10 +181,12 @@ beforeEach(() => {
   mockConfig.mockReset();
   mockListings.mockReset();
   mockRefund.mockReset();
+  mockSearch.mockReset();
   rpc.getBalance.mockReset();
   mockConfig.mockResolvedValue(CONFIG_A);
   mockListings.mockResolvedValue(snapshot([]));
   mockRefund.mockResolvedValue(0n);
+  mockSearch.mockResolvedValue(searchAnswer());
   rpc.getBalance.mockResolvedValue(ETH + ETH / 2n);
   vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -607,5 +623,114 @@ describe('balance identity across a same-address deployment reset', () => {
     await settle();
     expect(statuses[statuses.length - 1]).toBe('stale');
     expect(text()).not.toContain('9.000');
+  });
+});
+
+describe('server search read status', () => {
+  // A search starts after a 150 ms debounce; wait past it, then let its answer render.
+  async function searchSettles() {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 200);
+    await act(async () => promise);
+    await settle();
+  }
+  async function typeSearch(value: string) {
+    await act(async () => {
+      const input = container.querySelector<HTMLInputElement>('.search-input')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await searchSettles();
+  }
+  const notice = () => container.querySelector('.search-failure-notice');
+
+  it('a failed search shows a notice, retry re-runs it, and a successful answer clears it', async () => {
+    mockListings.mockResolvedValue(snapshot([listing('1', 'Sunny Garage')]));
+    mockSearch.mockRejectedValue(new Error('Search service down'));
+    await mount(<App />);
+    await searchSettles();
+
+    expect(notice()?.closest('[role="status"]')).not.toBeNull();
+    expect(text()).toContain('Server search unavailable');
+    expect(text()).toContain('Search service down');
+    expect(text()).toContain('Sunny Garage');
+
+    // An answer for this deployment is accepted and clears the notice.
+    mockSearch.mockResolvedValue({ ...searchAnswer(), chain: snapshot([]).chain, listings: [listing('1', 'Sunny Garage')], total: 1 });
+    const callsBeforeRetry = mockSearch.mock.calls.length;
+    await click(button('Retry search'));
+    await searchSettles();
+
+    expect(mockSearch.mock.calls.length).toBeGreaterThan(callsBeforeRetry);
+    expect(notice()).toBeNull();
+    expect(text()).toContain('Sunny Garage');
+  });
+
+  it('the notice belongs to the failed query and clears when that query is cleared', async () => {
+    mockListings.mockResolvedValue(snapshot([listing('1', 'Sunny Garage')]));
+    mockSearch.mockImplementation((query) =>
+      query.includes('q=') ? Promise.reject(new Error('Search service down')) : Promise.resolve(searchAnswer()),
+    );
+    await mount(<App />);
+    await searchSettles();
+    expect(notice()).toBeNull();
+    // The live region is mounted before any failure so its text is announced when it appears.
+    expect(notice()).toBeNull();
+
+    await typeSearch('garage');
+    expect(notice()).not.toBeNull();
+
+    await typeSearch('');
+    expect(notice()).toBeNull();
+  });
+
+  it('an answer from another deployment is discarded without clearing the notice', async () => {
+    mockListings.mockResolvedValue(snapshot([listing('1', 'Sunny Garage')]));
+    mockSearch.mockRejectedValue(new Error('Search service down'));
+    await mount(<App />);
+    await searchSettles();
+    expect(notice()).not.toBeNull();
+
+    mockSearch.mockResolvedValue({ ...searchAnswer(), chain: snapshot([], { ...CONFIG_A, chainId: CONFIG_A.chainId + 1 }).chain });
+    await click(button('Retry search'));
+    await searchSettles();
+    expect(notice()).not.toBeNull();
+  });
+
+  it('returning to a failed query before the other query settles does not bring the old notice back', async () => {
+    mockListings.mockResolvedValue(snapshot([listing('1', 'Sunny Garage')]));
+    const pending = deferred<ListingSearchPages>();
+    let garageCalls = 0;
+    mockSearch.mockImplementation((query) => {
+      if (query.includes('q=garage')) return ++garageCalls === 1 ? Promise.reject(new Error('Search service down')) : pending.promise;
+      return query.includes('q=') ? pending.promise : Promise.resolve(searchAnswer());
+    });
+    await mount(<App />);
+    await searchSettles();
+    await typeSearch('garage');
+    expect(notice()).not.toBeNull();
+
+    await typeSearch('other');
+    expect(notice()).toBeNull();
+    await typeSearch('garage');
+    // The earlier failure is gone: the notice waits for the new request's own outcome.
+    expect(notice()).toBeNull();
+    // The query lives in the URL; leave it clear for the next test.
+    await typeSearch('');
+  });
+
+  it('a failure from a search superseded by a newer query shows no notice', async () => {
+    mockListings.mockResolvedValue(snapshot([listing('1', 'Sunny Garage')]));
+    const stale = deferred<ListingSearchPages>();
+    mockSearch.mockImplementation((query) => (query.includes('q=') ? Promise.resolve(searchAnswer()) : stale.promise));
+    await mount(<App />);
+    await searchSettles();
+    expect(mockSearch.mock.calls.some(([query]) => !query.includes('q='))).toBe(true);
+
+    await typeSearch('garage');
+    stale.reject(new Error('Search service down'));
+    await settle();
+
+    expect(notice()).toBeNull();
   });
 });

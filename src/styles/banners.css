@@ -43,6 +43,34 @@
   margin-right: 8px;
 }
 
+.campus-banner .banner-content,
+.campus-banner .banner-text {
+  min-width: 0;
+}
+
+.campus-stats-scroll {
+  margin-top: 6px;
+  overflow-x: auto;
+}
+
+.campus-stats {
+  border-collapse: collapse;
+  font-size: 12px;
+  text-align: left;
+}
+
+.campus-stats caption {
+  padding-bottom: 4px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.campus-stats th,
+.campus-stats td {
+  padding: 2px 12px 2px 0;
+  vertical-align: top;
+}
+
 .btn-banner-action {
   background: #dc2626;
   color: #ffffff;
@@ -84,4 +112,34 @@
   font-weight: 600;
   font-size: 12px;
   flex-shrink: 0;
+}
+
+.presenter-skip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+.btn-presenter-skip {
+  background: #ffffff;
+  border: 1px solid #92400e;
+  color: #92400e;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-presenter-skip:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.presenter-skip-status {
+  margin: 0;
+  color: #92400e;
 }

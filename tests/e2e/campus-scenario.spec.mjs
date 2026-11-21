@@ -17,6 +17,14 @@ for (const viewport of [{ width: 1280, height: 720 }, { width: 375, height: 800 
     await expect(banner).toContainText('Near-campus spots listed: 1 of 4 (3 farther away).');
     await expect(banner).toContainText('simulated test ETH');
 
+    // Narrow screens scroll the table inside the banner instead of pushing the banner past the viewport.
+    const stats = banner.getByRole('region', { name: 'Bidding by walking distance' });
+    await expect(stats.getByRole('rowheader', { name: 'Near campus · 3-5 min walk' })).toBeVisible();
+    await expect(stats.getByRole('rowheader', { name: 'Farther away · 15-20 min walk' })).toBeVisible();
+    const box = await banner.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+
     const cardsView = page.getByTitle('Cards view only');
     await cardsView.focus();
     await page.keyboard.press('Enter');

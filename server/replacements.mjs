@@ -11,8 +11,8 @@ const same = (a, b) => a.toLowerCase() === b.toLowerCase();
  * (auction owner, or its space's owner or approved lister), the original must have a bid, and the
  * replacement must be a later auction. Nothing here moves funds or cancels anything.
  */
-export function mountReplacements(app, { db, pinnedReader, contractAddress }) {
-  /** POST /api/auctions/:id/replacement { replacementId } */
+export function mountReplacements(app, { db, pinnedReader, contractAddress, isActiveDeployment }) {
+  /** POST /api/auctions/:id/replacement { replacementId, deployment }: 409 unless `deployment` is the active one; repeating the same pair succeeds and changes nothing. */
   app.post('/api/auctions/:id/replacement', async (req, res) => {
     const session = readSession(db, req);
     if (!session) return res.status(401).json({ error: 'Sign in with your wallet first' });
@@ -24,6 +24,7 @@ export function mountReplacements(app, { db, pinnedReader, contractAddress }) {
       return res.status(400).json({ error: 'A replacement must be a later auction than the original' });
     }
     try {
+      if (!(await isActiveDeployment(req.body?.deployment))) return res.status(409).json({ error: 'Deployment identity does not match' });
       const { call } = await pinnedReader();
       const hostOf = async (id) => {
         const onchain = await call('auctions', [id]);
@@ -39,10 +40,9 @@ export function mountReplacements(app, { db, pinnedReader, contractAddress }) {
       if (original.onchain.highestBidder === ethers.ZeroAddress) {
         return res.status(409).json({ error: 'The original auction has no bids, so it can be cancelled instead' });
       }
-      if (!db.saveReplacement(contract, originalId, replacementId, session.address)) {
-        return res.status(409).json({ error: 'This auction already has a replacement recorded' });
-      }
-      res.status(201).json({ linked: true });
+      const saved = db.saveReplacement(contract, originalId, replacementId, session.address);
+      if (saved === 'conflict') return res.status(409).json({ error: 'This auction already has a different replacement recorded' });
+      res.status(saved === 'created' ? 201 : 200).json({ linked: true });
     } catch {
       res.status(503).json({ error: 'Blockchain service unavailable' });
     }

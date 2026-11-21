@@ -295,3 +295,29 @@
   color: var(--color-forest);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
+
+/* Active filter chips: a long unbroken label is ellipsized so the chip, and its × button, stay inside the toolbar. */
+.active-filters {
+  flex-wrap: wrap;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.active-filters .chip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.active-filters .chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.active-filters .chip-btn > [aria-hidden='true'] {
+  flex: none;
+}

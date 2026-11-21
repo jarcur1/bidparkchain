@@ -62,6 +62,10 @@ All are optional. Unknown, repeated (except `amenity`) or malformed parameters g
 Kind, amenities, area and text are filtered from stored metadata first. Each RPC call is bounded by
 `BIDPARK_RPC_TIMEOUT_MS`.
 
+## When the search request fails
+
+If the search request fails, the marketplace shows a non-blocking **Server search unavailable** notice with a **Retry search** button and filters the listings already loaded in the browser instead. That local result is not a server search: it covers only the listings loaded so far. The notice belongs to the query that failed and clears when that query changes, when a search succeeds, or when the query is cleared. If only a later page fails (**Show more**, or a refresh reloading the pages already shown), the pages already shown stay, the error is shown, and **Retry loading more** retries; a cursor whose block was replaced (409) restarts the search instead.
+
 ## Served from the event index
 
 `source` says how the answer was built.
@@ -106,6 +110,7 @@ stored row yet) are still found and reported in `unindexed`.
 - Each page is its own snapshot: `chain` names the block that page was read at. Unlike the search cursor it
   does not pin the block across pages.
 - A malformed `limit`, `cursor` or unknown parameter is 400 before any chain read.
+- Each listing's `bidCount` (canonical bids in the event index) is set only while the index is at that page's `chain` block, and is left off otherwise rather than guessed.
 
 ## Map area, location and time zones
 
@@ -117,3 +122,9 @@ stored row yet) are still found and reported in `unindexed`.
   If permission is denied or unavailable, the destination field keeps working by hand.
 - Cards show each space's own time zone with its parking times (the viewer's zone when none is set, and the
   card says so). The arrive/depart filter is in the browser's zone, as the filter hint states.
+
+## Active filters
+
+- Each filter in effect shows as a chip after the results count, worded as in the no-results note. A chip's button is named `Remove filter: …` and clears only its own filter. Focus moves to the chip that takes its place (or the last chip), or to the search field when none remain.
+- **Clear all** appears with two or more chips and resets the filters to their defaults, as **Reset** does.
+- A filter that is not applied has no chip: a reversed or invalid visit, an invalid budget, a destination that does not resolve, or a radius without a destination.

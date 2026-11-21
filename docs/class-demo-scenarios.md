@@ -11,7 +11,7 @@ BIDPARK_SCENARIO=campus-expansion npm run dev
 
 PowerShell: `$env:BIDPARK_SCENARIO='campus-expansion'; npm run dev`. Leaving it unset keeps the default `austin` listings. An unknown value fails before anything is deployed.
 
-In a campus scenario the marketplace opens with a banner: it calls the app an unofficial campus-parking parody, names the scenario, counts the near-campus spots actually listed, and says all prices, bids and wins are simulated. Each card shows its walking-distance tier as text. If map tiles do not load, choose **Cards** for a plain list; it works by keyboard at phone widths.
+In a campus scenario the marketplace opens with a banner: it calls the app an unofficial campus-parking parody, names the scenario, counts the near-campus spots actually listed, and says all prices, bids and wins are simulated. Under the count, a table gives each walking-distance tier its spots, spots with bids, total bids, and highest and average leading bid. Averages cover only the spots with bids. A tier with no bids reads `none yet`; a value that cannot be read reads `unavailable`, never zero. If a later read fails, the table keeps the last successful numbers and says so. Each card shows its walking-distance tier as text. If map tiles do not load, choose **Cards** for a plain list; it works by keyboard at phone widths, and the table scrolls sideways on narrow screens.
 
 Each scenario gets its own contract deployment. Switching scenarios on a running chain redeploys and clears the previous scenario's listings, so the two never mix. Re-running the same scenario reuses its deployment. The fixtures live in `scripts/helpers/seed-data.mjs`.
 
@@ -104,11 +104,10 @@ The bid amounts below are scripted for the demo. They are not derived from the f
 2. **Connect Wallet**, pick Account #1. Open **N1 · Quad Edge Commuter Spot**, **Bid Now**, bid `0.03`.
 3. Switch to Account #2 and bid `0.05` on N1.
 4. Switch back to Account #1, open **My Activity**: N1 shows "Outbid — bidding still open" and **Withdraw 0.030 ETH**. Withdraw it.
-5. In a second terminal, close bidding without waiting an hour:
+5. Close bidding without waiting an hour. Press **Skip to bidding close** under the scenario banner (local runs only); the app refreshes itself. From a terminal instead, run this in a second terminal and then press **Refresh data** in the app:
    ```sh
    npm run demo -- advance
    ```
-   Then press **Refresh data** in the app.
 6. Switch to Account #2. **My Activity** shows "You won — pending settlement". Press **Settle Auction & Claim Pass**; it changes to "You won — confirmed on-chain".
 
 ### Scripted fallback

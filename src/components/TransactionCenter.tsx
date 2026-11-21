@@ -20,11 +20,12 @@ interface Props {
   staleCount: number;
   explorerUrl?: string | null;
   onCompleteRegistration: (record: TxRecord) => void;
+  onLinkReplacement: (record: TxRecord) => void;
   isActionBusy: boolean;
 }
 
 /** Persisted history of this account's transactions on the current deployment. */
-export const TransactionCenter: React.FC<Props> = ({ records, staleCount, explorerUrl, onCompleteRegistration, isActionBusy }) => {
+export const TransactionCenter: React.FC<Props> = ({ records, staleCount, explorerUrl, onCompleteRegistration, onLinkReplacement, isActionBusy }) => {
   const link = (hash: string) => explorerUrl
     ? <a href={`${explorerUrl.replace(/\/$/, '')}/tx/${hash}`} target="_blank" rel="noreferrer"><code>{hash.slice(0, 10)}…</code></a>
     : <code title={hash}>{hash.slice(0, 10)}…</code>;
@@ -49,6 +50,7 @@ export const TransactionCenter: React.FC<Props> = ({ records, staleCount, explor
             <tbody>
               {records.map((r) => {
                 const needsRegistration = r.kind === 'create' && r.status === 'confirmed' && r.auctionId && !r.registered;
+                const needsLink = r.kind === 'create' && r.status === 'confirmed' && !!r.replaces && r.registered && !r.linked;
                 return (
                   <tr key={r.id} data-tx-status={r.status}>
                     <td>{r.label}</td>
@@ -62,7 +64,11 @@ export const TransactionCenter: React.FC<Props> = ({ records, staleCount, explor
                         <button type="button" className="btn-table-action" disabled={isActionBusy} onClick={() => onCompleteRegistration(r)}>
                           Complete registration
                         </button>
-                      ) : r.kind === 'create' && r.registered ? 'Listing registered' : ''}
+                      ) : needsLink ? (
+                        <button type="button" className="btn-table-action" disabled={isActionBusy} onClick={() => onLinkReplacement(r)}>
+                          Link replacement
+                        </button>
+                      ) : r.kind === 'create' && r.registered ? (r.linked ? 'Listing registered, replacement linked' : 'Listing registered') : ''}
                     </td>
                   </tr>
                 );

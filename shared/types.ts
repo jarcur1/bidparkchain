@@ -26,6 +26,11 @@ export interface Listing extends SpotMetadata {
   inventoryBlocked?: boolean;
   minBid: string;
   highestBid: string;
+  /**
+   * Canonical bids in the event index. Set only by GET /api/listings, and only while the index is at the block that
+   * read used; absent otherwise rather than guessed.
+   */
+  bidCount?: number;
   highestBidder: string;
   bidEnd: number;
   parkingStart: number;

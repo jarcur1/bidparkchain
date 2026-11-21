@@ -4,7 +4,7 @@ import express from 'express';
 import { ethers } from 'ethers';
 import { EscrowDatabase } from './db.mjs';
 import { validateSpotMetadata } from '../shared/validation.js';
-import { assertProfileDirectory, resolveRuntimeProfile } from '../scripts/helpers/runtime-profile.mjs';
+import { assertProfileDirectory, isLoopback, resolveRuntimeProfile } from '../scripts/helpers/runtime-profile.mjs';
 import { verifyPersistentDeployment } from '../scripts/helpers/persistent-deployment.mjs';
 import { compileEscrowContract } from '../scripts/helpers/compiler.mjs';
 import { getNetworkProfile } from '../shared/network-profiles.mjs';
@@ -20,6 +20,7 @@ import { mountArrival } from './arrival.mjs';
 import { parseArrivalKey } from './arrival-crypto.mjs';
 import { mountDisputes } from './disputes.mjs';
 import { flagDuplicates, mountVerification, parseModerators, publicVerification } from './verification.mjs';
+import { mountPresenter } from './presenter.mjs';
 
 let sepoliaArtifact;
 
@@ -540,6 +541,8 @@ export function createApp(options = {}) {
    * (`limit`, default BIDPARK_LISTINGS_SCAN_LIMIT = 500; `cursor` = `nextCursor` of the previous page).
    * `nextCursor` is omitted once every auction id has been scanned.
    * Includes the deployment identity and chain clock (`chain`) the state was read at.
+   * Each listing gets `bidCount` (canonical bids from the event index) only while the index is at the same block;
+   * otherwise the field is omitted.
    * Compares stored metadata_hash with onchain.metadataHash and skips stale rows.
    * Fails with 503 if chain is unreachable.
    */
@@ -559,6 +562,7 @@ export function createApp(options = {}) {
             page,
           );
           const chain = { ...(await readChainSnapshot(deployment, finalized)), blockHash: finalized.hash };
+          await addBidCounts(listings, deployment.contractAddress, finalized);
           await assertCanonicalFinalized(finalized);
           res.json({ listings, unindexed, ...(nextCursor && { nextCursor }), chain });
         } catch {
@@ -606,6 +610,8 @@ export function createApp(options = {}) {
         );
         // Read the clock after the auction state so the clock is never older than the state it judges.
         chain = { ...(await readChainSnapshot(deployment, pinned)), blockHash: pinned.hash };
+        // Index catch-up can take a while, so it runs before the final canonical check.
+        await addBidCounts(built.listings, deployment.contractAddress, pinned);
         await assertCanonicalFinalized(pinned);
       } catch {
         res.status(503).json({ error: 'Failed to read listing state from blockchain node' });
@@ -632,6 +638,17 @@ export function createApp(options = {}) {
     }
     const behind = lag(checkpoint);
     return behind >= 0 && behind <= settings.searchIndexMaxLag ? { number: checkpoint.block_number, hash: checkpoint.block_hash } : null;
+  }
+
+  /**
+   * Adds `bidCount` (canonical bids in the event index, per auction) to listings read at `head`. Set only while
+   * the index is at `head`; otherwise left off rather than guessed.
+   */
+  async function addBidCounts(listings, contractAddress, head) {
+    const checkpoint = await usableCheckpoint(contractAddress, head);
+    if (checkpoint?.hash !== head.hash) return;
+    const counts = db.countBids(contractAddress, head.number);
+    for (const listing of listings) listing.bidCount = counts.get(listing.id) ?? 0;
   }
 
   /**
@@ -1294,7 +1311,16 @@ export function createApp(options = {}) {
       : 'BIDPARK_ARRIVAL_KEY is not set: arrival instructions are stored unencrypted (local/demo mode only).' }),
   }));
 
-  mountReplacements(app, { db, pinnedReader, contractAddress: () => loadDeployment()?.contractAddress ?? null });
+  mountReplacements(app, {
+    db,
+    pinnedReader,
+    contractAddress: () => loadDeployment()?.contractAddress ?? null,
+    /** Whether a client-supplied identity names the deployment (chain, contract, deployment block and hash) this API serves. */
+    isActiveDeployment: async (expected) => {
+      const deployment = loadDeployment();
+      return Boolean(deployment) && matchesDeployment(expected, await readChainSnapshot(deployment));
+    },
+  });
 
   mountArrival(app, {
     db, requireKey: settings.hosted, tokenKey: parseArrivalKey(options.arrivalTokenKey ?? process.env.BIDPARK_ARRIVAL_TOKEN_KEY), pinnedReader, contractAddress: () => loadDeployment()?.contractAddress ?? null });
@@ -1352,6 +1378,9 @@ export function createApp(options = {}) {
       ready, profile: profile.id, chainId: profile.chainId, contractAddress: deployment?.contractAddress ?? null, checks,
     });
   });
+
+  // Local demo clock: only on the local profile with a loopback RPC; presenter.mjs also checks chain id 31337 per request.
+  if (profile.id === 'local' && isLoopback(new URL(rpcUrl).hostname)) mountPresenter(app, { rpcUrl, deploymentPath });
 
   // Catch-all 404 for unknown API routes
   app.use('/api', (req, res) => {

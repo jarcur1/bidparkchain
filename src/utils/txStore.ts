@@ -26,6 +26,10 @@ export interface TxRecord {
   metadata?: SpotMetadata;
   /** For creates: whether the listing details are registered with the API. */
   registered?: boolean;
+  /** For a create that replaces an auction with bids: the auction it replaces. */
+  replaces?: string;
+  /** For a replacement create: whether the API has recorded its link to the replaced auction. */
+  linked?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -44,8 +48,13 @@ export function readTransactions(): TxRecord[] {
   } catch { /* fall back to memory */ }
   return memory;
 }
+/** A confirmed replacement whose link is not yet recorded: its only retry control is this record, so it is never evicted. */
+const hasPendingLink = (r: TxRecord) => Boolean(r.replaces && r.auctionId && !r.linked);
+
 function write(records: TxRecord[]) {
-  memory = records.slice(-LIMIT);
+  // Only the newest LIMIT other records are kept; pending links stay, however many newer transactions follow.
+  let others = records.filter((r) => !hasPendingLink(r)).length - LIMIT;
+  memory = records.filter((r) => hasPendingLink(r) || others-- <= 0);
   try { localStorage.setItem(KEY, JSON.stringify(memory)); } catch { /* memory only */ }
 }
 
@@ -57,7 +66,7 @@ export function recordTransaction(record: Omit<TxRecord, 'createdAt' | 'updatedA
 }
 
 /** Applies a status update or field patch. Committed metadata never changes after submission. */
-export function patchTransaction(id: string, patch: Partial<Pick<TxRecord, 'auctionId' | 'registered' | 'metadata'>> & Partial<TxUpdate>): TxRecord | null {
+export function patchTransaction(id: string, patch: Partial<Pick<TxRecord, 'auctionId' | 'registered' | 'linked' | 'metadata'>> & Partial<TxUpdate>): TxRecord | null {
   let updated: TxRecord | null = null;
   write(readTransactions().map((r) => {
     if (r.id !== id) return r;

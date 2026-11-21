@@ -81,16 +81,20 @@ export const withInbox = (Base) => class extends Base {
       contractAddress.toLowerCase(), address.toLowerCase(), id, Date.now()).changes, 0));
   }
 
-  /** Auctions whose indexed events show more reports than decisions and no refund: reports that may still be open. */
-  getOpenDisputeAuctions(contractAddress) {
+  /**
+   * One keyset page of auctions whose indexed events show more reports than decisions and no refund: reports that may
+   * still be open. Ordered by auction id, starting after the `after` id; fetch `limit + 1` rows to learn whether more follow.
+   */
+  getOpenDisputeAuctions(contractAddress, { limit, after = -1 }) {
     const count = (event) => `(SELECT COUNT(*) FROM auction_events x WHERE x.chain_id = o.chain_id AND x.contract_address = o.contract_address
       AND x.auction_id = o.auction_id AND x.canonical = 1 AND x.event = '${event}')`;
     return this.db.prepare(`
       SELECT DISTINCT auction_id FROM auction_events o
       WHERE chain_id = ? AND contract_address = ? AND canonical = 1 AND event = 'DisputeOpened'
+        AND CAST(auction_id AS INTEGER) > ?
         AND ${count('DisputeOpened')} > ${count('DisputeResolved')} AND ${count('BookingRefunded')} = 0
-      ORDER BY CAST(auction_id AS INTEGER)
-    `).all(this.chainId, contractAddress.toLowerCase()).map((row) => row.auction_id);
+      ORDER BY CAST(auction_id AS INTEGER) LIMIT ?
+    `).all(this.chainId, contractAddress.toLowerCase(), after, limit).map((row) => row.auction_id);
   }
 
   /** Appends a review record and its audit entry; returns the stored record. */

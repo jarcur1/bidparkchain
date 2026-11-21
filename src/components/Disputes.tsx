@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { BookingAction } from '../utils/booking';
 
 /** Actions whose on-chain call carries the reference of a stored review record. */
 export const REVIEW_ACTIONS: BookingAction[] = ['reportSellerFailure', 'upholdDispute', 'denyDispute'];
 export const MIN_REVIEW_TEXT = 10;
+const PAGE_SIZE = 25;
 
 interface ReviewRecord {
   id: number;
@@ -39,6 +40,10 @@ async function call<T>(route: string, body?: unknown): Promise<T> {
   if (!res.ok) throw Object.assign(new Error(typeof data?.error === 'string' ? data.error : `Request failed (${res.status})`), { status: res.status });
   return data as T;
 }
+
+type QueuePage = { nextAfter: string | null; items: QueueEntry[] };
+const fetchPage = (after: string | null, limit: number) =>
+  call<QueuePage>(`/api/disputes/queue?limit=${limit}${after === null ? '' : `&after=${after}`}`);
 
 /**
  * Stores the evidence or decision reason server-side and returns the opaque reference the on-chain
@@ -77,7 +82,7 @@ export const DisputeRecord: React.FC<{ auctionId: string; refreshKey?: unknown }
   );
 };
 
-/** Resolver view: open seller-failure reports with their deadlines. Not shown to wallets that are not resolvers. */
+/** Resolver view: open seller-failure reports with their deadlines, a page at a time. Not shown to wallets that are not resolvers. */
 export const ResolverQueue: React.FC<{
   refreshKey?: unknown;
   nowSec: number;
@@ -85,28 +90,72 @@ export const ResolverQueue: React.FC<{
   onAct: (auctionId: string, action: BookingAction, text: string) => Promise<void>;
 }> = ({ refreshKey, nowSec, busy, onAct }) => {
   const [items, setItems] = useState<QueueEntry[] | null>(null);
+  // `next` is the cursor of the next page; `through` is the last candidate id read, so a reload can walk to the same extent.
+  const [next, setNext] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [open, setOpen] = useState<string | null>(null);
-  const load = useCallback(async () => {
+  const queueRead = useRef(0);
+  const through = useRef<string | null>(null);
+  // Appends the page after `after`; the first page replaces the list.
+  const load = useCallback(async (after: string | null = null) => {
+    const seq = ++queueRead.current;
     try {
-      setItems((await call<{ items: QueueEntry[] }>('/api/disputes/queue')).items);
+      const data = await fetchPage(after, PAGE_SIZE);
+      if (seq !== queueRead.current) return;
+      setItems((list) => (after === null || !list ? data.items : [...list, ...data.items.filter((item) => !list.some((x) => x.auctionId === item.auctionId))]));
+      setNext(data.nextAfter);
+      through.current = data.nextAfter ?? through.current;
       setError(null);
     } catch (err) {
-      setItems(null);
-      setError((err as { status?: number }).status === 403 ? null : err instanceof Error ? err.message : String(err));
+      if (seq !== queueRead.current) return;
+      const status = err instanceof Error && 'status' in err && typeof err.status === 'number' ? err.status : undefined;
+      // Non-resolvers see nothing; other failures keep the rows already shown and report the error.
+      if (status === 403) setItems(null);
+      setError(status === 403 ? null : err instanceof Error ? err.message : String(err));
     }
   }, []);
-  useEffect(() => { void load(); }, [load, refreshKey]);
+  // Reloads from the start, walking pages (the server caps one at 100) until the extent already shown is covered again.
+  const reload = useCallback(async () => {
+    const seq = ++queueRead.current;
+    const reach = through.current === null ? 0 : Number(through.current);
+    try {
+      const all: QueueEntry[] = [];
+      let after: string | null = null;
+      let cursor: string | null = null;
+      do {
+        const data: QueuePage = await fetchPage(after, reach === 0 ? PAGE_SIZE : 100);
+        if (seq !== queueRead.current) return;
+        all.push(...data.items);
+        cursor = data.nextAfter;
+        after = cursor;
+      } while (cursor !== null && Number(cursor) <= reach);
+      setItems(all);
+      setNext(cursor);
+      through.current = cursor ?? through.current;
+      setError(null);
+    } catch (err) {
+      if (seq !== queueRead.current) return;
+      const status = err instanceof Error && 'status' in err && typeof err.status === 'number' ? err.status : undefined;
+      if (status === 403) setItems(null);
+      setError(status === 403 ? null : err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+  useEffect(() => { void reload(); }, [reload, refreshKey]);
   if (!items) return error ? <p className="activity-empty-text" role="alert">{error}</p> : null;
+  const decide = async (auctionId: string, action: BookingAction, text: string) => {
+    try { await onAct(auctionId, action, text); } finally { await reload(); }
+  };
 
   return (
     <section className="activity-section" aria-labelledby="resolver-queue-title" data-testid="resolver-queue">
       <div className="activity-section-header">
         <h2 id="resolver-queue-title" className="activity-section-title">Resolver queue</h2>
-        <button type="button" className="btn-table-action" onClick={() => void load()}>Refresh</button>
+        <button type="button" className="btn-table-action" onClick={() => void reload()}>Refresh</button>
       </div>
-      {items.length === 0 && <p className="activity-empty-text">No open seller-failure reports.</p>}
+      {error && <p className="activity-empty-text" role="alert">{error}</p>}
+      {items.length === 0 && next === null && <p className="activity-empty-text">No open seller-failure reports.</p>}
+      {items.length === 0 && next !== null && <p className="activity-empty-text">No open reports on this page; load more to keep looking.</p>}
       <ul className="inbox-list">
         {items.map((item) => {
           const reason = reasons[item.auctionId] ?? '';
@@ -126,7 +175,7 @@ export const ResolverQueue: React.FC<{
               </button>
               {open === item.auctionId && <DisputeRecord auctionId={item.auctionId} refreshKey={refreshKey} />}
               {expired ? (
-                <button type="button" className="btn-table-action" disabled={busy} onClick={() => void onAct(item.auctionId, 'expireDispute', '')}>
+                <button type="button" className="btn-table-action" disabled={busy} onClick={() => void decide(item.auctionId, 'expireDispute', '')}>
                   Expire report and refund winner
                 </button>
               ) : item.isParty ? (
@@ -146,7 +195,7 @@ export const ResolverQueue: React.FC<{
                       type="button"
                       className="btn-table-action"
                       disabled={busy || reason.trim().length < MIN_REVIEW_TEXT}
-                      onClick={() => void onAct(item.auctionId, action, reason.trim())}
+                      onClick={() => void decide(item.auctionId, action, reason.trim())}
                     >
                       {action === 'upholdDispute' ? 'Uphold report (refund winner)' : 'Deny report'}
                     </button>
@@ -157,6 +206,10 @@ export const ResolverQueue: React.FC<{
           );
         })}
       </ul>
+      {items.length > 0 && <p className="activity-empty-text" data-testid="resolver-queue-count">Showing {items.length} open {items.length === 1 ? 'report' : 'reports'}{next !== null && ', more may follow'}.</p>}
+      {next !== null && (
+        <button type="button" className="btn-table-action" onClick={() => void load(next)}>Load more</button>
+      )}
     </section>
   );
 };

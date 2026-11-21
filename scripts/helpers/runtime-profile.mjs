@@ -6,7 +6,7 @@ import { getNetworkProfile } from '../../shared/network-profiles.mjs';
 const ROOT_DIR = fileURLToPath(new URL('../../', import.meta.url));
 const LOCAL_DATA_DIR = path.resolve(ROOT_DIR, 'data');
 
-function isLoopback(hostname) {
+export function isLoopback(hostname) {
   return hostname === 'localhost' || hostname === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(hostname);
 }
 

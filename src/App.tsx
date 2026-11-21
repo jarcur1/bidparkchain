@@ -6,6 +6,7 @@ import { DetailModal } from './components/DetailModal';
 import { CampusScenarioBanner } from './components/CampusScenarioBanner';
 import { DisclosuresBanner } from './components/DisclosuresBanner';
 import { FilterBar } from './components/FilterBar';
+import { PresenterSkip } from './components/PresenterSkip';
 import {
   DEFAULT_FILTERS,
   MY_LOCATION_LABEL,
@@ -22,6 +23,7 @@ import {
 import { Footer } from './components/Footer';
 import { Header } from './components/Header';
 import { ReadStatusBanner, type ReadSource } from './components/ReadStatusBanner';
+import { SearchFailureNotice } from './components/SearchFailureNotice';
 import { ParkingMap } from './components/ParkingMap';
 import { SpotGrid } from './components/SpotGrid';
 import { Toast } from './components/Toast';
@@ -299,6 +301,20 @@ export const AppContent: React.FC<{
     setTxVersion((v) => v + 1);
   };
 
+  // Links a replacement to the auction it replaces. A failure leaves `linked` unset on the create record,
+  // so My Activity → Transactions can retry it after a reload.
+  const linkReplacementRecord = async (recordId: string | null, replaces: string, auctionId: string, deployment: DeploymentIdentity) => {
+    try {
+      await linkReplacement(replaces, auctionId, deployment);
+      if (recordId) patchTransaction(recordId, { linked: true });
+      addToast('success', 'Replacement linked', `Bidders on auction #${replaces} will see a pointer to auction #${auctionId} in their inbox.`);
+    } catch (linkErr) {
+      addToast('error', 'Replacement not linked', `${linkErr instanceof Error ? linkErr.message : String(linkErr)}. Retry from My Activity → Transactions.`);
+    } finally {
+      setTxVersion((v) => v + 1);
+    }
+  };
+
   const warnDuplicates = (listing: { duplicateSpaces: { spaceId: string }[] }) => {
     if (listing.duplicateSpaces.length === 0) return;
     const ids = listing.duplicateSpaces.map((d) => `#${d.spaceId}`).join(', ');
@@ -491,12 +507,12 @@ export const AppContent: React.FC<{
   }, [config, configDeployment, walletState.address, walletState.chainId, walletState.isReady, provider]);
 
   // Manual refresh all: reports what each source actually did.
-  const handleRefreshAll = useCallback(async () => {
+  const refreshAll = useCallback(async (forceFresh: boolean) => {
     setIsRefreshing(true);
     try {
       const sources: [string, Promise<ReadResult>][] = [
         ['Configuration', onRefreshConfig()],
-        ['Listings', loadListings()],
+        ['Listings', loadListings(false, forceFresh)],
         ['Refund balance', loadPendingRefunds()],
         ['Wallet balance', refreshBalance()],
       ];
@@ -522,6 +538,9 @@ export const AppContent: React.FC<{
       setIsRefreshing(false);
     }
   }, [onRefreshConfig, loadListings, loadPendingRefunds, refreshBalance, addToast]);
+  const handleRefreshAll = useCallback(() => refreshAll(false), [refreshAll]);
+  // After a chain-time skip the listings read must start after the skip, never share a pre-skip in-flight read.
+  const handleRefreshAfterSkip = useCallback(() => refreshAll(true), [refreshAll]);
 
   // Targeted retry for one failed source.
   const retrySource = useCallback(async (label: string, read: () => Promise<ReadResult>) => {
@@ -717,7 +736,7 @@ export const AppContent: React.FC<{
       // the server can still match the new auction's hash to these details.
       await stageListingMetadata(metadata, webProfile.id === 'sepolia' ? expectedDeployment : undefined);
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
-      const created = track('create', `List "${metadata.title}"`, { metadata });
+      const created = track('create', replaces ? `List "${metadata.title}" (replaces #${replaces})` : `List "${metadata.title}"`, { metadata, replaces });
       const { receipt, auctionId } = await createAuctionOnChain(
         contract,
         metadata,
@@ -750,14 +769,7 @@ export const AppContent: React.FC<{
         );
       }
 
-      if (replaces) {
-        try {
-          await linkReplacement(replaces, auctionId);
-          addToast('success', 'Replacement linked', `Bidders on auction #${replaces} will see a pointer to auction #${auctionId} in their inbox.`);
-        } catch (linkErr) {
-          addToast('error', 'Replacement not linked', linkErr instanceof Error ? linkErr.message : String(linkErr));
-        }
-      }
+      if (replaces) await linkReplacementRecord(created.id, replaces, auctionId, expectedDeployment);
 
       addToast(
         'success',
@@ -802,6 +814,25 @@ export const AppContent: React.FC<{
       await loadListings();
     } catch (err) {
       addToast('error', 'Registration failed', err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsActionBusy(false);
+    }
+  };
+
+  // Retries a replacement link that did not reach the API, from My Activity → Transactions. Repeating it is safe.
+  const handleLinkReplacement = async (record: TxRecord) => {
+    if (isActionBusy || !config || !record.auctionId || !record.replaces || record.linked || record.scope.deployment !== configDeployment) return;
+    setIsActionBusy(true);
+    try {
+      await ensureSignedIn();
+      await linkReplacementRecord(record.id, record.replaces, record.auctionId, {
+        chainId: config.chainId,
+        contractAddress: config.contractAddress,
+        deploymentBlock: config.deploymentBlock,
+        deploymentBlockHash: config.deploymentBlockHash,
+      });
+    } catch (err) {
+      addToast('error', 'Replacement not linked', err instanceof Error ? err.message : String(err));
     } finally {
       setIsActionBusy(false);
     }
@@ -1055,18 +1086,23 @@ export const AppContent: React.FC<{
   );
 
   // The server answers the same filters with bounded, block-pinned pages. Until its answer for the
-  // current query and deployment arrives (or if it fails), the loaded snapshot is filtered locally.
+  // current query and deployment arrives (or if it fails, with a notice), the loaded snapshot is filtered locally.
   const searchKey = searchQuery(filters, destination);
   const [serverSearch, setServerSearch] = useState<{
     key: string; deployment: string | null; listings: SearchListing[]; total: number; nextCursor: string | null; loadingMore: boolean;
     /** Pages loaded, so a listings refresh can reload as many. */
     pages: number;
+    /** Why the last cursor request failed; the pages already shown stay. */
+    pageError: string | null;
   } | null>(null);
   const serverSearchRef = useRef(serverSearch);
   serverSearchRef.current = serverSearch;
   const [searchNonce, setSearchNonce] = useState(0);
+  // The query and deployment of the last search that failed. An accepted answer or a new query clears it.
+  const [searchFailure, setSearchFailure] = useState<{ key: string; deployment: string | null; error: string } | null>(null);
   const snapshotBlock = listingsView.chain?.blockNumber;
   const listingsDeployment = listingsView.deployment;
+  useEffect(() => { setSearchFailure(null); }, [searchKey, listingsDeployment]);
   useEffect(() => {
     if (snapshotBlock === undefined) return;
     let live = true;
@@ -1078,15 +1114,23 @@ export const AppContent: React.FC<{
         .then((r) => {
           if (!live) return;
           const deployment = r.chain ? deploymentKey(r.chain) : null;
-          setServerSearch(deployment === listingsDeployment
-            ? { key: searchKey, deployment, listings: r.listings, total: r.total, nextCursor: r.nextCursor, loadingMore: false, pages: keep }
-            : null);
+          if (deployment !== listingsDeployment) { setServerSearch(null); return; }
+          setSearchFailure(null);
+          setServerSearch({
+            key: searchKey, deployment, listings: r.listings, total: r.total, nextCursor: r.nextCursor, loadingMore: false,
+            pages: r.pagesLoaded, pageError: r.pageError ? r.pageError.message : null,
+          });
         })
-        .catch(() => { if (live) setServerSearch(null); });
+        .catch((err: unknown) => {
+          if (!live) return;
+          setServerSearch(null);
+          setSearchFailure({ key: searchKey, deployment: listingsDeployment, error: err instanceof Error ? err.message : String(err) });
+        });
     }, 150);
     return () => { live = false; clearTimeout(timer); };
   }, [searchKey, snapshotBlock, listingsDeployment, searchNonce]);
   const serverResult = serverSearch?.key === searchKey && serverSearch.deployment === listingsDeployment ? serverSearch : null;
+  const searchNotice = searchFailure?.key === searchKey && searchFailure.deployment === listingsDeployment ? searchFailure : null;
   const shownListings: Listing[] = serverResult ? serverResult.listings : filteredListings;
   const shownDistances = useMemo(
     () => serverResult
@@ -1097,16 +1141,18 @@ export const AppContent: React.FC<{
   const loadMoreResults = useCallback(async () => {
     const current = serverSearch;
     if (!current?.nextCursor || current.loadingMore) return;
-    setServerSearch({ ...current, loadingMore: true });
+    setServerSearch({ ...current, loadingMore: true, pageError: null });
     try {
       const page = await searchListings(current.key, current.nextCursor);
       setServerSearch((s) => s?.key === current.key && s.nextCursor === current.nextCursor
-        ? { ...s, listings: [...s.listings, ...page.listings], nextCursor: page.nextCursor, loadingMore: false, pages: s.pages + 1 }
+        ? { ...s, listings: [...s.listings, ...page.listings], nextCursor: page.nextCursor, loadingMore: false, pages: s.pages + 1, pageError: null }
         : s);
     } catch (err) {
       // A cursor whose block was replaced starts the search again from the first page.
-      if (err instanceof ApiError && err.status === 409) setSearchNonce((n) => n + 1);
-      setServerSearch((s) => (s === null ? s : { ...s, loadingMore: false }));
+      const replaced = err instanceof ApiError && err.status === 409;
+      if (replaced) setSearchNonce((n) => n + 1);
+      const message = err instanceof Error ? err.message : String(err);
+      setServerSearch((s) => (s === null ? s : { ...s, loadingMore: false, pageError: replaced ? null : message }));
     }
   }, [serverSearch]);
 
@@ -1356,6 +1402,7 @@ export const AppContent: React.FC<{
               listings={listings}
               listingsStatus={listingsView.read.status}
             />
+            {import.meta.env.VITE_BIDPARK_PROFILE === 'local' && <PresenterSkip onRefresh={handleRefreshAfterSkip} />}
             {pendingRegistration && (
               <div className="pending-registration-alert">
                 <div className="pending-alert-content">
@@ -1371,6 +1418,8 @@ export const AppContent: React.FC<{
                 </button>
               </div>
             )}
+
+            <SearchFailureNotice error={searchNotice?.error ?? null} onRetry={() => setSearchNonce((n) => n + 1)} />
 
             {/* Filter Toolbar */}
             <FilterBar
@@ -1411,6 +1460,7 @@ export const AppContent: React.FC<{
                     more={serverResult && {
                       remaining: serverResult.total - serverResult.listings.length,
                       loading: serverResult.loadingMore,
+                      error: serverResult.pageError,
                       onLoad: () => void loadMoreResults(),
                     }}
                   />
@@ -1524,6 +1574,7 @@ export const AppContent: React.FC<{
             staleCount={staleTxCount}
             explorerUrl={config?.explorerUrl}
             onCompleteRegistration={(record) => void handleResumeRegistration(record)}
+            onLinkReplacement={(record) => void handleLinkReplacement(record)}
             isActionBusy={isActionBusy}
           />
         )}

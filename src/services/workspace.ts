@@ -1,3 +1,4 @@
+import type { DeploymentIdentity } from '../types';
 export type SpotKind = 'garage' | 'driveway' | 'covered';
 /** Fields of a saved listing draft or template; the dates are wall-clock text in the space's time zone. */
 export interface DraftFields {
@@ -55,8 +56,9 @@ export const saveArrival = (scope: 'auctions' | 'spaces', id: string, instructio
 export const checkInArrival = async (auctionId: string) =>
   (await call<{ checkIn: ArrivalCheckIn }>(`/api/auctions/${auctionId}/check-in`, 'POST', {})).checkIn;
 
-export const linkReplacement = (originalId: string, replacementId: string) =>
-  call<{ linked: true }>(`/api/auctions/${originalId}/replacement`, 'POST', { replacementId });
+/** `deployment` is the identity the host saw when creating the replacement; the API refuses a different one. */
+export const linkReplacement = (originalId: string, replacementId: string, deployment: DeploymentIdentity) =>
+  call<{ linked: true }>(`/api/auctions/${originalId}/replacement`, 'POST', { replacementId, deployment });
 
 function responseFields(text: string): { path?: unknown; error?: unknown } {
   try {
