@@ -13,6 +13,7 @@ export { applyMigrations, SCHEMA_VERSION } from './db/migrations.mjs';
 
 const DEFAULT_DATA_DIR = path.resolve(process.cwd(), 'data');
 const DEFAULT_DB_PATH = path.resolve(DEFAULT_DATA_DIR, 'bidpark.db');
+const BUSY_TIMEOUT_MS = 5_000;
 export const LOCAL_CHAIN_ID = 31337;
 
 class DatabaseCore {
@@ -30,7 +31,9 @@ class DatabaseCore {
       fs.mkdirSync(dir, { recursive: true });
     }
     this.arrivalKey = null;
-    this.db = new DatabaseSync(dbPath);
+    // The API, keeper and deploy script can hold the same file; wait for another connection's write lock
+    // instead of failing at once with "database is locked".
+    this.db = new DatabaseSync(dbPath, { timeout: BUSY_TIMEOUT_MS });
     this._migrate();
   }
 
