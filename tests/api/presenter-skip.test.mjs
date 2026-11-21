@@ -3,6 +3,8 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { afterAll, afterEach, beforeAll, expect, it } from 'vitest';
 import { ethers } from 'ethers';
+import http from 'node:http';
+import { isLoopbackPeer } from '../../server/presenter.mjs';
 import { createApp } from '../../server/app.mjs';
 import { resolveRuntimeProfile } from '../../scripts/helpers/runtime-profile.mjs';
 import { createScope, runDeployScript } from '../support/owned-env.mjs';
@@ -120,3 +122,40 @@ it('is absent under the sepolia profile', async () => {
   expect(response.status).toBe(404);
   expect(response.json).toEqual(ABSENT);
 }, 120_000);
+
+it('serializes concurrent skips so the second one is a no-op', async () => {
+  await startApi(localRuntime());
+  const [a, b] = await Promise.all([postSkip({ target: 'parking' }), postSkip({ target: 'parking' })]);
+  expect([a.status, b.status]).toEqual([200, 200]);
+  const advanced = [a.json.advancedSeconds, b.json.advancedSeconds].sort((x, y) => x - y);
+  expect(advanced[0]).toBe(0);
+  const parkingEnd = await latestDeadline('parkingEnd', (x) => !x.cancelled);
+  expect(await chainTimestamp()).toBe(parkingEnd + 1);
+}, 180_000);
+
+it('does not follow an RPC redirect', async () => {
+  let hits = 0;
+  const target = http.createServer((req, res) => { hits++; res.end('{}'); });
+  target.listen(0, '127.0.0.1');
+  await once(target, 'listening');
+  const redirector = http.createServer((req, res) => {
+    res.writeHead(307, { location: `http://127.0.0.1:${target.address().port}/` });
+    res.end();
+  });
+  redirector.listen(0, '127.0.0.1');
+  await once(redirector, 'listening');
+  try {
+    await startApi(localRuntime(), { rpcUrl: `http://127.0.0.1:${redirector.address().port}` });
+    const response = await postSkip({ target: 'bidding' });
+    expect(response.status).not.toBe(200);
+    expect(hits).toBe(0);
+  } finally {
+    redirector.close();
+    target.close();
+  }
+}, 120_000);
+
+it('only trusts a loopback socket peer', () => {
+  for (const ok of ['127.0.0.1', '127.8.9.1', '::1', '::ffff:127.0.0.1']) expect(isLoopbackPeer(ok)).toBe(true);
+  for (const bad of ['10.0.0.5', '::ffff:10.0.0.5', '192.168.1.2', '2001:db8::1', undefined]) expect(isLoopbackPeer(bad)).toBe(false);
+});

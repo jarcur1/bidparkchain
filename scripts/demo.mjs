@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ethers, FetchRequest } from 'ethers';
-import { assertLocalChain, getProvider, getWallet, HARDHAT_CHAIN_ID, HARDHAT_RPC_URL } from './helpers/chain.mjs';
+import { assertLocalChain, getWallet, HARDHAT_CHAIN_ID, HARDHAT_RPC_URL } from './helpers/chain.mjs';
 import { CAMPUS_EXPANSION_REMOVED, getSeededListings } from './helpers/seed-data.mjs';
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
