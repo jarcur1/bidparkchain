@@ -37,7 +37,8 @@ export function createBackup({ dataDir, backupRoot = path.join(dataDir, 'backups
   const dir = path.join(backupRoot, stamp);
   // Owner-only permissions; Windows ignores modes, so keep backups in a protected location there.
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const live = new DatabaseSync(path.join(dataDir, dbName), { readOnly: true });
+  // A running API may be mid-write; wait for its lock rather than failing the backup at once.
+  const live = new DatabaseSync(path.join(dataDir, dbName), { readOnly: true, timeout: 5_000 });
   let schemaVersion;
   let listingCount;
   let indexCheckpoint = null;

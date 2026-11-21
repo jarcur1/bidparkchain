@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import express from 'express';
 import { ethers } from 'ethers';
 import { EscrowDatabase } from './db.mjs';
@@ -13,6 +14,7 @@ import { CATEGORY_NAMES, deriveInbox, INBOX_CATEGORIES, INBOX_ID, mergeFeed, own
 import { createSettlementJob, settlementSettings } from './settlement.mjs';
 import { PRICE_NOTE, QueryError, encodeCursor, filterAndSort, matchesMetadata, parseSearchQuery } from './search.mjs';
 import { mountDrafts } from './drafts.mjs';
+import { mountPhotos, photoSettings } from './photos.mjs';
 import { mountReplacements } from './replacements.mjs';
 import { mountArrival } from './arrival.mjs';
 import { parseArrivalKey } from './arrival-crypto.mjs';
@@ -177,11 +179,12 @@ export function createApp(options = {}) {
   if (supplied && (supplied.dbPath !== runtime.dbPath || supplied.deploymentPath !== runtime.deploymentPath)) {
     throw new Error('Invalid runtime paths');
   }
-  if (runtime.profile.id === 'sepolia' && (options.dbPath || options.deploymentPath || options.rpcUrl)) {
+  if (runtime.profile.id === 'sepolia' && (options.dbPath || options.deploymentPath || options.rpcUrl || options.photoDir || options.photos)) {
     throw new Error('Sepolia runtime overrides are not allowed');
   }
   const deploymentPath = options.deploymentPath ?? runtime.deploymentPath;
   const rpcUrl = options.rpcUrl ?? runtime.rpcUrl;
+  const photoDir = options.photoDir ?? path.join(runtime.dataDir, 'photos');
   const profile = runtime.profile;
   if (supplied || !options.dbPath) assertProfileDirectory(runtime);
   const db = new EscrowDatabase(options.dbPath ?? runtime.dbPath, { chainId: profile.chainId });
@@ -245,6 +248,11 @@ export function createApp(options = {}) {
       return;
     }
     next();
+  });
+
+  // Photo uploads are raw bytes whatever their Content-Type, so they are mounted before the JSON parser.
+  const photos = mountPhotos(app, {
+    db, photoDir, settings: photoSettings(options.photos), canUpload: (address) => ownsOrListsSpace(address),
   });
 
   // JSON body parser with bounded payload size
@@ -1223,6 +1231,24 @@ export function createApp(options = {}) {
     contractAddress: () => loadDeployment()?.contractAddress ?? null,
   });
 
+  /** True when the wallet owns, or is an approved lister on, at least one space of the deployment this API serves. */
+  async function ownsOrListsSpace(address) {
+    const deployment = loadDeployment();
+    if (!deployment?.contractAddress) return false;
+    const contract = new ethers.Contract(deployment.contractAddress, abiFor(deployment), provider);
+    const fromBlock = Number(deployment.deploymentBlock ?? 0);
+    const logs = (await Promise.all([
+      contract.queryFilter(contract.filters.SpaceRegistered(null, address), fromBlock),
+      contract.queryFilter(contract.filters.SpaceTransferred(null, null, address), fromBlock),
+      contract.queryFilter(contract.filters.SpaceListerSet(null, address), fromBlock),
+    ])).flat();
+    for (const spaceId of new Set(logs.map((log) => log.args.spaceId.toString()))) {
+      const [owner, lister] = await Promise.all([readChain('spaceOwner', [spaceId]), readChain('isSpaceLister', [spaceId, address])]);
+      if (owner.toLowerCase() === address.toLowerCase() || lister) return true;
+    }
+    return false;
+  }
+
   mountDrafts(app, { db, contractAddress: () => loadDeployment()?.contractAddress ?? null });
 
   /** Live read of one chain method for the review channel: finalized on Sepolia, the latest block locally. */
@@ -1370,6 +1396,6 @@ export function createApp(options = {}) {
 
   return {
     app, db, provider, syncIndexOnce, indexingDone: () => indexing ?? Promise.resolve(),
-    settlement, settlementIntervalMs: settlementConfig?.intervalMs ?? 0,
+    settlement, settlementIntervalMs: settlementConfig?.intervalMs ?? 0, photos,
   };
 }

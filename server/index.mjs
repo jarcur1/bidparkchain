@@ -12,7 +12,7 @@ export { createApp };
  * and RPC provider, so no request ever runs against a closed resource.
  */
 export function serve({ port = 3001, host = '127.0.0.1', drainMs = 10_000, indexIntervalMs = 5_000, webDir, ...options } = {}) {
-  const { app, db, provider, syncIndexOnce, indexingDone, settlement, settlementIntervalMs } = createApp(options);
+  const { app, db, provider, syncIndexOnce, indexingDone, settlement, settlementIntervalMs, photos } = createApp(options);
   if (webDir) {
     // Hosted mode serves the built web app from the same origin as /api: no Vite dev server and no
     // /rpc proxy. Hashed assets are cached for a year; index.html is always revalidated.
@@ -35,14 +35,19 @@ export function serve({ port = 3001, host = '127.0.0.1', drainMs = 10_000, index
   // Optional settlement keeper, same lifecycle: shutdown waits for a pass in flight.
   const settleTimer = settlement ? setInterval(() => void settlement.runOnce(), settlementIntervalMs) : null;
   if (settleTimer) void settlement.runOnce();
+  // Photo reclamation, same lifecycle: a sweep on startup and then periodically; shutdown waits for one in flight.
+  const sweepPhotos = () => photos.sweep().catch((err) => console.error('[BidPark API] Photo sweep failed:', err.message));
+  const photoTimer = setInterval(() => void sweepPhotos(), photos.sweepIntervalMs);
+  void sweepPhotos();
   let closing = null;
   const close = () => closing ??= new Promise((resolve) => {
     if (indexTimer) clearInterval(indexTimer);
     if (settleTimer) clearInterval(settleTimer);
+    clearInterval(photoTimer);
     const force = setTimeout(() => server.closeAllConnections(), drainMs);
     server.close(async () => {
       clearTimeout(force);
-      await Promise.all([indexingDone(), settlement?.done()]);
+      await Promise.all([indexingDone(), settlement?.done(), photos.done()]);
       db.close();
       provider.destroy();
       resolve();

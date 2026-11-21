@@ -59,3 +59,41 @@ export const checkInArrival = async (auctionId: string) =>
 /** `deployment` is the identity the host saw when creating the replacement; the API refuses a different one. */
 export const linkReplacement = (originalId: string, replacementId: string, deployment: DeploymentIdentity) =>
   call<{ linked: true }>(`/api/auctions/${originalId}/replacement`, 'POST', { replacementId, deployment });
+
+function responseFields(text: string): { path?: unknown; error?: unknown } {
+  try {
+    const data = JSON.parse(text);
+    return data && typeof data === 'object' ? data : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Uploads one photo as raw bytes, so the browser can report progress. Resolves with the same-origin
+ * path for the photo field; rejects with the server's message, or with an AbortError when cancelled.
+ */
+export function uploadPhoto(file: File, onProgress: (fraction: number) => void, signal?: AbortSignal): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Upload cancelled', 'AbortError'));
+      return;
+    }
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/photos');
+    // The server reads the bytes and ignores the declared type; octet-stream keeps the JSON parser out of it.
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(event.loaded / event.total);
+    };
+    xhr.onload = () => {
+      const data = responseFields(xhr.responseText);
+      if (xhr.status === 201 && typeof data.path === 'string') resolve(data.path);
+      else reject(new Error(typeof data.error === 'string' ? data.error : `Upload failed (${xhr.status})`));
+    };
+    xhr.onerror = () => reject(new Error('Upload failed. Check your connection and try again.'));
+    xhr.onabort = () => reject(new DOMException('Upload cancelled', 'AbortError'));
+    signal?.addEventListener('abort', () => xhr.abort(), { once: true });
+    xhr.send(file);
+  });
+}

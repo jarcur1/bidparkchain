@@ -2,6 +2,9 @@ import { normalizeMetadata } from './metadata.js';
 
 const VALID_KINDS = new Set(['garage', 'driveway', 'covered']);
 
+/** Largest photo the API accepts in one upload; bigger uploads are refused with 413. */
+export const PHOTO_MAX_BYTES = 2 * 1024 * 1024;
+
 /**
  * Validates whether an image URL is an allowed HTTPS URL or safe local relative path.
  * Explicitly rejects javascript:, data:, file:, or dangerous URI schemes.
