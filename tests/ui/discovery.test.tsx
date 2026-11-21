@@ -299,7 +299,7 @@ describe('search pages', () => {
   afterEach(() => vi.unstubAllGlobals());
   const page = (n: number, next: string | null) => ({ listings: [{ id: String(n) }], total: 3, nextCursor: next, chain: null });
 
-  it('reloads as many pages as were shown, on one cursor chain, and keeps what it has if a later page fails', async () => {
+  it('reloads as many pages as were shown, on one cursor chain, and keeps what it has, reporting the error, if a later page fails', async () => {
     const calls: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       calls.push(url);
@@ -314,5 +314,7 @@ describe('search pages', () => {
     // The cursor for page 3 is refused: the pages already read are kept.
     const three = await searchListingsPages('limit=1', 3);
     expect(three.listings.map((l) => l.id)).toEqual(['1', '2']);
+    expect(three.pagesLoaded).toBe(2);
+    expect(three.pageError?.status).toBe(409);
   });
 });

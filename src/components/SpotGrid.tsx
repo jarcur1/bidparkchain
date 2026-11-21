@@ -22,7 +22,7 @@ interface SpotGridProps {
   distances?: Map<string, number>;
   destinationLabel?: string | null;
   /** Matches beyond the loaded page, and how to load the next page. */
-  more?: { remaining: number; loading: boolean; onLoad: () => void } | null;
+  more?: { remaining: number; loading: boolean; error?: string | null; onLoad: () => void } | null;
 }
 
 export const SpotGrid: React.FC<SpotGridProps> = ({
@@ -147,9 +147,12 @@ export const SpotGrid: React.FC<SpotGridProps> = ({
         />
       ))}
       {more && more.remaining > 0 && (
-        <button type="button" className="btn-empty-reset" onClick={more.onLoad} disabled={more.loading}>
-          {more.loading ? 'Loading…' : `Show ${more.remaining} more`}
-        </button>
+        <>
+          {more.error && <p className="search-more-error" role="alert">Could not load more listings: {more.error}</p>}
+          <button type="button" className="btn-empty-reset" onClick={more.onLoad} disabled={more.loading}>
+            {more.loading ? 'Loading…' : more.error ? 'Retry loading more' : `Show ${more.remaining} more`}
+          </button>
+        </>
       )}
     </div>
   );

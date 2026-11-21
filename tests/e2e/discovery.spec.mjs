@@ -126,6 +126,12 @@ test('discovery keeps filtering the loaded listings when the search service fail
   await page.getByLabel('Maximum distance').selectOption('0.5');
   await expect(cards).toHaveCount(1);
   await expect(page.getByRole('article', { name: `Listing: ${RAINEY}`, exact: true })).toBeVisible();
+  const notice = page.getByRole('status').filter({ hasText: 'Server search unavailable' });
+  await expect(notice).toBeVisible();
+  await page.unroute('**/api/listings/search**');
+  await notice.getByRole('button', { name: 'Retry search' }).click();
+  await expect(notice).toHaveCount(0);
+  await expect(cards).toHaveCount(1);
 });
 
 test('map-area search sends the viewport as a bbox, can be cleared, and keeps the area in the URL', async ({ page, stack }) => {

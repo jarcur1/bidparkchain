@@ -23,6 +23,7 @@ import {
 import { Footer } from './components/Footer';
 import { Header } from './components/Header';
 import { ReadStatusBanner, type ReadSource } from './components/ReadStatusBanner';
+import { SearchFailureNotice } from './components/SearchFailureNotice';
 import { ParkingMap } from './components/ParkingMap';
 import { SpotGrid } from './components/SpotGrid';
 import { Toast } from './components/Toast';
@@ -1085,18 +1086,23 @@ export const AppContent: React.FC<{
   );
 
   // The server answers the same filters with bounded, block-pinned pages. Until its answer for the
-  // current query and deployment arrives (or if it fails), the loaded snapshot is filtered locally.
+  // current query and deployment arrives (or if it fails, with a notice), the loaded snapshot is filtered locally.
   const searchKey = searchQuery(filters, destination);
   const [serverSearch, setServerSearch] = useState<{
     key: string; deployment: string | null; listings: SearchListing[]; total: number; nextCursor: string | null; loadingMore: boolean;
     /** Pages loaded, so a listings refresh can reload as many. */
     pages: number;
+    /** Why the last cursor request failed; the pages already shown stay. */
+    pageError: string | null;
   } | null>(null);
   const serverSearchRef = useRef(serverSearch);
   serverSearchRef.current = serverSearch;
   const [searchNonce, setSearchNonce] = useState(0);
+  // The query and deployment of the last search that failed. An accepted answer or a new query clears it.
+  const [searchFailure, setSearchFailure] = useState<{ key: string; deployment: string | null; error: string } | null>(null);
   const snapshotBlock = listingsView.chain?.blockNumber;
   const listingsDeployment = listingsView.deployment;
+  useEffect(() => { setSearchFailure(null); }, [searchKey, listingsDeployment]);
   useEffect(() => {
     if (snapshotBlock === undefined) return;
     let live = true;
@@ -1108,15 +1114,23 @@ export const AppContent: React.FC<{
         .then((r) => {
           if (!live) return;
           const deployment = r.chain ? deploymentKey(r.chain) : null;
-          setServerSearch(deployment === listingsDeployment
-            ? { key: searchKey, deployment, listings: r.listings, total: r.total, nextCursor: r.nextCursor, loadingMore: false, pages: keep }
-            : null);
+          if (deployment !== listingsDeployment) { setServerSearch(null); return; }
+          setSearchFailure(null);
+          setServerSearch({
+            key: searchKey, deployment, listings: r.listings, total: r.total, nextCursor: r.nextCursor, loadingMore: false,
+            pages: r.pagesLoaded, pageError: r.pageError ? r.pageError.message : null,
+          });
         })
-        .catch(() => { if (live) setServerSearch(null); });
+        .catch((err: unknown) => {
+          if (!live) return;
+          setServerSearch(null);
+          setSearchFailure({ key: searchKey, deployment: listingsDeployment, error: err instanceof Error ? err.message : String(err) });
+        });
     }, 150);
     return () => { live = false; clearTimeout(timer); };
   }, [searchKey, snapshotBlock, listingsDeployment, searchNonce]);
   const serverResult = serverSearch?.key === searchKey && serverSearch.deployment === listingsDeployment ? serverSearch : null;
+  const searchNotice = searchFailure?.key === searchKey && searchFailure.deployment === listingsDeployment ? searchFailure : null;
   const shownListings: Listing[] = serverResult ? serverResult.listings : filteredListings;
   const shownDistances = useMemo(
     () => serverResult
@@ -1127,16 +1141,18 @@ export const AppContent: React.FC<{
   const loadMoreResults = useCallback(async () => {
     const current = serverSearch;
     if (!current?.nextCursor || current.loadingMore) return;
-    setServerSearch({ ...current, loadingMore: true });
+    setServerSearch({ ...current, loadingMore: true, pageError: null });
     try {
       const page = await searchListings(current.key, current.nextCursor);
       setServerSearch((s) => s?.key === current.key && s.nextCursor === current.nextCursor
-        ? { ...s, listings: [...s.listings, ...page.listings], nextCursor: page.nextCursor, loadingMore: false, pages: s.pages + 1 }
+        ? { ...s, listings: [...s.listings, ...page.listings], nextCursor: page.nextCursor, loadingMore: false, pages: s.pages + 1, pageError: null }
         : s);
     } catch (err) {
       // A cursor whose block was replaced starts the search again from the first page.
-      if (err instanceof ApiError && err.status === 409) setSearchNonce((n) => n + 1);
-      setServerSearch((s) => (s === null ? s : { ...s, loadingMore: false }));
+      const replaced = err instanceof ApiError && err.status === 409;
+      if (replaced) setSearchNonce((n) => n + 1);
+      const message = err instanceof Error ? err.message : String(err);
+      setServerSearch((s) => (s === null ? s : { ...s, loadingMore: false, pageError: replaced ? null : message }));
     }
   }, [serverSearch]);
 
@@ -1403,6 +1419,8 @@ export const AppContent: React.FC<{
               </div>
             )}
 
+            <SearchFailureNotice error={searchNotice?.error ?? null} onRetry={() => setSearchNonce((n) => n + 1)} />
+
             {/* Filter Toolbar */}
             <FilterBar
               filters={filters}
@@ -1442,6 +1460,7 @@ export const AppContent: React.FC<{
                     more={serverResult && {
                       remaining: serverResult.total - serverResult.listings.length,
                       loading: serverResult.loadingMore,
+                      error: serverResult.pageError,
                       onLoad: () => void loadMoreResults(),
                     }}
                   />
