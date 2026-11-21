@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityView } from './components/ActivityView';
 import { BidModal } from './components/BidModal';
-import { CreateListingModal, type OwnedSpace } from './components/CreateListingModal';
+import { CreateListingModal } from './components/CreateListingModal';
 import { DetailModal } from './components/DetailModal';
 import { CampusScenarioBanner } from './components/CampusScenarioBanner';
 import { DisclosuresBanner } from './components/DisclosuresBanner';
@@ -9,16 +9,8 @@ import { FilterBar } from './components/FilterBar';
 import { PresenterSkip } from './components/PresenterSkip';
 import {
   DEFAULT_FILTERS,
-  MY_LOCATION_LABEL,
-  type Place,
   amenityOptions,
   describeFilters,
-  destinationOptions,
-  discoverListings,
-  filtersFromSearch,
-  filtersToSearch,
-  resolveDestination,
-  searchQuery,
 } from './utils/discovery';
 import { Footer } from './components/Footer';
 import { Header } from './components/Header';
@@ -30,60 +22,46 @@ import { Toast } from './components/Toast';
 import { WalletModal } from './components/WalletModal';
 import { useWallet, WalletProvider } from './context/WalletContext';
 import { SessionProvider, useSession } from './context/SessionContext';
-import { linkReplacement } from './services/workspace';
-import { ApiError, createListingRecord, fetchConfig, fetchListings, searchListings, searchListingsPages, stageListingMetadata } from './services/api';
-import type { TxObserver } from './services/blockchain';
-import { patchTransaction, readTransactions, recordTransaction, staleTransactionsFor, transactionsFor, type TxKind, type TxRecord } from './utils/txStore';
+import { useToasts } from './hooks/useToasts';
+import { useListingSearch } from './hooks/useListingSearch';
+import { useListings } from './hooks/useListings';
+import { useRefunds } from './hooks/useRefunds';
+import { useTransactions } from './hooks/useTransactions';
+import { useHostSpaces } from './hooks/useHostSpaces';
+import { BidPreflightError, useBidFlow } from './hooks/useBidFlow';
+import { useListingCreation, type PendingRegistration } from './hooks/useListingCreation';
+import { useModeration } from './hooks/useModeration';
+import { fetchConfig } from './services/api';
 import { TransactionCenter } from './components/TransactionCenter';
 import { Inbox, InboxAnnouncer, useInbox } from './components/Inbox';
-import { HostWorkspace, heldWindows, ZoneList } from './components/HostWorkspace';
+import { HostWorkspace, ZoneList } from './components/HostWorkspace';
 import { ResolverQueue, REVIEW_ACTIONS, submitReview } from './components/Disputes';
 import { HostVerificationPanel, ModerationPanel, useVerifications } from './components/Verification';
 import {
   cancelAuction,
   claimPayout,
-  createAuctionOnChain,
-  fetchBidAuctionIds,
-  fetchHostSpaces,
-  fetchSpaceAttestation,
-  sendSpaceAttestation,
-  type SpaceAttestation,
   sendSpaceAction,
-  type HostSpace,
   type SpaceAction,
-  fetchPendingReturns,
   getContractInstance,
   parseContractError,
-  placeBid,
   sendBookingAction,
   settleAuction,
   TransactionOutcomeUnknown,
   withdrawRefund,
 } from './services/blockchain';
-import { Interface, parseEther } from 'ethers';
 import { BOOKING_ACTION_LABELS, type BookingAction } from './utils/booking';
 import type {
   AppTab,
-  ChainSnapshot,
   Config,
-  DeploymentIdentity,
-  FilterState,
   Listing,
   ListingsResponse,
-  SearchListing,
-  SpotMetadata,
-  ToastMessage,
-  UnindexedAuction,
 } from './types';
 import {
   deploymentKey,
   getBidEligibility,
   getChainNowSec,
-  getMinimumBidWei,
   makeListingTarget,
-  resetChainClock,
   resolveListing,
-  syncChainClock,
   targetKey,
   type ListingTarget,
 } from './utils/eligibility';
@@ -93,7 +71,6 @@ import { webProfile } from './utils/networkProfile';
 import {
   LOADING_READ,
   READ_OK,
-  READ_SKIPPED,
   READ_SUPERSEDED,
   readFailed,
   readFailure,
@@ -102,49 +79,10 @@ import {
   type ReadState,
 } from './utils/readState';
 
-interface ListingsState {
-  deployment: string | null;
-  data: Listing[];
-  unindexed: UnindexedAuction[];
-  chain: ChainSnapshot | null;
-  deploymentChanged: boolean;
-  read: ReadState;
-}
-
-type ListingsReadResult = ReadResult & { snapshot?: ListingsResponse };
-
-interface RefundIdentity {
-  address: string | null;
-  chainId: number | null;
-  provider: unknown;
-  deployment: string | null;
-}
-
-interface RefundState {
-  identity: RefundIdentity;
-  wei: bigint | null;
-  // Auctions this account bid on; null when the bid history could not be read.
-  bidIds: Set<string> | null;
-  read: ReadState;
-}
-
-const EMPTY_LISTINGS: ListingsState = {
-  deployment: null, data: [], unindexed: [], chain: null, deploymentChanged: false, read: LOADING_READ,
-};
-const UNKNOWN_REFUND = { wei: null, bidIds: null, read: LOADING_READ };
-const NO_HOST_SPACES: HostSpace[] = [];
-
-const sameRefundIdentity = (a: RefundIdentity, b: RefundIdentity) =>
-  a.address === b.address && a.chainId === b.chainId && a.provider === b.provider &&
-  a.deployment === b.deployment;
-
 export const deploymentKeyOf = (config: Config | null) =>
   config
     ? `${config.chainId}:${config.contractAddress.toLowerCase()}:${config.deploymentBlock}:${config.deploymentBlockHash}`
     : null;
-
-/** A bid rejected by revalidation against current chain state; no transaction was sent. */
-class BidPreflightError extends Error {}
 
 export const AppContent: React.FC<{
   config: Config | null;
@@ -160,7 +98,6 @@ export const AppContent: React.FC<{
   };
 
   // Primary state
-  const [listingsState, setListingsState] = useState<ListingsState>(EMPTY_LISTINGS);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isActionBusy, setIsActionBusy] = useState(false);
 
@@ -170,13 +107,9 @@ export const AppContent: React.FC<{
   const configRef = useRef(config);
   configRef.current = config;
   deploymentRef.current = configDeployment;
-  const listingsView =
-    configDeployment === null || listingsState.deployment === configDeployment ? listingsState : EMPTY_LISTINGS;
-  const listings = listingsView.data;
+  const { listingsView, listings, chain, calendarSnapshot, loadListings } = useListings({ deploymentRef, configDeployment, onRefreshConfig });
   const inbox = useInbox(session?.address ?? null);
   const verification = useVerifications(session?.address ?? null);
-  const chain = listingsView.deploymentChanged ? null : listingsView.chain;
-  const calendarSnapshot = listingsView.read.status === 'success' ? chain : null;
 
   // Navigation & View
   const [currentTab, setCurrentTab] = useState<AppTab>(() => (new URLSearchParams(window.location.search).get('tab') === 'activity' ? 'activity' : 'marketplace'));
@@ -207,131 +140,24 @@ export const AppContent: React.FC<{
   const [intent, setIntent] = useState<{ kind: 'bid'; listingId: string; title: string } | { kind: 'create' } | null>(null);
 
   // Pending metadata registration recovery state
-  const [pendingRegistration, setPendingRegistration] = useState<{
-    auctionId: string;
-    metadata: SpotMetadata;
-    deployment: DeploymentIdentity;
-    txHash?: string;
-  } | null>(null);
+  const [pendingRegistration, setPendingRegistration] = useState<PendingRegistration | null>(null);
   const [unconfirmedCreation, setUnconfirmedCreation] = useState<string | null>(null);
   const unconfirmedCreationRef = useRef<string | null>(null);
 
-  // Activity & Refunds
-  const [refundState, setRefundState] = useState<RefundState | null>(null);
-
   // Notifications
-  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const { toasts, addToast, dismissToast } = useToasts();
 
   // Search & Filter State
-  const [filters, setFilters] = useState<FilterState>(() => filtersFromSearch(window.location.search));
-  // Keep the URL in step with the filters so a reload or shared link restores them.
-  useEffect(() => {
-    const search = filtersToSearch(filters, window.location.search);
-    if (search !== window.location.search) {
-      window.history.replaceState(window.history.state, '', `${window.location.pathname}${search}${window.location.hash}`);
-    }
-  }, [filters]);
+  const {
+    filters, setFilters, useMyLocation, locating, locationMessage, destinationChoices, destination,
+    filteredListings, shownListings, shownDistances, serverResult, searchNotice, setSearchNonce, loadMoreResults,
+  } = useListingSearch({ listings, snapshotBlock: listingsView.chain?.blockNumber, listingsDeployment: listingsView.deployment });
 
   // Every wallet transaction is recorded in the persisted transaction center, scoped to this
   // account and deployment, so a reload never loses a submitted transaction or committed metadata.
-  const [txVersion, setTxVersion] = useState(0);
-  const sessionTxIds = useRef(new Set<string>());
-  const txScope = useMemo(() => walletState.address && config && configDeployment
-    ? { account: walletState.address, chainId: config.chainId, contract: config.contractAddress, deployment: configDeployment }
-    : null, [walletState.address, config, configDeployment]);
-  const track = (kind: TxKind, label: string, extra: Partial<TxRecord> = {}): { id: string | null; observe?: TxObserver } => {
-    if (!txScope) return { id: null };
-    const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    sessionTxIds.current.add(id);
-    recordTransaction({ id, kind, label, status: 'awaiting-wallet', scope: txScope, ...extra });
-    setTxVersion((v) => v + 1);
-    return { id, observe: (update) => { patchTransaction(id, update); setTxVersion((v) => v + 1); } };
-  };
-  const txRecords = txScope ? transactionsFor(txScope) : [];
-  const staleTxCount = txScope ? staleTransactionsFor(txScope).length : 0;
-  void txVersion; // re-read the store whenever a transaction changes
-
-  // After a reload or reconnect, re-check transactions that were still in flight and pick up listings
-  // the API already recovered from staged metadata. This only reads the chain; nothing is re-sent.
-  useEffect(() => {
-    if (!txScope || !provider || !config) return;
-    let live = true;
-    const iface = new Interface(config.abi);
-    (async () => {
-      for (const r of transactionsFor(txScope)) {
-        if (!live) return;
-        if (r.status === 'awaiting-wallet' && !sessionTxIds.current.has(r.id)) {
-          patchTransaction(r.id, { status: 'unknown', error: 'The page reloaded before the wallet answered. Check your wallet activity.' });
-        } else if ((r.status === 'submitted' || r.status === 'confirming') && r.hash && !sessionTxIds.current.has(r.id)) {
-          const receipt = await provider.getTransactionReceipt(r.hash).catch(() => null);
-          if (receipt && config.confirmation === 'finalized') {
-            const finalized = await provider.getBlock('finalized').catch(() => null);
-            if (!finalized || receipt.blockNumber > finalized.number) continue;
-          }
-          if (receipt) {
-            let auctionId = r.auctionId;
-            for (const log of r.kind === 'create' && !auctionId ? receipt.logs : []) {
-              try {
-                const parsed = iface.parseLog(log);
-                if (parsed?.name === 'AuctionCreated') auctionId = parsed.args[0].toString();
-              } catch { /* another contract's log */ }
-            }
-            patchTransaction(r.id, {
-              status: receipt.status === 1 ? 'confirmed' : 'reverted',
-              ...(r.kind === 'create' && auctionId ? { auctionId, registered: false } : {}),
-            });
-          } else if (!(await provider.getTransaction(r.hash).catch(() => null))) {
-            patchTransaction(r.id, { status: 'unknown', error: 'The network no longer knows this transaction; it may have been replaced or dropped.' });
-          }
-        }
-        const current = readTransactions().find((x) => x.id === r.id);
-        if (current?.kind === 'create' && current.auctionId && !current.registered && listings.some((l) => l.id === current.auctionId)) {
-          patchTransaction(r.id, { registered: true });
-        }
-      }
-      if (live) setTxVersion((v) => v + 1);
-    })();
-    return () => { live = false; };
-  }, [txScope, provider, config, listings]);
-
-  const markRegistered = (auctionId: string) => {
-    for (const r of readTransactions()) {
-      if (r.kind === 'create' && r.auctionId === auctionId && !r.registered) patchTransaction(r.id, { registered: true });
-    }
-    setTxVersion((v) => v + 1);
-  };
-
-  // Links a replacement to the auction it replaces. A failure leaves `linked` unset on the create record,
-  // so My Activity → Transactions can retry it after a reload.
-  const linkReplacementRecord = async (recordId: string | null, replaces: string, auctionId: string, deployment: DeploymentIdentity) => {
-    try {
-      await linkReplacement(replaces, auctionId, deployment);
-      if (recordId) patchTransaction(recordId, { linked: true });
-      addToast('success', 'Replacement linked', `Bidders on auction #${replaces} will see a pointer to auction #${auctionId} in their inbox.`);
-    } catch (linkErr) {
-      addToast('error', 'Replacement not linked', `${linkErr instanceof Error ? linkErr.message : String(linkErr)}. Retry from My Activity → Transactions.`);
-    } finally {
-      setTxVersion((v) => v + 1);
-    }
-  };
-
-  const warnDuplicates = (listing: { duplicateSpaces: { spaceId: string }[] }) => {
-    if (listing.duplicateSpaces.length === 0) return;
-    const ids = listing.duplicateSpaces.map((d) => `#${d.spaceId}`).join(', ');
-    addToast('info', 'Possible duplicate space', `Another host's space (${ids}) has the same address or location. Moderators have been notified; make sure you are not listing someone else's space.`);
-  };
-
-  const addToast = useCallback(
-    (type: 'success' | 'error' | 'info', title: string, message?: string, txHash?: string) => {
-      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      setToasts((prev) => [...prev, { id, type, title, message, txHash }]);
-    },
-    []
-  );
-
-  const dismissToast = useCallback((id: string) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  }, []);
+  const { txScope, track, txRecords, staleTxCount, markRegistered, linkReplacementRecord } = useTransactions({
+    account: walletState.address, config, configDeployment, provider, listings, addToast,
+  });
 
   // Stable navigation/selection callbacks
   const handleSelectListing = useCallback((listing: Listing) => {
@@ -378,133 +204,7 @@ export const AppContent: React.FC<{
     }
   }, [intent, walletState.isReady, listings, handleOpenBidModal]);
 
-  const listingsReqRef = useRef(0);
-  const bidReadRef = useRef<{ deployment: string | null; promise: Promise<ListingsReadResult> } | null>(null);
-
-  // Only the newest request for the current deployment may publish or re-anchor the clock.
-  const readListings = useCallback(async (): Promise<ListingsReadResult> => {
-    const reqId = ++listingsReqRef.current;
-    const requestedDeployment = deploymentRef.current;
-    const isSuperseded = () =>
-      reqId !== listingsReqRef.current || requestedDeployment !== deploymentRef.current;
-    const fail = (error: unknown, deploymentChanged = false) => {
-      setListingsState((prev) => {
-        const base = prev.deployment === requestedDeployment ? prev : EMPTY_LISTINGS;
-        return {
-          ...base,
-          deployment: requestedDeployment,
-          deploymentChanged: base.deploymentChanged || deploymentChanged,
-          read: readFailed(base.read, error),
-        };
-      });
-      return readFailure(error);
-    };
-    try {
-      const snapshot = await fetchListings();
-      if (isSuperseded()) return READ_SUPERSEDED;
-      if (snapshot.chain && snapshot.chain.chainId !== undefined && snapshot.chain.chainId !== webProfile.chainId) {
-        return fail('Listings are from a different network.');
-      }
-      if (webProfile.id === 'sepolia' && (!snapshot.chain || snapshot.chain.chainId !== webProfile.chainId)) {
-        return fail('Listings did not include the expected network.');
-      }
-      const observedDeployment = snapshot.chain ? deploymentKey(snapshot.chain) : null;
-      if (requestedDeployment !== null && observedDeployment !== requestedDeployment) {
-        if (observedDeployment === null) return fail('Listings did not include the current deployment.');
-        void onRefreshConfig();
-        return fail('The listings deployment changed. Refresh the marketplace configuration.', true);
-      }
-      if (snapshot.chain) syncChainClock(snapshot.chain.chainTime);
-      else resetChainClock();
-      setListingsState({
-        deployment: observedDeployment,
-        data: snapshot.listings,
-        unindexed: snapshot.unindexed ?? [],
-        chain: snapshot.chain,
-        deploymentChanged: false,
-        read: readSucceeded(snapshot.listings.length === 0),
-      });
-      return { ...READ_OK, snapshot };
-    } catch (err) {
-      console.error('Failed to load listings:', err);
-      if (isSuperseded()) return READ_SUPERSEDED;
-      return fail(err);
-    }
-  }, [onRefreshConfig]);
-
-  // A refresh can share a bid's in-flight read, but cannot supersede it on the same deployment.
-  const loadListings = useCallback((forBid = false, forceFresh = false): Promise<ListingsReadResult> => {
-    const deployment = deploymentRef.current;
-    const current = bidReadRef.current;
-    if (!forceFresh && current?.deployment === deployment) return current.promise;
-    const read = readListings();
-    if (!forBid) return read;
-    const promise = read.finally(() => {
-      if (bidReadRef.current?.promise === promise) bidReadRef.current = null;
-    });
-    bidReadRef.current = { deployment, promise };
-    return promise;
-  }, [readListings]);
-
-  // Refund reads are scoped to account, chain, provider and contract; foreign values are never shown.
-  const refundIdentity: RefundIdentity = {
-    address: walletState.address,
-    chainId: walletState.chainId,
-    provider,
-    deployment: configDeployment,
-  };
-  const refundIdentityRef = useRef(refundIdentity);
-  refundIdentityRef.current = refundIdentity;
-  const refundReqIdRef = useRef(0);
-  const refund =
-    refundState && sameRefundIdentity(refundState.identity, refundIdentity) ? refundState : UNKNOWN_REFUND;
-  const claimableRefundWei = refund.wei;
-  const refundRead = refund.read;
-  const myBidAuctionIds = refund.bidIds;
-
-  // Load pending returns from onchain contract
-  const loadPendingRefunds = useCallback(async (): Promise<ReadResult> => {
-    const identity: RefundIdentity = {
-      address: walletState.address,
-      chainId: walletState.chainId,
-      provider,
-      deployment: configDeployment,
-    };
-    const thisReqId = ++refundReqIdRef.current;
-    const isCurrent = () =>
-      thisReqId === refundReqIdRef.current && sameRefundIdentity(refundIdentityRef.current, identity);
-    const fail = (err: unknown): ReadResult => {
-      setRefundState((prev) => {
-        const known = prev && sameRefundIdentity(prev.identity, identity) ? prev : null;
-        return {
-          identity, wei: known?.wei ?? null, bidIds: known?.bidIds ?? null,
-          read: readFailed(known?.read ?? LOADING_READ, err),
-        };
-      });
-      return readFailure(err);
-    };
-    if (!identity.address || !provider) return READ_SKIPPED;
-    if (!walletState.isReady) return fail('Wallet is not connected to the supported network.');
-    if (!config?.contractAddress) return fail('Contract configuration is unavailable.');
-    try {
-      const readContract = getContractInstance(config.contractAddress, config.abi, provider);
-      // Bid history only explains the refund; failing to read it must not block a withdrawal.
-      const [wei, bidIds] = await Promise.all([
-        fetchPendingReturns(readContract, identity.address, config.confirmation),
-        fetchBidAuctionIds(readContract, identity.address, config.deploymentBlock, config.confirmation).catch((err) => {
-          console.warn('Failed to load bid history:', err);
-          return null;
-        }),
-      ]);
-      if (!isCurrent()) return READ_SUPERSEDED;
-      setRefundState({ identity, wei, bidIds, read: readSucceeded(wei === 0n) });
-      return READ_OK;
-    } catch (err) {
-      console.warn('Failed to load pending returns:', err);
-      if (!isCurrent()) return READ_SUPERSEDED;
-      return fail(err);
-    }
-  }, [config, configDeployment, walletState.address, walletState.chainId, walletState.isReady, provider]);
+  const { refundRead, claimableRefundWei, myBidAuctionIds, loadPendingRefunds } = useRefunds({ walletState, provider, config, configDeployment });
 
   // Manual refresh all: reports what each source actually did.
   const refreshAll = useCallback(async (forceFresh: boolean) => {
@@ -621,254 +321,16 @@ export const AppContent: React.FC<{
     addToast('info', 'Transaction submitted; finality not established', 'Check the transaction in the explorer before taking further action.', err.hash);
   };
 
-  // Handle Place Bid
-  const handlePlaceBid = async (listing: Listing, amountEth: string) => {
-    if (isActionBusy) return;
-    if (!config?.contractAddress || !config.abi) {
-      throw new Error('Contract configuration not loaded');
-    }
-    if (!walletState.isReady || wrongChain || !signer) {
-      throw new Error(`Wallet is not connected or connected to wrong network (requires ${webProfile.networkName} ${webProfile.chainId}).`);
-    }
+  const { handlePlaceBid } = useBidFlow({
+    walletState, signer, isCurrentSigner, wrongChain, refreshBalance, config, configDeployment, deploymentRef,
+    isActionBusy, setIsActionBusy, bidTarget, preflightWrite, reportUnknown, loadListings, loadPendingRefunds, track, addToast,
+  });
 
-    setIsActionBusy(true);
-    try {
-      // Revalidate against the current chain listing and clock before asking the wallet to sign.
-      if (!bidTarget || bidTarget.id !== listing.id) {
-        throw new BidPreflightError('This bid dialog is no longer active. No bid was sent.');
-      }
-      const fresh = webProfile.id === 'sepolia'
-        ? await preflightWrite(listing)
-        : (await loadListings(true)).snapshot;
-      if (!isCurrentSigner(signer) || deploymentRef.current !== configDeployment) {
-        throw new BidPreflightError('Your wallet or deployment changed. No bid was sent.');
-      }
-      if (!fresh || !fresh.chain) {
-        throw new BidPreflightError(
-          'Could not confirm the current auction state, so no bid was sent. Your amount was kept; try again.'
-        );
-      }
-      if (deploymentKey(fresh.chain) !== bidTarget.deployment || fresh.chain.chainId !== webProfile.chainId) {
-        throw new BidPreflightError(
-          'The marketplace deployment changed. Reload the page to continue; no bid was sent.'
-        );
-      }
-      const current = resolveSnapshotListing(fresh, bidTarget);
-      if (!current) {
-        throw new BidPreflightError('This auction is no longer available. No bid was sent.');
-      }
-      const eligibility = getBidEligibility(current, walletState.address, getChainNowSec());
-      if (!eligibility.canBid) {
-        throw new BidPreflightError(`${eligibility.message} No bid was sent.`);
-      }
-      if (parseEther(amountEth) < getMinimumBidWei(current)) {
-        const hasBids = parseEther(current.highestBid) > 0n;
-        throw new BidPreflightError(
-          hasBids
-            ? `Another bid raised the price to ${current.highestBid} ETH. Your amount of ${amountEth} ETH was kept; bid higher than ${current.highestBid} ETH to continue. No bid was sent.`
-            : `Your amount of ${amountEth} ETH is below the ${current.minBid} ETH opening bid. No bid was sent.`
-        );
-      }
-
-      const contract = getContractInstance(config.contractAddress, config.abi, signer);
-      const receipt = await placeBid(contract, listing.id, amountEth, config.confirmation,
-        track('bid', `Bid ${amountEth} ETH on auction #${listing.id}`, { auctionId: listing.id }).observe);
-
-      addToast(
-        'success',
-        'Escrow Bid Placed!',
-        `Your bid of ${amountEth} ETH for ${listing.title} is confirmed on-chain.`,
-        receipt.hash
-      );
-
-      // Auto-refresh data
-      await Promise.all([loadListings(), loadPendingRefunds(), refreshBalance()]);
-    } catch (err) {
-      if (err instanceof TransactionOutcomeUnknown) {
-        reportUnknown(err);
-        throw new Error('Transaction submitted; finality not established. Check the explorer before bidding again.', { cause: err });
-      }
-      if (err instanceof BidPreflightError) throw err;
-      const msg = parseContractError(err, config?.abi);
-      addToast('error', 'Bid Submission Failed', msg);
-      // The chain may have moved (competing bid, cutoff); refresh so the open dialog shows current state.
-      void loadListings();
-      throw new Error(msg, { cause: err });
-    } finally {
-      setIsActionBusy(false);
-    }
-  };
-
-  // Handle Create Listing
-  const handleCreateListing = async (
-    metadata: SpotMetadata,
-    minBidEth: string,
-    bidEndSec: number,
-    parkingStartSec: number,
-    parkingEndSec: number,
-    spaceId?: string,
-    protectedBooking = false,
-    replaces?: string,
-  ) => {
-    if (isActionBusy) return;
-    if (!config?.contractAddress || !config.abi) {
-      throw new Error('Contract configuration not loaded');
-    }
-    if (!walletState.isReady || wrongChain || !signer) {
-      throw new Error(`Wallet is not connected or connected to wrong network (requires ${webProfile.networkName} ${webProfile.chainId}).`);
-    }
-    if (webProfile.id === 'sepolia' && unconfirmedCreationRef.current) {
-      throw new Error('Transaction submitted; finality not established. Check the earlier creation in the explorer before creating another auction.');
-    }
-    const expectedDeployment: DeploymentIdentity = {
-      chainId: config.chainId,
-      contractAddress: config.contractAddress,
-      deploymentBlock: config.deploymentBlock,
-      deploymentBlockHash: config.deploymentBlockHash,
-    };
-    const expectedDeploymentKey = deploymentKey(expectedDeployment);
-
-    setIsActionBusy(true);
-    try {
-      await preflightWrite();
-      await ensureSignedIn();
-      // Save the exact metadata before signing: if registration is lost after the transaction,
-      // the server can still match the new auction's hash to these details.
-      await stageListingMetadata(metadata, webProfile.id === 'sepolia' ? expectedDeployment : undefined);
-      const contract = getContractInstance(config.contractAddress, config.abi, signer);
-      const created = track('create', replaces ? `List "${metadata.title}" (replaces #${replaces})` : `List "${metadata.title}"`, { metadata, replaces });
-      const { receipt, auctionId } = await createAuctionOnChain(
-        contract,
-        metadata,
-        minBidEth,
-        bidEndSec,
-        parkingStartSec,
-        parkingEndSec,
-        config.confirmation,
-        created.observe,
-        spaceId,
-        protectedBooking,
-      );
-      if (created.id) patchTransaction(created.id, { auctionId, registered: false });
-
-      // Register metadata on backend with retry retention
-      try {
-        if (deploymentRef.current !== expectedDeploymentKey) {
-          throw new Error('The marketplace deployment changed before metadata registration.');
-        }
-        warnDuplicates(webProfile.id === 'sepolia'
-          ? await createListingRecord(auctionId, metadata, expectedDeployment)
-          : await createListingRecord(auctionId, metadata));
-        markRegistered(auctionId);
-        setPendingRegistration(null);
-      } catch (postErr) {
-        setPendingRegistration({ auctionId, metadata, deployment: expectedDeployment, txHash: receipt.hash });
-        const errDetail = postErr instanceof Error ? postErr.message : String(postErr);
-        throw new Error(
-          `Auction #${auctionId} is confirmed on-chain, but metadata registration failed: ${errDetail}. You can retry registration below without re-creating the auction.`, { cause: postErr }
-        );
-      }
-
-      if (replaces) await linkReplacementRecord(created.id, replaces, auctionId, expectedDeployment);
-
-      addToast(
-        'success',
-        'Spot Auction Created!',
-        `Auction #${auctionId} is now live on-chain with ${minBidEth} ETH min bid.`,
-        receipt.hash
-      );
-
-      await Promise.all([loadListings(), refreshBalance()]);
-      setSelectedListingId(auctionId);
-      setCurrentTab('marketplace');
-    } catch (err) {
-      if (err instanceof TransactionOutcomeUnknown) {
-        if (webProfile.id === 'sepolia') {
-          unconfirmedCreationRef.current = err.hash;
-          setUnconfirmedCreation(err.hash);
-        }
-        reportUnknown(err);
-        throw new Error('Transaction submitted; finality not established. Check the explorer before creating another auction.', { cause: err });
-      }
-      const msg = parseContractError(err, config?.abi);
-      addToast('error', 'Listing Notice', msg);
-      throw new Error(msg, { cause: err });
-    } finally {
-      setIsActionBusy(false);
-    }
-  };
-
-  // Registers a confirmed listing from the transaction center using its stored, immutable metadata.
-  // No second createAuction is ever sent; only the off-chain details are registered.
-  const handleResumeRegistration = async (record: TxRecord) => {
-    if (isActionBusy || !config || !record.auctionId || !record.metadata || record.scope.deployment !== configDeployment) return;
-    setIsActionBusy(true);
-    try {
-      await ensureSignedIn();
-      await createListingRecord(record.auctionId, record.metadata, webProfile.id === 'sepolia' ? {
-        chainId: config.chainId, contractAddress: config.contractAddress,
-        deploymentBlock: config.deploymentBlock, deploymentBlockHash: config.deploymentBlockHash,
-      } : undefined);
-      markRegistered(record.auctionId);
-      addToast('success', 'Registration Confirmed', `Auction #${record.auctionId} metadata registered successfully.`);
-      await loadListings();
-    } catch (err) {
-      addToast('error', 'Registration failed', err instanceof Error ? err.message : String(err));
-    } finally {
-      setIsActionBusy(false);
-    }
-  };
-
-  // Retries a replacement link that did not reach the API, from My Activity → Transactions. Repeating it is safe.
-  const handleLinkReplacement = async (record: TxRecord) => {
-    if (isActionBusy || !config || !record.auctionId || !record.replaces || record.linked || record.scope.deployment !== configDeployment) return;
-    setIsActionBusy(true);
-    try {
-      await ensureSignedIn();
-      await linkReplacementRecord(record.id, record.replaces, record.auctionId, {
-        chainId: config.chainId,
-        contractAddress: config.contractAddress,
-        deploymentBlock: config.deploymentBlock,
-        deploymentBlockHash: config.deploymentBlockHash,
-      });
-    } catch (err) {
-      addToast('error', 'Replacement not linked', err instanceof Error ? err.message : String(err));
-    } finally {
-      setIsActionBusy(false);
-    }
-  };
-
-  // Handle Retry Metadata Registration
-  const handleRetryRegistration = async (auctionId: string, metadata: SpotMetadata) => {
-    if (isActionBusy) return;
-    if (!pendingRegistration || pendingRegistration.auctionId !== auctionId ||
-        deploymentRef.current !== deploymentKey(pendingRegistration.deployment)) {
-      throw new Error('The marketplace deployment changed. Registration is only available on the original deployment.');
-    }
-    setIsActionBusy(true);
-    try {
-      await ensureSignedIn();
-      warnDuplicates(webProfile.id === 'sepolia'
-        ? await createListingRecord(auctionId, metadata, pendingRegistration.deployment)
-        : await createListingRecord(auctionId, metadata));
-      addToast(
-        'success',
-        'Registration Confirmed',
-        `Auction #${auctionId} metadata registered successfully.`
-      );
-      markRegistered(auctionId);
-      setPendingRegistration(null);
-      await loadListings();
-      setSelectedListingId(auctionId);
-      setCurrentTab('marketplace');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      addToast('error', 'Retry Registration Failed', msg);
-      throw new Error(msg, { cause: err });
-    } finally {
-      setIsActionBusy(false);
-    }
-  };
+  const { handleCreateListing, handleResumeRegistration, handleLinkReplacement, handleRetryRegistration } = useListingCreation({
+    walletState, signer, wrongChain, refreshBalance, config, configDeployment, deploymentRef, isActionBusy, setIsActionBusy,
+    ensureSignedIn, preflightWrite, reportUnknown, unconfirmedCreationRef, setUnconfirmedCreation, pendingRegistration,
+    setPendingRegistration, markRegistered, linkReplacementRecord, track, addToast, loadListings, setSelectedListingId, setCurrentTab,
+  });
 
   // Handle Withdraw Refund
   const handleWithdrawRefund = async () => {
@@ -1049,113 +511,6 @@ export const AppContent: React.FC<{
     }
   };
 
-  // Filter & Sort Logic
-  // Optional browser location: asked only when the driver presses the button, rounded, kept in memory
-  // and used only as the `near` value of the search query.
-  const [myLocation, setMyLocation] = useState<Place | null>(null);
-  const [locating, setLocating] = useState(false);
-  const [locationMessage, setLocationMessage] = useState<string | null>(null);
-  const useMyLocation = useCallback(() => {
-    if (!navigator.geolocation) {
-      setLocationMessage('This browser cannot share a location. Type a destination instead.');
-      return;
-    }
-    setLocating(true);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setLocating(false);
-        setLocationMessage(null);
-        setMyLocation({ label: MY_LOCATION_LABEL, latitude: Math.round(pos.coords.latitude * 1000) / 1000, longitude: Math.round(pos.coords.longitude * 1000) / 1000 });
-        setFilters((f) => ({ ...f, destination: MY_LOCATION_LABEL }));
-      },
-      () => {
-        setLocating(false);
-        setLocationMessage('Location not shared. Type a destination or pick a landmark instead.');
-      },
-      { maximumAge: 60_000, timeout: 15_000 },
-    );
-  }, []);
-  const destinationChoices = useMemo(
-    () => (myLocation ? [myLocation, ...destinationOptions(listings)] : destinationOptions(listings)),
-    [listings, myLocation],
-  );
-  const destination = resolveDestination(filters.destination, destinationChoices);
-  const { listings: filteredListings, distances } = useMemo(
-    () => discoverListings(listings, filters, getChainNowSec(), destination),
-    [listings, filters, destination]
-  );
-
-  // The server answers the same filters with bounded, block-pinned pages. Until its answer for the
-  // current query and deployment arrives (or if it fails, with a notice), the loaded snapshot is filtered locally.
-  const searchKey = searchQuery(filters, destination);
-  const [serverSearch, setServerSearch] = useState<{
-    key: string; deployment: string | null; listings: SearchListing[]; total: number; nextCursor: string | null; loadingMore: boolean;
-    /** Pages loaded, so a listings refresh can reload as many. */
-    pages: number;
-    /** Why the last cursor request failed; the pages already shown stay. */
-    pageError: string | null;
-  } | null>(null);
-  const serverSearchRef = useRef(serverSearch);
-  serverSearchRef.current = serverSearch;
-  const [searchNonce, setSearchNonce] = useState(0);
-  // The query and deployment of the last search that failed. An accepted answer or a new query clears it.
-  const [searchFailure, setSearchFailure] = useState<{ key: string; deployment: string | null; error: string } | null>(null);
-  const snapshotBlock = listingsView.chain?.blockNumber;
-  const listingsDeployment = listingsView.deployment;
-  useEffect(() => { setSearchFailure(null); }, [searchKey, listingsDeployment]);
-  useEffect(() => {
-    if (snapshotBlock === undefined) return;
-    let live = true;
-    const timer = setTimeout(() => {
-      // A refresh of the same search reloads the pages already shown, from the new head.
-      const prev = serverSearchRef.current;
-      const keep = prev && prev.key === searchKey && prev.deployment === listingsDeployment ? prev.pages : 1;
-      searchListingsPages(searchKey, keep)
-        .then((r) => {
-          if (!live) return;
-          const deployment = r.chain ? deploymentKey(r.chain) : null;
-          if (deployment !== listingsDeployment) { setServerSearch(null); return; }
-          setSearchFailure(null);
-          setServerSearch({
-            key: searchKey, deployment, listings: r.listings, total: r.total, nextCursor: r.nextCursor, loadingMore: false,
-            pages: r.pagesLoaded, pageError: r.pageError ? r.pageError.message : null,
-          });
-        })
-        .catch((err: unknown) => {
-          if (!live) return;
-          setServerSearch(null);
-          setSearchFailure({ key: searchKey, deployment: listingsDeployment, error: err instanceof Error ? err.message : String(err) });
-        });
-    }, 150);
-    return () => { live = false; clearTimeout(timer); };
-  }, [searchKey, snapshotBlock, listingsDeployment, searchNonce]);
-  const serverResult = serverSearch?.key === searchKey && serverSearch.deployment === listingsDeployment ? serverSearch : null;
-  const searchNotice = searchFailure?.key === searchKey && searchFailure.deployment === listingsDeployment ? searchFailure : null;
-  const shownListings: Listing[] = serverResult ? serverResult.listings : filteredListings;
-  const shownDistances = useMemo(
-    () => serverResult
-      ? new Map(serverResult.listings.flatMap((l) => (l.distanceKm === undefined ? [] : [[l.id, l.distanceKm] as const])))
-      : distances,
-    [serverResult, distances]
-  );
-  const loadMoreResults = useCallback(async () => {
-    const current = serverSearch;
-    if (!current?.nextCursor || current.loadingMore) return;
-    setServerSearch({ ...current, loadingMore: true, pageError: null });
-    try {
-      const page = await searchListings(current.key, current.nextCursor);
-      setServerSearch((s) => s?.key === current.key && s.nextCursor === current.nextCursor
-        ? { ...s, listings: [...s.listings, ...page.listings], nextCursor: page.nextCursor, loadingMore: false, pages: s.pages + 1, pageError: null }
-        : s);
-    } catch (err) {
-      // A cursor whose block was replaced starts the search again from the first page.
-      const replaced = err instanceof ApiError && err.status === 409;
-      if (replaced) setSearchNonce((n) => n + 1);
-      const message = err instanceof Error ? err.message : String(err);
-      setServerSearch((s) => (s === null ? s : { ...s, loadingMore: false, pageError: replaced ? null : message }));
-    }
-  }, [serverSearch]);
-
   // Compute active bids count for badge
   const activeBidsCount = useMemo(() => {
     if (!walletState.address) return 0;
@@ -1171,47 +526,7 @@ export const AppContent: React.FC<{
     ).length;
   }, [listings, walletState.address]);
 
-  // Spaces this wallet owns or may list on, read from the chain, reloaded after each space action.
-  const [spacesNonce, setSpacesNonce] = useState(0);
-  const [hostSpacesState, setHostSpacesState] = useState<{ key: string; spaces: HostSpace[]; error: string | null }>({ key: '', spaces: [], error: null });
-  const hostSpacesKey = walletState.address && configDeployment && walletState.isReady ? `${walletState.address}|${configDeployment}` : '';
-  useEffect(() => {
-    if (!hostSpacesKey || !provider || !config?.contractAddress) return;
-    let live = true;
-    const contract = getContractInstance(config.contractAddress, config.abi, provider);
-    fetchHostSpaces(contract, walletState.address as string, config.deploymentBlock, config.confirmation).then(
-      (spaces) => { if (live) setHostSpacesState({ key: hostSpacesKey, spaces, error: null }); },
-      (err) => { if (live) setHostSpacesState({ key: hostSpacesKey, spaces: [], error: err instanceof Error ? err.message : String(err) }); },
-    );
-    return () => { live = false; };
-  }, [hostSpacesKey, spacesNonce, provider, config, walletState.address]);
-  const hostSpaces = hostSpacesState.key === hostSpacesKey ? hostSpacesState.spaces : NO_HOST_SPACES;
-
-  // The wallet's spaces and the windows each still holds, mirroring the contract's holdsWindow rule.
-  const ownedNowSec = getChainNowSec();
-  const ownedSpaces = useMemo<OwnedSpace[]>(() => {
-    if (!walletState.address) return [];
-    const now = ownedNowSec;
-    const addr = walletState.address.toLowerCase();
-    const spaces = new Map<string, OwnedSpace>();
-    for (const l of listings) {
-      if (l.owner.toLowerCase() === addr && !spaces.has(l.spaceId)) spaces.set(l.spaceId, { id: l.spaceId, title: l.title, held: [] });
-    }
-    for (const h of hostSpaces) {
-      if (!spaces.has(h.id)) {
-        const latest = listings.find((l) => l.spaceId === h.id);
-        spaces.set(h.id, { id: h.id, title: latest?.title ?? 'No listings yet', held: [], lister: h.isLister });
-      }
-    }
-    for (const space of spaces.values()) {
-      space.title = listings.find((l) => l.spaceId === space.id)?.title ?? space.title;
-      space.held = heldWindows(listings, space.id, now);
-      const chainSpace = hostSpaces.find((h) => h.id === space.id);
-      space.timeZone = chainSpace?.timeZone ?? '';
-      space.blocked = chainSpace?.blocked ?? [];
-    }
-    return [...spaces.values()].sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
-  }, [listings, hostSpaces, walletState.address, ownedNowSec]);
+  const { hostSpacesKey, hostSpacesState, hostSpaces, ownedSpaces, setSpacesNonce } = useHostSpaces({ walletState, provider, config, configDeployment, listings });
 
   // Space-control transactions (listers, transfer, time zone, blocked dates): sign, then re-read the chain.
   const handleSpaceAction = async (action: SpaceAction, label: string): Promise<boolean> => {
@@ -1241,63 +556,10 @@ export const AppContent: React.FC<{
     }
   };
 
-  const moderationContract = useMemo(
-    () => provider && config && hostSpacesKey ? getContractInstance(config.contractAddress, config.abi, provider) : null,
-    [provider, config, hostSpacesKey],
-  );
-  const readInventoryMode = useCallback(async (): Promise<boolean> => {
-    if (!moderationContract || !config) throw new Error('The marketplace deployment is unavailable.');
-    return moderationContract.verifiedInventoryRequired({ blockTag: config.confirmation === 'finalized' ? 'finalized' : 'latest' });
-  }, [moderationContract, config]);
-  const readModerationInventory = useCallback(async (spaceId: string) => {
-    if (!moderationContract || !config || !session) throw new Error('Sign in to check on-chain verification.');
-    return fetchSpaceAttestation(moderationContract, spaceId, session.address, config.confirmation);
-  }, [moderationContract, config, session]);
-
-  async function handleAttestation(decision: SpaceAttestation, observe: TxObserver) {
-    if (!signer || !walletState.isReady || wrongChain || !session || !verification.moderator || !config || !configDeployment || isActionBusy) {
-      throw new Error('Connect an authorized reviewer wallet before signing.');
-    }
-    setIsActionBusy(true);
-    try {
-      await preflightWrite();
-      if (!await readInventoryMode()) throw new Error('This deployment does not enforce verified inventory.');
-      const current = await readModerationInventory(decision.spaceId);
-      const block = await provider?.getBlock(config.deploymentBlock);
-      if (!block?.hash || block.hash.toLowerCase() !== config.deploymentBlockHash.toLowerCase()) {
-        throw new Error('The wallet RPC is not serving the reviewed deployment. No transaction was sent.');
-      }
-      const response = await fetch(`/api/moderation/verifications/${encodeURIComponent(decision.spaceId)}/attestation`);
-      if (!response.ok) throw new Error('Could not confirm the current moderation decision. No transaction was sent.');
-      const review = await response.json() as { contractAddress: string; reviewer: string; host: string; epoch: string | null; action: string | null };
-      const action = /^0x0{64}$/i.test(decision.metadataHash) ? 'revoke' : 'approve';
-      if (review.contractAddress.toLowerCase() !== config.contractAddress.toLowerCase() || review.action !== action ||
-          review.reviewer.toLowerCase() !== session.address.toLowerCase() ||
-          review.host.toLowerCase() !== current.owner.toLowerCase() ||
-          (action === 'approve' && review.epoch !== current.epoch)) {
-        throw new Error('The review does not match this action or ownership period. Refresh the queue or request new proof.');
-      }
-      if (!isCurrentSigner(signer) || deploymentRef.current !== configDeployment) {
-        throw new Error('The active wallet or deployment changed. No transaction was sent.');
-      }
-      if (!current.canVerify || current.owner.toLowerCase() !== decision.owner.toLowerCase() || current.epoch !== decision.epoch) {
-        throw new Error('The verifier role or space ownership changed. Check on-chain verification before signing.');
-      }
-      const label = `Attest verification for space #${decision.spaceId}`;
-      const tracked = track('space', label).observe;
-      const contract = getContractInstance(config.contractAddress, config.abi, signer);
-      await sendSpaceAttestation(contract, decision, config.confirmation, (update) => {
-        tracked?.(update);
-        observe(update);
-      });
-      void loadListings();
-    } catch (err) {
-      if (err instanceof TransactionOutcomeUnknown) throw err;
-      throw new Error(parseContractError(err, config.abi), { cause: err });
-    } finally {
-      setIsActionBusy(false);
-    }
-  }
+  const { readInventoryMode, readModerationInventory, handleAttestation } = useModeration({
+    walletState, signer, isCurrentSigner, wrongChain, provider, session, verification, config, configDeployment, deploymentRef,
+    isActionBusy, setIsActionBusy, hostSpacesKey, preflightWrite, track, loadListings,
+  });
 
   const readSources: ReadSource[] = [
     {
