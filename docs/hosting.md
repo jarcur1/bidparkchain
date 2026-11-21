@@ -97,7 +97,7 @@ The My Activity tab holds a host workspace for a connected wallet:
 - **Photos.** A photo is only a reference: an https URL or a local path starting with `/`. There is no upload and no storage service, so the host keeps the image online. An empty or unreachable photo falls back to the default illustrative photo.
 - **Scheduling.** Cutoff, start and end are entered as wall-clock times in the space's time zone (the browser's zone while none is set), converted to UTC seconds, and checked against held and blocked windows before signing. The contract rechecks at signing and remains the authority. The quick "List a Spot" dialog uses the same explicit dates, zone and conflict check (it starts with a default window an hour out).
 - **Autosave.** While signed in, the quick listing form saves one private draft named "Autosaved listing" about 1.5 seconds after the last change, shows `Unsaved changes`, `Saving`, `Draft saved.` or a failure, and restores it after a reload or sign-in. Without a session nothing is saved and the form says so. Making the listing deletes the draft.
-- **Reports and moderation.** A signed-in wallet can report a listing from its detail dialog. Moderators page through the queue 25 at a time (`/api/moderation/verifications?limit&offset`).
+- **Reports and moderation.** A signed-in wallet can report a listing from its detail dialog. Moderators page through the queue 25 at a time (`/api/moderation/verifications?limit&offset`). Resolvers page the open-report queue by cursor (`/api/disputes/queue?limit&after`, answering `nextAfter`).
 
 Published auction metadata is immutable; relisting a space starts a new draft and a new auction.
 
