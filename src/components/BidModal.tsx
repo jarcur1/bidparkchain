@@ -57,7 +57,7 @@ export const BidModal: React.FC<BidModalProps> = ({
   const priceChanged =
     openedHighestBidRef.current !== null && openedHighestBidRef.current !== listing.highestBid;
 
-  let amountBelowMinimum = false;
+  let amountBelowMinimum: boolean;
   try {
     amountBelowMinimum = parseEther(bidAmount) < minimumWei;
   } catch {

@@ -115,7 +115,7 @@ export async function runPersistentDeployment(runtime, args = [], env = process.
   try {
     lock = fs.openSync(lockPath, 'wx', 0o600);
   } catch (error) {
-    if (error.code === 'EEXIST') throw new Error('Deployment is locked. Resolve the other process or a stale lock before retrying.');
+    if (error.code === 'EEXIST') throw new Error('Deployment is locked. Resolve the other process or a stale lock before retrying.', { cause: error });
     throw error;
   }
   try {

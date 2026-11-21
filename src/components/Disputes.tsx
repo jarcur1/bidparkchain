@@ -41,6 +41,10 @@ async function call<T>(route: string, body?: unknown): Promise<T> {
   return data as T;
 }
 
+type QueuePage = { nextAfter: string | null; items: QueueEntry[] };
+const fetchPage = (after: string | null, limit: number) =>
+  call<QueuePage>(`/api/disputes/queue?limit=${limit}${after === null ? '' : `&after=${after}`}`);
+
 /**
  * Stores the evidence or decision reason server-side and returns the opaque reference the on-chain
  * call carries. The text itself never goes on-chain.
@@ -86,21 +90,22 @@ export const ResolverQueue: React.FC<{
   onAct: (auctionId: string, action: BookingAction, text: string) => Promise<void>;
 }> = ({ refreshKey, nowSec, busy, onAct }) => {
   const [items, setItems] = useState<QueueEntry[] | null>(null);
-  const [page, setPage] = useState<{ total: number; nextOffset: number | null }>({ total: 0, nextOffset: null });
+  // `next` is the cursor of the next page; `through` is the last candidate id read, so a reload can walk to the same extent.
+  const [next, setNext] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [open, setOpen] = useState<string | null>(null);
   const queueRead = useRef(0);
-  const shown = useRef(0);
-  // Loads the first page, or appends the page at `offset`; a decision reloads only what was already shown.
-  const load = useCallback(async (offset = 0, limit = PAGE_SIZE) => {
+  const through = useRef<string | null>(null);
+  // Appends the page after `after`; the first page replaces the list.
+  const load = useCallback(async (after: string | null = null) => {
     const seq = ++queueRead.current;
     try {
-      const data = await call<{ total: number; nextOffset: number | null; items: QueueEntry[] }>(
-        `/api/disputes/queue?limit=${limit}&offset=${offset}`);
+      const data = await fetchPage(after, PAGE_SIZE);
       if (seq !== queueRead.current) return;
-      setItems((list) => (offset === 0 || !list ? data.items : [...list, ...data.items.filter((item) => !list.some((x) => x.auctionId === item.auctionId))]));
-      setPage({ total: data.total, nextOffset: data.nextOffset });
+      setItems((list) => (after === null || !list ? data.items : [...list, ...data.items.filter((item) => !list.some((x) => x.auctionId === item.auctionId))]));
+      setNext(data.nextAfter);
+      through.current = data.nextAfter ?? through.current;
       setError(null);
     } catch (err) {
       if (seq !== queueRead.current) return;
@@ -110,22 +115,47 @@ export const ResolverQueue: React.FC<{
       setError(status === 403 ? null : err instanceof Error ? err.message : String(err));
     }
   }, []);
-  useEffect(() => { shown.current = items?.length ?? 0; }, [items]);
-  useEffect(() => { void load(0, Math.max(PAGE_SIZE, shown.current)); }, [load, refreshKey]);
+  // Reloads from the start, walking pages (the server caps one at 100) until the extent already shown is covered again.
+  const reload = useCallback(async () => {
+    const seq = ++queueRead.current;
+    const reach = through.current === null ? 0 : Number(through.current);
+    try {
+      const all: QueueEntry[] = [];
+      let after: string | null = null;
+      let cursor: string | null = null;
+      do {
+        const data: QueuePage = await fetchPage(after, reach === 0 ? PAGE_SIZE : 100);
+        if (seq !== queueRead.current) return;
+        all.push(...data.items);
+        cursor = data.nextAfter;
+        after = cursor;
+      } while (cursor !== null && Number(cursor) <= reach);
+      setItems(all);
+      setNext(cursor);
+      through.current = cursor ?? through.current;
+      setError(null);
+    } catch (err) {
+      if (seq !== queueRead.current) return;
+      const status = err instanceof Error && 'status' in err && typeof err.status === 'number' ? err.status : undefined;
+      if (status === 403) setItems(null);
+      setError(status === 403 ? null : err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+  useEffect(() => { void reload(); }, [reload, refreshKey]);
   if (!items) return error ? <p className="activity-empty-text" role="alert">{error}</p> : null;
-  const next = page.nextOffset;
   const decide = async (auctionId: string, action: BookingAction, text: string) => {
-    try { await onAct(auctionId, action, text); } finally { await load(0, Math.max(PAGE_SIZE, items.length)); }
+    try { await onAct(auctionId, action, text); } finally { await reload(); }
   };
 
   return (
     <section className="activity-section" aria-labelledby="resolver-queue-title" data-testid="resolver-queue">
       <div className="activity-section-header">
         <h2 id="resolver-queue-title" className="activity-section-title">Resolver queue</h2>
-        <button type="button" className="btn-table-action" onClick={() => void load(0, Math.max(PAGE_SIZE, items.length))}>Refresh</button>
+        <button type="button" className="btn-table-action" onClick={() => void reload()}>Refresh</button>
       </div>
       {error && <p className="activity-empty-text" role="alert">{error}</p>}
-      {items.length === 0 && <p className="activity-empty-text">No open seller-failure reports.</p>}
+      {items.length === 0 && next === null && <p className="activity-empty-text">No open seller-failure reports.</p>}
+      {items.length === 0 && next !== null && <p className="activity-empty-text">No open reports on this page; load more to keep looking.</p>}
       <ul className="inbox-list">
         {items.map((item) => {
           const reason = reasons[item.auctionId] ?? '';
@@ -176,7 +206,7 @@ export const ResolverQueue: React.FC<{
           );
         })}
       </ul>
-      {items.length > 0 && <p className="activity-empty-text" data-testid="resolver-queue-count">Showing {items.length} of {page.total}.</p>}
+      {items.length > 0 && <p className="activity-empty-text" data-testid="resolver-queue-count">Showing {items.length} open {items.length === 1 ? 'report' : 'reports'}{next !== null && ', more may follow'}.</p>}
       {next !== null && (
         <button type="button" className="btn-table-action" onClick={() => void load(next)}>Load more</button>
       )}

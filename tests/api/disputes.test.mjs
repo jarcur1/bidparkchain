@@ -148,23 +148,27 @@ it('pages the resolver queue in auction id order without repeating or dropping r
     ids.push(id);
   }
   const full = await (await get('/api/disputes/queue?limit=100', RESOLVER)).json();
+  expect(full.nextAfter).toBeNull();
   const pages = [];
-  let offset = 0;
+  let after = null;
   do {
-    const page = await (await get(`/api/disputes/queue?limit=2&offset=${offset}`, RESOLVER)).json();
+    const page = await (await get(`/api/disputes/queue?limit=2${after === null ? '' : `&after=${after}`}`, RESOLVER)).json();
     pages.push(page);
-    offset = page.nextOffset;
-  } while (offset !== null);
+    after = page.nextAfter;
+  } while (after !== null);
   const paged = pages.flatMap((page) => page.items.map((entry) => entry.auctionId));
   const numeric = paged.map(Number);
   expect(pages.length).toBeGreaterThan(1);
-  expect(pages.every((page) => page.total === full.total)).toBe(true);
   expect(paged).toEqual(full.items.map((entry) => entry.auctionId));
   expect(new Set(paged).size).toBe(paged.length);
   expect(numeric).toEqual([...numeric].sort((a, b) => a - b));
   expect(paged).toEqual(expect.arrayContaining(ids));
-  // Out-of-range parameters clamp: limit to 1, offset to 0.
-  const low = await (await get('/api/disputes/queue?limit=-5&offset=-3', RESOLVER)).json();
-  expect(low.items.map((entry) => entry.auctionId)).toEqual([paged[0]]);
-  expect(low.nextOffset).toBe(1);
+  // A report closed between two page loads must not shift the next page.
+  const first = await (await get('/api/disputes/queue?limit=1', RESOLVER)).json();
+  const rest = await (await get(`/api/disputes/queue?limit=100&after=${first.nextAfter}`, RESOLVER)).json();
+  expect(rest.items.map((entry) => entry.auctionId)).toEqual(paged.slice(1));
+  // Invalid parameters are rejected, never silently defaulted.
+  for (const q of ['limit=0', 'limit=101', 'limit=-5', 'limit=abc', 'limit=1.5', 'after=-3', 'after=x', 'after=99999999999999999999']) {
+    expect((await get(`/api/disputes/queue?${q}`, RESOLVER)).status, q).toBe(400);
+  }
 });

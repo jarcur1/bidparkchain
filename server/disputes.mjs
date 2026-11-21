@@ -18,6 +18,8 @@ export function disputeReference({ chainId, contract, auctionId, kind, author, u
 }
 
 const idOf = (raw) => (/^[1-9]\d{0,77}$/.test(String(raw)) ? String(raw) : null);
+/** A query value that is a plain non-negative decimal integer within the safe range, else null. */
+const queryInt = (raw) => (typeof raw === 'string' && /^\d{1,16}$/.test(raw) && Number.isSafeInteger(Number(raw)) ? Number(raw) : null);
 const same = (a, b) => a.toLowerCase() === b.toLowerCase();
 
 /**
@@ -125,8 +127,9 @@ export function mountDisputes(app, { db, chainId, contractAddress, readState, is
   });
 
   /**
-   * GET /api/disputes/queue?limit&offset: a page of open reports with their deadlines and the action that applies,
-   * for resolvers only. Pages run in auction id order; chain state is read for the rows on the page alone.
+   * GET /api/disputes/queue?limit&after: a page of open reports with their deadlines and the action that applies,
+   * for resolvers only. Pages are keyset pages in auction id order (`after` is the last auction id seen, `nextAfter` the cursor for the next page,
+   * null at the end); chain state is read for the rows on the page alone.
    */
   app.get('/api/disputes/queue', async (req, res, next) => {
     try {
@@ -137,13 +140,17 @@ export function mountDisputes(app, { db, chainId, contractAddress, readState, is
         return res.status(503).json({ error: 'Blockchain service unavailable' });
       }
       if (!resolver) return res.status(403).json({ error: 'Resolvers only' });
+      const limit = req.query.limit === undefined ? 25 : queryInt(req.query.limit);
+      const after = req.query.after === undefined ? -1 : queryInt(req.query.after);
+      if (limit === null || limit < 1 || limit > 100) return res.status(400).json({ error: 'limit must be an integer from 1 to 100' });
+      if (after === null) return res.status(400).json({ error: 'after must be a non-negative integer auction id' });
       await sync();
       const nowSec = await now();
       const items = [];
-      const limit = Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 25));
-      const offset = Math.max(0, Number.parseInt(req.query.offset, 10) || 0);
-      const total = db.countOpenDisputeAuctions(s.contract);
-      for (const id of db.getOpenDisputeAuctions(s.contract, { limit, offset })) {
+      const candidates = db.getOpenDisputeAuctions(s.contract, { limit: limit + 1, after });
+      const more = candidates.length > limit;
+      const page = candidates.slice(0, limit);
+      for (const id of page) {
         const state = await readState(id);
         if (!state || noReport(state) || state.cancelled) continue;
         const resolveBy = state.parkingEnd + RESOLUTION_WINDOW;
@@ -155,7 +162,8 @@ export function mountDisputes(app, { db, chainId, contractAddress, readState, is
           action: nowSec >= resolveBy ? 'expireDispute' : 'resolveDispute',
         });
       }
-      res.json({ total, nextOffset: offset + limit < total ? offset + limit : null, items });
+      // The cursor follows the indexed candidates, not the rows kept after the chain check, so filtered rows never stall paging.
+      res.json({ nextAfter: more ? page[page.length - 1] : null, items });
     } catch (err) { next(err); }
   });
 }

@@ -1,0 +1,564 @@
+/* ==========================================================================
+   Activity View Styling
+   ========================================================================== */
+.activity-container {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  padding-bottom: 40px;
+}
+
+.activity-header {
+  border-bottom: 1px solid var(--border-default);
+  padding-bottom: 20px;
+}
+
+.activity-title {
+  font-family: var(--font-serif);
+  font-size: 30px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.activity-sub {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+.activity-addr {
+  font-family: var(--font-mono);
+  background: var(--bg-page-subtle);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+}
+
+.activity-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.activity-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.section-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.activity-section-title {
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.badge-ready-pill {
+  background: #dcfce7;
+  color: #15803d;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+}
+
+.badge-permissionless {
+  background: #e0f2fe;
+  color: #0369a1;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+}
+
+.refund-card {
+  background: #ffffff;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  box-shadow: var(--shadow-sm);
+}
+
+.refund-card-active {
+  border-color: #fed7aa;
+  background: linear-gradient(135deg, #fffaf5, #ffffff);
+}
+
+.refund-card-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.refund-amount-col {
+  display: flex;
+  flex-direction: column;
+}
+
+.refund-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.refund-eth-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.refund-eth-val {
+  font-family: var(--font-mono);
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--color-orange);
+}
+
+.refund-eth-currency {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.refund-desc-col {
+  flex: 1;
+  min-width: 260px;
+}
+
+.refund-explainer {
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.btn-withdraw-refund {
+  background: var(--color-orange);
+  color: #ffffff;
+  padding: 12px 24px;
+  border-radius: var(--radius-full);
+  font-size: 14px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 4px 12px rgba(224, 90, 43, 0.3);
+}
+
+.btn-withdraw-refund:hover:not(:disabled) {
+  background: var(--color-orange-hover);
+}
+
+.activity-empty-box {
+  background: #ffffff;
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 24px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.empty-check-icon {
+  color: #34d399;
+  flex-shrink: 0;
+}
+
+.activity-empty-heading {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.activity-empty-text {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* Reservation Pass Card */
+.reservations-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr));
+  gap: 20px;
+}
+
+.reservation-pass-card {
+  background: #ffffff;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+}
+
+.pass-header {
+  background: var(--color-forest-darkest);
+  color: #ffffff;
+  padding: 12px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pass-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pass-brand-text {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.pass-id {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-light-muted);
+}
+
+.pass-body {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.pass-spot-title {
+  font-family: var(--font-serif);
+  font-size: 18px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+.pass-spot-address {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.pass-window-box {
+  background: var(--bg-page-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.pass-sublabel {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.pass-val {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-forest-darkest);
+}
+
+.pass-instructions-box {
+  background: var(--color-forest-tint);
+  border: 1px solid var(--color-forest-tint-border);
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+}
+
+.pass-inst-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  color: var(--color-forest);
+  margin-bottom: 4px;
+}
+
+.pass-actions-row {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.btn-pass-nav {
+  flex: 1;
+  background: var(--color-forest);
+  color: #ffffff;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.btn-pass-details {
+  padding: 8px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Activity Table */
+.active-bids-table-wrap {
+  background: #ffffff;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+
+.activity-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 14px;
+}
+
+.activity-table th {
+  background: var(--bg-page-subtle);
+  padding: 12px 18px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.activity-table td {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.activity-table tr:last-child td {
+  border-bottom: none;
+}
+
+.table-spot-title {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  display: block;
+}
+
+.table-spot-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.table-bid-lead {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--color-forest);
+}
+
+.table-countdown-text {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.btn-table-action {
+  background: var(--bg-page-subtle);
+  border: 1px solid var(--border-default);
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Settle Cards Grid */
+.settle-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
+  gap: 16px;
+}
+
+.settle-card {
+  background: #ffffff;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+.settle-card-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.settle-card-id {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.badge-ended {
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.settle-card-title {
+  font-family: var(--font-serif);
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.settle-card-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+.settle-card-meta {
+  display: flex;
+  justify-content: space-between;
+  background: var(--bg-page-subtle);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 14px;
+}
+
+.btn-trigger-settle {
+  background: #0284c7;
+  color: #ffffff;
+  padding: 9px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: background 0.15s ease;
+}
+
+.btn-trigger-settle:hover {
+  background: #0369a1;
+}
+
+/* Hosted Spots */
+.hosted-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
+  gap: 16px;
+}
+
+.hosted-spot-card {
+  background: #ffffff;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+.hosted-card-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.hosted-title {
+  font-family: var(--font-serif);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.hosted-address {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+.hosted-stats-box {
+  display: flex;
+  justify-content: space-between;
+  background: var(--bg-page-subtle);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 14px;
+}
+
+.stat-col {
+  display: flex;
+  flex-direction: column;
+}
+
+.stat-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.stat-val {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.hosted-actions-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.btn-hosted-view {
+  flex: 1;
+  background: var(--bg-page-subtle);
+  border: 1px solid var(--border-default);
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.btn-hosted-cancel {
+  background: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.btn-hosted-claim {
+  background: var(--color-forest);
+  color: #ffffff;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.payout-claimed-tag {
+  background: #e0f2fe;
+  color: #0369a1;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+}
