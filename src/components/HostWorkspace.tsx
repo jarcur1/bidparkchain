@@ -73,7 +73,9 @@ export const HostWorkspace: React.FC<Props> = ({
     photoRequest.current = request;
     setPhotoUpload(0);
     try {
-      set('image', await uploadPhoto(file, setPhotoUpload, request.signal));
+      const path = await uploadPhoto(file, setPhotoUpload, request.signal);
+      // A different draft may have been opened since the upload began; its result belongs to the old one.
+      if (!request.signal.aborted) set('image', path);
     } catch (err) {
       if (!request.signal.aborted) setPhotoError(err instanceof Error ? err.message : 'Upload failed.');
     } finally {
@@ -129,6 +131,8 @@ export const HostWorkspace: React.FC<Props> = ({
             : null);
 
   function fill(source: Partial<DraftFields>, keepDates: boolean) {
+    // Opening another draft, relisting or replacing abandons an upload begun for the previous form.
+    photoRequest.current?.abort();
     setForm({ ...EMPTY, ...source, ...(keepDates ? {} : { cutoff: '', start: '', end: '' }) });
     setProtectedBooking(false);
   }

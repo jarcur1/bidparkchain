@@ -14,7 +14,7 @@ import { CATEGORY_NAMES, deriveInbox, INBOX_CATEGORIES, INBOX_ID, mergeFeed, own
 import { createSettlementJob, settlementSettings } from './settlement.mjs';
 import { PRICE_NOTE, QueryError, encodeCursor, filterAndSort, matchesMetadata, parseSearchQuery } from './search.mjs';
 import { mountDrafts } from './drafts.mjs';
-import { mountPhotos } from './photos.mjs';
+import { mountPhotos, photoSettings } from './photos.mjs';
 import { mountReplacements } from './replacements.mjs';
 import { mountArrival } from './arrival.mjs';
 import { parseArrivalKey } from './arrival-crypto.mjs';
@@ -178,7 +178,7 @@ export function createApp(options = {}) {
   if (supplied && (supplied.dbPath !== runtime.dbPath || supplied.deploymentPath !== runtime.deploymentPath)) {
     throw new Error('Invalid runtime paths');
   }
-  if (runtime.profile.id === 'sepolia' && (options.dbPath || options.deploymentPath || options.rpcUrl || options.photoDir)) {
+  if (runtime.profile.id === 'sepolia' && (options.dbPath || options.deploymentPath || options.rpcUrl || options.photoDir || options.photos)) {
     throw new Error('Sepolia runtime overrides are not allowed');
   }
   const deploymentPath = options.deploymentPath ?? runtime.deploymentPath;
@@ -250,7 +250,9 @@ export function createApp(options = {}) {
   });
 
   // Photo uploads are raw bytes whatever their Content-Type, so they are mounted before the JSON parser.
-  mountPhotos(app, { db, photoDir });
+  const photos = mountPhotos(app, {
+    db, photoDir, settings: photoSettings(options.photos), canUpload: (address) => ownsOrListsSpace(address),
+  });
 
   // JSON body parser with bounded payload size
   app.use(express.json({ limit: '100kb' }));
@@ -605,7 +607,7 @@ export function createApp(options = {}) {
         // Read the clock after the auction state so the clock is never older than the state it judges.
         chain = { ...(await readChainSnapshot(deployment, pinned)), blockHash: pinned.hash };
         await assertCanonicalFinalized(pinned);
-      } catch (rpcErr) {
+      } catch {
         res.status(503).json({ error: 'Failed to read listing state from blockchain node' });
         return;
       }
@@ -902,7 +904,7 @@ export function createApp(options = {}) {
       let onchain, space;
       try {
         [onchain, space] = await Promise.all([contract.auctions(canonicalId), readLocalSpace(contract, canonicalId)]);
-      } catch (err) {
+      } catch {
         res.status(503).json({ error: 'Failed to query auction from smart contract' });
         return;
       }
@@ -1212,6 +1214,24 @@ export function createApp(options = {}) {
     contractAddress: () => loadDeployment()?.contractAddress ?? null,
   });
 
+  /** True when the wallet owns, or is an approved lister on, at least one space of the deployment this API serves. */
+  async function ownsOrListsSpace(address) {
+    const deployment = loadDeployment();
+    if (!deployment?.contractAddress) return false;
+    const contract = new ethers.Contract(deployment.contractAddress, abiFor(deployment), provider);
+    const fromBlock = Number(deployment.deploymentBlock ?? 0);
+    const logs = (await Promise.all([
+      contract.queryFilter(contract.filters.SpaceRegistered(null, address), fromBlock),
+      contract.queryFilter(contract.filters.SpaceTransferred(null, null, address), fromBlock),
+      contract.queryFilter(contract.filters.SpaceListerSet(null, address), fromBlock),
+    ])).flat();
+    for (const spaceId of new Set(logs.map((log) => log.args.spaceId.toString()))) {
+      const [owner, lister] = await Promise.all([readChain('spaceOwner', [spaceId]), readChain('isSpaceLister', [spaceId, address])]);
+      if (owner.toLowerCase() === address.toLowerCase() || lister) return true;
+    }
+    return false;
+  }
+
   mountDrafts(app, { db, contractAddress: () => loadDeployment()?.contractAddress ?? null });
 
   /** Live read of one chain method for the review channel: finalized on Sepolia, the latest block locally. */
@@ -1339,7 +1359,7 @@ export function createApp(options = {}) {
   });
 
   // Centralized JSON error handler - no internal stack leak
-  app.use((err, req, res, next) => {
+  app.use((err, req, res, _next) => {
     const status = typeof err.status === 'number' && err.status >= 400 && err.status < 600 ? err.status : 500;
     const message = status === 500 ? 'Internal server error' : err.message || 'Request failed';
     res.status(status).json({ error: message });
@@ -1347,6 +1367,6 @@ export function createApp(options = {}) {
 
   return {
     app, db, provider, syncIndexOnce, indexingDone: () => indexing ?? Promise.resolve(),
-    settlement, settlementIntervalMs: settlementConfig?.intervalMs ?? 0,
+    settlement, settlementIntervalMs: settlementConfig?.intervalMs ?? 0, photos,
   };
 }

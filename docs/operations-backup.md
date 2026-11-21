@@ -44,7 +44,7 @@ It only prints `Ready` when all of these pass. Then stop the API, move the verif
 
 ## Schema versions and migrations
 
-- The database's version is `PRAGMA user_version`. Migrations live in `server/db.mjs`, run in order, and each one runs once.
+- The database's version is `PRAGMA user_version`. Migrations live in `server/db/migrations.mjs`, run in order, and each one runs once.
 - **Before migrating** a database that already holds data, the API saves a `VACUUM INTO` copy beside it named `<db>.pre-v<N>-<time>.bak`.
 - **Each migration runs in its own transaction.** If one fails, it is rolled back, the database stays at the last good version, and the error names the pre-migration copy. Nothing half-applied is left behind.
 - **A database newer than the code is refused,** so older code never writes to a newer schema. To roll back the code, restore the matching pre-migration copy or backup.
