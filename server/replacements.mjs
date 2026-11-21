@@ -24,6 +24,7 @@ export function mountReplacements(app, { db, pinnedReader, contractAddress, isAc
       return res.status(400).json({ error: 'A replacement must be a later auction than the original' });
     }
     try {
+      if (!(await isActiveDeployment(req.body?.deployment))) return res.status(409).json({ error: 'Deployment identity does not match' });
       const { call } = await pinnedReader();
       const hostOf = async (id) => {
         const onchain = await call('auctions', [id]);

@@ -301,9 +301,9 @@ export const AppContent: React.FC<{
 
   // Links a replacement to the auction it replaces. A failure leaves `linked` unset on the create record,
   // so My Activity → Transactions can retry it after a reload.
-  const linkReplacementRecord = async (recordId: string | null, replaces: string, auctionId: string) => {
+  const linkReplacementRecord = async (recordId: string | null, replaces: string, auctionId: string, deployment: DeploymentIdentity) => {
     try {
-      await linkReplacement(replaces, auctionId);
+      await linkReplacement(replaces, auctionId, deployment);
       if (recordId) patchTransaction(recordId, { linked: true });
       addToast('success', 'Replacement linked', `Bidders on auction #${replaces} will see a pointer to auction #${auctionId} in their inbox.`);
     } catch (linkErr) {
