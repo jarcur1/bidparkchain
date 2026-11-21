@@ -35,10 +35,10 @@ beforeAll(async () => {
   await (await deployment.contract.connect(chain.wallet(OWNER)).setSpaceLister(1, chain.wallet(LISTER).address, true)).wait();
   const dataDir = scope.tempDir();
   photoDir = path.join(dataDir, 'photos');
-  // Three photos per wallet; 314 bytes of storage holds four 68-byte photos.
+  // Three photos per wallet; about 377 bytes of storage holds five 68-byte photos.
   runtime = createApp({
     dbPath: path.join(dataDir, 'bidpark.db'), deploymentPath: writeDeployment(dataDir, deployment), rpcUrl: chain.rpcUrl,
-    photoDir, photos: { perWallet: 3, storageMb: 0.0003, graceHours: 24 },
+    photoDir, photos: { perWallet: 3, storageMb: 0.00036, graceHours: 24 },
   });
   server = runtime.app.listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
@@ -76,7 +76,7 @@ it('caps photos per wallet and total storage, and counts identical bytes once', 
   expect((await over.json()).error).toContain('3 uploaded photos');
   expect(stored()).toHaveLength(5);
 
-  // 5 photos (340 bytes) already exceed 314, so the store is full for anyone adding bytes.
+  // 5 photos (340 bytes) leave no room for another 68, so the store is full for anyone adding bytes.
   const full = await upload(17, DRAFTER);
   expect(full.status).toBe(413);
   expect((await full.json()).error).toContain('storage is full');

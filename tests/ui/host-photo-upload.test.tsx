@@ -4,6 +4,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type * as Workspace from '../../src/services/workspace';
 import { HostWorkspace } from '../../src/components/HostWorkspace';
+import { listDrafts } from '../../src/services/workspace';
 import { PHOTO_MAX_BYTES } from '../../shared/validation.js';
 
 vi.mock('../../src/services/workspace', async (importOriginal) => ({
@@ -189,4 +190,23 @@ it('abandons an upload when the workspace unmounts', async () => {
   await choose(jpeg());
   act(() => root.unmount());
   expect(FakeXhr.requests[0].aborted).toBe(true);
+});
+
+it('drops an upload started in one draft when another draft is opened', async () => {
+  const saved = (id: number, name: string) => ({ id, kind: 'draft' as const, name, updatedAt: 1, image: OLD });
+  vi.mocked(listDrafts).mockResolvedValueOnce([saved(1, 'Draft A'), saved(2, 'Draft B')]);
+  await mount();
+  const open = (name: string) => [...host.querySelectorAll('li, .inbox-item, div')]
+    .filter((el) => el.textContent?.includes(name) && el.querySelector(':scope > .verification-form'))
+    .map((el) => [...el.querySelectorAll('button')].find((b) => b.textContent === 'Open')!)[0];
+  act(() => open('Draft A').click());
+  await settle();
+  await choose(jpeg());
+  act(() => open('Draft B').click());
+  await settle();
+  expect(FakeXhr.requests[0].aborted).toBe(true);
+  act(() => FakeXhr.requests[0].respond(201, { path: `/api/photos/${HASH}.jpg` }));
+  await settle();
+  expect(field('Photo URL').value).toBe(OLD);
+  expect(host.querySelector('progress')).toBeNull();
 });
