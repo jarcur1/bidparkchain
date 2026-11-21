@@ -233,28 +233,47 @@ export function searchQuery(f: FilterState, destination: Place | null): string {
   return p.toString();
 }
 
-/** Human-readable list of the active constraints, for chips and the no-results state. */
-export function describeFilters(f: FilterState, destination: Place | null): string[] {
-  const out: string[] = [];
-  if (f.search.trim()) out.push(`Text "${f.search.trim()}"`);
-  if (f.kind !== 'all') out.push(`Type: ${f.kind}`);
-  if (f.status !== 'all') out.push(`Status: ${f.status}`);
-  if (destination) out.push(f.radiusKm ? `Within ${f.radiusKm} km of ${destination.label}` : `Near ${destination.label}`);
+/** A constraint in effect: the chip text (also listed in the no-results note) and the filter values that clear it. */
+export interface ActiveFilterChip {
+  label: string;
+  reset: Partial<FilterState>;
+}
+
+/**
+ * The constraints in effect, in display order. A filter that is not applied (an invalid visit or budget, a
+ * destination that does not resolve, a radius without a destination) has no chip; sort is not a constraint.
+ */
+export function activeFilterChips(f: FilterState, destination: Place | null): ActiveFilterChip[] {
+  const out: ActiveFilterChip[] = [];
+  if (f.search.trim()) out.push({ label: `Text "${f.search.trim()}"`, reset: { search: DEFAULT_FILTERS.search } });
+  if (f.kind !== 'all') out.push({ label: `Type: ${f.kind}`, reset: { kind: DEFAULT_FILTERS.kind } });
+  if (f.status !== 'all') out.push({ label: `Status: ${f.status}`, reset: { status: DEFAULT_FILTERS.status } });
+  if (destination) {
+    const label = f.radiusKm ? `Within ${f.radiusKm} km of ${destination.label}` : `Near ${destination.label}`;
+    out.push({ label, reset: { destination: DEFAULT_FILTERS.destination, radiusKm: DEFAULT_FILTERS.radiusKm } });
+  }
   const errors = validateFilters(f);
   if (!errors.time) {
     const fmt = (v: string) => new Date(v).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-    if (f.arrive && f.depart) out.push(`Covers ${fmt(f.arrive)} – ${fmt(f.depart)}`);
-    else if (f.arrive) out.push(`Covers arrival ${fmt(f.arrive)}`);
-    else if (f.depart) out.push(`Covers departure ${fmt(f.depart)}`);
+    const reset = { arrive: DEFAULT_FILTERS.arrive, depart: DEFAULT_FILTERS.depart };
+    if (f.arrive && f.depart) out.push({ label: `Covers ${fmt(f.arrive)} – ${fmt(f.depart)}`, reset });
+    else if (f.arrive) out.push({ label: `Covers arrival ${fmt(f.arrive)}`, reset });
+    else if (f.depart) out.push({ label: `Covers departure ${fmt(f.depart)}`, reset });
   }
-  if (parseArea(f.area)) out.push('Inside the searched map area');
-  if (f.amenities.length) out.push(`Amenities: ${f.amenities.join(', ')}`);
+  if (parseArea(f.area)) out.push({ label: 'Inside the searched map area', reset: { area: DEFAULT_FILTERS.area } });
+  if (f.amenities.length) out.push({ label: `Amenities: ${f.amenities.join(', ')}`, reset: { amenities: DEFAULT_FILTERS.amenities } });
   if (!errors.price) {
-    if (f.minPrice && f.maxPrice) out.push(`Current price ${f.minPrice}–${f.maxPrice} ETH`);
-    else if (f.maxPrice) out.push(`Current price up to ${f.maxPrice} ETH`);
-    else if (f.minPrice) out.push(`Current price from ${f.minPrice} ETH`);
+    const reset = { minPrice: DEFAULT_FILTERS.minPrice, maxPrice: DEFAULT_FILTERS.maxPrice };
+    if (f.minPrice && f.maxPrice) out.push({ label: `Current price ${f.minPrice}–${f.maxPrice} ETH`, reset });
+    else if (f.maxPrice) out.push({ label: `Current price up to ${f.maxPrice} ETH`, reset });
+    else if (f.minPrice) out.push({ label: `Current price from ${f.minPrice} ETH`, reset });
   }
   return out;
+}
+
+/** Human-readable list of the active constraints, for the no-results state. */
+export function describeFilters(f: FilterState, destination: Place | null): string[] {
+  return activeFilterChips(f, destination).map((chip) => chip.label);
 }
 
 // --- URL query --------------------------------------------------------------------------------

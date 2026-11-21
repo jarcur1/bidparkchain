@@ -117,3 +117,9 @@ stored row yet) are still found and reported in `unindexed`.
   If permission is denied or unavailable, the destination field keeps working by hand.
 - Cards show each space's own time zone with its parking times (the viewer's zone when none is set, and the
   card says so). The arrive/depart filter is in the browser's zone, as the filter hint states.
+
+## Active filters
+
+- Each filter in effect shows as a chip after the results count, worded as in the no-results note. A chip's button is named `Remove filter: …` and clears only its own filter. Focus moves to the chip that takes its place (or the last chip), or to the search field when none remain.
+- **Clear all** appears with two or more chips and resets the filters to their defaults, as **Reset** does.
+- A filter that is not applied has no chip: a reversed or invalid visit, an invalid budget, a destination that does not resolve, or a radius without a destination.
