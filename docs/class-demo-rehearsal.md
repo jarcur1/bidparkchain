@@ -49,7 +49,7 @@ On a machine with Google Chrome and no Playwright browser, prefix it with `BIDPA
 - **npm version.** `npm ci` fails with npm 10, which ships with Node 22, because the lockfile needs npm 11. Use Node 24 as the README says, or run `npx npm@11 ci` once. The app itself also ran fine on Node 22.17 after installing.
 - **Offline look.** Map tiles and listing photos come from the internet. Without it the map is blank and cards show alt text instead of photos. The Cards list, the bids and every status still work.
 - **Switching scenarios needs a restart.** Each scenario is its own local deployment, and restarting is also the reset. The walkthrough and commuters helpers only run on a freshly started scenario.
-- **The clock advance moves the whole chain.** `npm run demo -- advance` closes bidding on every open auction at once, which is what the script wants.
+- **The clock advance moves the whole chain.** `npm run demo -- advance` closes bidding on every open auction at once, which is what the script wants. The in-app **Skip to bidding close** button does the same on local runs, and **Skip to parking end** does the same for parking.
 - **Stopping.** Stop the launcher with Ctrl+C in its terminal. If the terminal is killed some other way, the chain, API and web server can keep running and hold their ports, and the next `npm run dev` will say a port is in use. End the leftover `node` processes first.
 - **Notifications stack up.** Each action adds a toast in the corner. They clear one at a time, about every 6 seconds, or close them with their X.
 

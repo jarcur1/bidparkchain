@@ -6,6 +6,7 @@ import { DetailModal } from './components/DetailModal';
 import { CampusScenarioBanner } from './components/CampusScenarioBanner';
 import { DisclosuresBanner } from './components/DisclosuresBanner';
 import { FilterBar } from './components/FilterBar';
+import { PresenterSkip } from './components/PresenterSkip';
 import {
   DEFAULT_FILTERS,
   MY_LOCATION_LABEL,
@@ -505,12 +506,12 @@ export const AppContent: React.FC<{
   }, [config, configDeployment, walletState.address, walletState.chainId, walletState.isReady, provider]);
 
   // Manual refresh all: reports what each source actually did.
-  const handleRefreshAll = useCallback(async () => {
+  const refreshAll = useCallback(async (forceFresh: boolean) => {
     setIsRefreshing(true);
     try {
       const sources: [string, Promise<ReadResult>][] = [
         ['Configuration', onRefreshConfig()],
-        ['Listings', loadListings()],
+        ['Listings', loadListings(false, forceFresh)],
         ['Refund balance', loadPendingRefunds()],
         ['Wallet balance', refreshBalance()],
       ];
@@ -536,6 +537,9 @@ export const AppContent: React.FC<{
       setIsRefreshing(false);
     }
   }, [onRefreshConfig, loadListings, loadPendingRefunds, refreshBalance, addToast]);
+  const handleRefreshAll = useCallback(() => refreshAll(false), [refreshAll]);
+  // After a chain-time skip the listings read must start after the skip, never share a pre-skip in-flight read.
+  const handleRefreshAfterSkip = useCallback(() => refreshAll(true), [refreshAll]);
 
   // Targeted retry for one failed source.
   const retrySource = useCallback(async (label: string, read: () => Promise<ReadResult>) => {
@@ -1382,6 +1386,7 @@ export const AppContent: React.FC<{
               listings={listings}
               listingsStatus={listingsView.read.status}
             />
+            {import.meta.env.VITE_BIDPARK_PROFILE === 'local' && <PresenterSkip onRefresh={handleRefreshAfterSkip} />}
             {pendingRegistration && (
               <div className="pending-registration-alert">
                 <div className="pending-alert-content">
