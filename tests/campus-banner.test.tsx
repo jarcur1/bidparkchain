@@ -66,6 +66,15 @@ it('shows per-tier bid stats from the listings read', () => {
   expect(tierRows()[CAMPUS_TIER_LABELS.far]).toEqual(['3', '2', '4', '0.040 ETH', '0.030 ETH']);
 });
 
+it('never shows a positive bid as zero', () => {
+  show('campus-expansion', listingsWithBids('campus-expansion', {
+    N1: { highestBid: '0.00001', bidCount: 1 },
+    F2: { highestBid: '0.0001', bidCount: 1 },
+  }));
+  expect(tierRows()[CAMPUS_TIER_LABELS.near]).toEqual(['1', '1', '1', '< 0.0001 ETH', '< 0.0001 ETH']);
+  expect(tierRows()[CAMPUS_TIER_LABELS.far].slice(3)).toEqual(['0.0001 ETH', '0.0001 ETH']);
+});
+
 it('reads no bids as none yet, not as an unknown', () => {
   show('campus-baseline', listingsFor('campus-baseline'));
   expect(tierRows()[CAMPUS_TIER_LABELS.near]).toEqual(['4', '0', '0', 'none yet', 'none yet']);

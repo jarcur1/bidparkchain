@@ -20,6 +20,7 @@ interface TierStats {
   average: string;
 }
 
+const MIN_SHOWN_WEI = 10n ** 14n; // 0.0001 ETH, the smallest amount formatEth shows as non-zero
 const UNAVAILABLE = 'unavailable';
 const UNKNOWN_STATS: TierStats = {
   spots: UNAVAILABLE,
@@ -28,6 +29,11 @@ const UNKNOWN_STATS: TierStats = {
   highest: UNAVAILABLE,
   average: UNAVAILABLE,
 };
+
+/** ETH text that never shows a positive amount as zero. */
+function formatLeadingBid(wei: bigint): string {
+  return wei < MIN_SHOWN_WEI ? '< 0.0001 ETH' : `${formatEth(wei)} ETH`;
+}
 
 /** Wei for a decimal ETH string, or null when the string is not one. */
 function parseWei(eth: string): bigint | null {
@@ -57,8 +63,8 @@ function tierStats(tier: Listing[]): TierStats {
     spots,
     withBids: String(bidding.length),
     total,
-    highest: `${formatEth(highest)} ETH`,
-    average: `${formatEth(sum / BigInt(bidding.length))} ETH`,
+    highest: formatLeadingBid(highest),
+    average: formatLeadingBid(sum / BigInt(bidding.length)),
   };
 }
 

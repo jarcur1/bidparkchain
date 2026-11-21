@@ -553,8 +553,8 @@ export function createApp(options = {}) {
             page,
           );
           const chain = { ...(await readChainSnapshot(deployment, finalized)), blockHash: finalized.hash };
-          await assertCanonicalFinalized(finalized);
           await addBidCounts(listings, deployment.contractAddress, finalized);
+          await assertCanonicalFinalized(finalized);
           res.json({ listings, unindexed, ...(nextCursor && { nextCursor }), chain });
         } catch {
           res.status(503).json({ error: 'Blockchain service unavailable' });
@@ -601,13 +601,14 @@ export function createApp(options = {}) {
         );
         // Read the clock after the auction state so the clock is never older than the state it judges.
         chain = { ...(await readChainSnapshot(deployment, pinned)), blockHash: pinned.hash };
+        // Index catch-up can take a while, so it runs before the final canonical check.
+        await addBidCounts(built.listings, deployment.contractAddress, pinned);
         await assertCanonicalFinalized(pinned);
       } catch {
         res.status(503).json({ error: 'Failed to read listing state from blockchain node' });
         return;
       }
 
-      await addBidCounts(built.listings, deployment.contractAddress, pinned);
       res.json({ listings: built.listings, unindexed: built.unindexed, ...(built.nextCursor && { nextCursor: built.nextCursor }), chain });
     } catch (err) {
       next(err);
