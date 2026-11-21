@@ -35,3 +35,24 @@ it('never stores anything that looks like a key, and caps history', () => {
   expect(JSON.parse(raw)).toHaveLength(50);
   expect(raw).not.toMatch(/mnemonic|privateKey/i);
 });
+
+it('keeps a replacement link pending on its create record until it is linked', () => {
+  recordTransaction({ id: 'r1', kind: 'create', label: 'List Garage (replaces #4)', status: 'confirmed', scope, auctionId: '6', registered: true, replaces: '4' });
+  // Simulates a reload: the pending link reads back from localStorage, still unlinked.
+  expect(transactionsFor(scope).find((r) => r.id === 'r1')).toMatchObject({ replaces: '4', registered: true });
+  expect(transactionsFor(scope).find((r) => r.id === 'r1')?.linked).toBeUndefined();
+  patchTransaction('r1', { linked: true });
+  expect(transactionsFor(scope).find((r) => r.id === 'r1')).toMatchObject({ replaces: '4', linked: true });
+});
+
+it('never evicts a replacement whose link is still pending, however many newer transactions follow', () => {
+  recordTransaction({ id: 'r1', kind: 'create', label: 'List Garage (replaces #4)', status: 'confirmed', scope, auctionId: '6', registered: true, replaces: '4' });
+  for (let i = 0; i < 60; i++) recordTransaction({ id: `b${i}`, kind: 'bid', label: `Bid ${i}`, status: 'confirmed', scope });
+  expect(transactionsFor(scope).find((r) => r.id === 'r1')).toBeDefined();
+  expect(readTransactions()).toHaveLength(51);
+  // Once linked it is ordinary history again and ages out with the rest.
+  patchTransaction('r1', { linked: true });
+  recordTransaction({ id: 'last', kind: 'bid', label: 'Bid', status: 'confirmed', scope });
+  expect(readTransactions()).toHaveLength(50);
+  expect(transactionsFor(scope).find((r) => r.id === 'r1')).toBeUndefined();
+});

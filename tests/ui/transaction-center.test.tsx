@@ -24,7 +24,7 @@ afterEach(() => { act(() => root.unmount()); host.remove(); });
 
 it('shows each status in words with explorer links, and offers registration for a confirmed listing', () => {
   const onCompleteRegistration = vi.fn();
-  act(() => root.render(<TransactionCenter records={records} staleCount={2} explorerUrl="https://sepolia.etherscan.io/" onCompleteRegistration={onCompleteRegistration} isActionBusy={false} />));
+  act(() => root.render(<TransactionCenter records={records} staleCount={2} explorerUrl="https://sepolia.etherscan.io/" onCompleteRegistration={onCompleteRegistration} onLinkReplacement={vi.fn()} isActionBusy={false} />));
   const text = host.textContent ?? '';
   expect(text).toContain('Replaced by another transaction');
   expect(text).toContain('Rejected in wallet');
@@ -37,4 +37,16 @@ it('shows each status in words with explorer links, and offers registration for 
   const button = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Complete registration')!;
   act(() => button.click());
   expect(onCompleteRegistration).toHaveBeenCalledWith(records[0]);
+});
+
+it('offers to link a replacement once its listing is registered, until the API records the link', () => {
+  const onLinkReplacement = vi.fn();
+  const replacement: TxRecord = { ...base, id: '5', kind: 'create', label: 'List "Garage" (replaces #4)', status: 'confirmed', hash, auctionId: '6', registered: true, replaces: '4' };
+  const linked: TxRecord = { ...replacement, id: '6', linked: true };
+  act(() => root.render(<TransactionCenter records={[replacement, linked]} staleCount={0} onCompleteRegistration={vi.fn()} onLinkReplacement={onLinkReplacement} isActionBusy={false} />));
+  const buttons = [...host.querySelectorAll('button')].filter((b) => b.textContent === 'Link replacement');
+  expect(buttons).toHaveLength(1);
+  act(() => buttons[0].click());
+  expect(onLinkReplacement).toHaveBeenCalledWith(replacement);
+  expect(host.textContent).toContain('Listing registered, replacement linked');
 });

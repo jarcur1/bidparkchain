@@ -299,6 +299,20 @@ export const AppContent: React.FC<{
     setTxVersion((v) => v + 1);
   };
 
+  // Links a replacement to the auction it replaces. A failure leaves `linked` unset on the create record,
+  // so My Activity → Transactions can retry it after a reload.
+  const linkReplacementRecord = async (recordId: string | null, replaces: string, auctionId: string, deployment: DeploymentIdentity) => {
+    try {
+      await linkReplacement(replaces, auctionId, deployment);
+      if (recordId) patchTransaction(recordId, { linked: true });
+      addToast('success', 'Replacement linked', `Bidders on auction #${replaces} will see a pointer to auction #${auctionId} in their inbox.`);
+    } catch (linkErr) {
+      addToast('error', 'Replacement not linked', `${linkErr instanceof Error ? linkErr.message : String(linkErr)}. Retry from My Activity → Transactions.`);
+    } finally {
+      setTxVersion((v) => v + 1);
+    }
+  };
+
   const warnDuplicates = (listing: { duplicateSpaces: { spaceId: string }[] }) => {
     if (listing.duplicateSpaces.length === 0) return;
     const ids = listing.duplicateSpaces.map((d) => `#${d.spaceId}`).join(', ');
@@ -717,7 +731,7 @@ export const AppContent: React.FC<{
       // the server can still match the new auction's hash to these details.
       await stageListingMetadata(metadata, webProfile.id === 'sepolia' ? expectedDeployment : undefined);
       const contract = getContractInstance(config.contractAddress, config.abi, signer);
-      const created = track('create', `List "${metadata.title}"`, { metadata });
+      const created = track('create', replaces ? `List "${metadata.title}" (replaces #${replaces})` : `List "${metadata.title}"`, { metadata, replaces });
       const { receipt, auctionId } = await createAuctionOnChain(
         contract,
         metadata,
@@ -750,14 +764,7 @@ export const AppContent: React.FC<{
         );
       }
 
-      if (replaces) {
-        try {
-          await linkReplacement(replaces, auctionId);
-          addToast('success', 'Replacement linked', `Bidders on auction #${replaces} will see a pointer to auction #${auctionId} in their inbox.`);
-        } catch (linkErr) {
-          addToast('error', 'Replacement not linked', linkErr instanceof Error ? linkErr.message : String(linkErr));
-        }
-      }
+      if (replaces) await linkReplacementRecord(created.id, replaces, auctionId, expectedDeployment);
 
       addToast(
         'success',
@@ -802,6 +809,25 @@ export const AppContent: React.FC<{
       await loadListings();
     } catch (err) {
       addToast('error', 'Registration failed', err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsActionBusy(false);
+    }
+  };
+
+  // Retries a replacement link that did not reach the API, from My Activity → Transactions. Repeating it is safe.
+  const handleLinkReplacement = async (record: TxRecord) => {
+    if (isActionBusy || !config || !record.auctionId || !record.replaces || record.linked || record.scope.deployment !== configDeployment) return;
+    setIsActionBusy(true);
+    try {
+      await ensureSignedIn();
+      await linkReplacementRecord(record.id, record.replaces, record.auctionId, {
+        chainId: config.chainId,
+        contractAddress: config.contractAddress,
+        deploymentBlock: config.deploymentBlock,
+        deploymentBlockHash: config.deploymentBlockHash,
+      });
+    } catch (err) {
+      addToast('error', 'Replacement not linked', err instanceof Error ? err.message : String(err));
     } finally {
       setIsActionBusy(false);
     }
@@ -1524,6 +1550,7 @@ export const AppContent: React.FC<{
             staleCount={staleTxCount}
             explorerUrl={config?.explorerUrl}
             onCompleteRegistration={(record) => void handleResumeRegistration(record)}
+            onLinkReplacement={(record) => void handleLinkReplacement(record)}
             isActionBusy={isActionBusy}
           />
         )}

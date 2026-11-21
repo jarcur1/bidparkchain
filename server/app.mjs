@@ -1268,7 +1268,16 @@ export function createApp(options = {}) {
       : 'BIDPARK_ARRIVAL_KEY is not set: arrival instructions are stored unencrypted (local/demo mode only).' }),
   }));
 
-  mountReplacements(app, { db, pinnedReader, contractAddress: () => loadDeployment()?.contractAddress ?? null });
+  mountReplacements(app, {
+    db,
+    pinnedReader,
+    contractAddress: () => loadDeployment()?.contractAddress ?? null,
+    /** Whether a client-supplied identity names the deployment (chain, contract, deployment block and hash) this API serves. */
+    isActiveDeployment: async (expected) => {
+      const deployment = loadDeployment();
+      return Boolean(deployment) && matchesDeployment(expected, await readChainSnapshot(deployment));
+    },
+  });
 
   mountArrival(app, {
     db, requireKey: settings.hosted, tokenKey: parseArrivalKey(options.arrivalTokenKey ?? process.env.BIDPARK_ARRIVAL_TOKEN_KEY), pinnedReader, contractAddress: () => loadDeployment()?.contractAddress ?? null });
