@@ -5,6 +5,7 @@ import { applyMigrations } from './db/migrations.mjs';
 import { withEvents } from './db/events.mjs';
 import { withInbox } from './db/inbox.mjs';
 import { withListings } from './db/listings.mjs';
+import { withPhotos } from './db/photos.mjs';
 import { withSessions } from './db/sessions.mjs';
 import { withVerification } from './db/verification.mjs';
 
@@ -92,4 +93,4 @@ class DatabaseCore {
  * The escrow database API. DatabaseCore (above) handles the connection, migrations and meta; each
  * domain's query methods are mixed in from server/db/*.mjs.
  */
-export class EscrowDatabase extends withEvents(withInbox(withVerification(withSessions(withListings(DatabaseCore))))) {}
+export class EscrowDatabase extends withEvents(withInbox(withVerification(withSessions(withPhotos(withListings(DatabaseCore)))))) {}

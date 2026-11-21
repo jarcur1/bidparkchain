@@ -370,6 +370,21 @@ const MIGRATIONS = [
       );
     `);
   },
+  // 18: uploaded listing photos: which wallet stored each content-hashed file, its size, and when a draft or
+  //     listing last used it, so quotas apply per wallet and unused files can be reclaimed.
+  (db) => {
+    db.exec(`
+      CREATE TABLE photo_uploads (
+        name TEXT NOT NULL,
+        address TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        uploaded_at INTEGER NOT NULL,
+        seen_at INTEGER NOT NULL,
+        PRIMARY KEY (name, address)
+      );
+      CREATE INDEX idx_photo_uploads_address ON photo_uploads (address);
+    `);
+  },
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 

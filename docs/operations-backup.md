@@ -15,6 +15,7 @@ npm run backup                     # BIDPARK_DATA_DIR, default ./data
   - the database copy
   - `deployment.json`
   - `manifest.json`: schema version, listing count, SHA-256 of the copy, and deployment identity (profile, chain id, contract address, deployment transaction and block). It also records the event index checkpoint (block number and hash, or null if nothing has been indexed yet). After a restore, the indexer resumes from that checkpoint and re-checks it against the chain, so a reorg since the backup is handled like any other.
+- **Not included: uploaded photos.** The backup does not copy `<data>/photos/`. Copy that directory alongside each backup, for example `rsync -a <data>/photos/ <copy>/photos/`. Files are named by content hash, so repeated copies never conflict. Without them, listings and drafts that use an uploaded photo show a broken image after a restore.
 - **Access.** Backup directories are created owner-only (0700, files 0600). Windows ignores these modes, so keep backups on a location only the operator account can read. They contain session hashes, profile data and hosts' private verification evidence ([host verification](host-verification.md)).
 - **Retention.** The newest 14 backups are kept and older ones are pruned. Change this with `BIDPARK_BACKUP_KEEP`.
 - **Targets for a hosted pilot:**
@@ -39,7 +40,7 @@ The restore refuses to write over the live data directory or into a non-empty on
 3. the schema is supported, and older schemas are migrated forward as described below
 4. every listing's stored metadata still hashes to its recorded `metadata_hash`, and the listing count matches
 
-It only prints `Ready` when all of these pass. Then stop the API, move the verified directory into place (or point `BIDPARK_DATA_DIR` at it), and start the API again.
+It only prints `Ready` when all of these pass. Then stop the API, move the verified directory into place (or point `BIDPARK_DATA_DIR` at it), copy the photos saved alongside that backup into `<data>/photos/`, and start the API again.
 
 ## Schema versions and migrations
 

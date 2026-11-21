@@ -160,7 +160,7 @@ These are operator instructions for an authorized environment, **not authorizati
 | Setting | Sepolia use |
 | --- | --- |
 | `BIDPARK_PROFILE` | Set to `sepolia` for the deploy tool, API, and web build. |
-| `BIDPARK_DATA_DIR` | Required; use a dedicated persistent directory outside the source checkout. Retain its `deployment.json` and `bidpark-sepolia.db` across restarts. Do not reuse it for local development. |
+| `BIDPARK_DATA_DIR` | Required; use a dedicated persistent directory outside the source checkout. Retain its `deployment.json`, `bidpark-sepolia.db` and `photos/` across restarts. Do not reuse it for local development. |
 | `BIDPARK_SEPOLIA_RPC_URL` | Required for the deploy tool and API. Use a server-side HTTPS endpoint with `finalized`, historical transaction reads, and EIP-1898 block-hash parameters. Do not put its credentials in `VITE_*` variables or browser config. |
 | `BIDPARK_SEPOLIA_DEPLOYER_KEY` | Required **only** for explicit creation. Inject a dedicated faucet-funded test key through an approved secret manager into that process; do not set it in the API or build environment, log it, or commit it. |
 

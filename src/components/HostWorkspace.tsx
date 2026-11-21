@@ -1,9 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isAddress } from 'ethers';
 import type { Listing, SpotMetadata } from '../types';
 import type { HostSpace, SpaceAction } from '../services/blockchain';
-import { deleteDraft, listDrafts, saveDraft, type DraftFields, type DraftKind, type SavedDraft } from '../services/workspace';
-import { isValidImageUrl, validateSpotMetadata } from '../../shared/validation.js';
+import { deleteDraft, listDrafts, saveDraft, uploadPhoto, type DraftFields, type DraftKind, type SavedDraft } from '../services/workspace';
+import { isValidImageUrl, PHOTO_MAX_BYTES, validateSpotMetadata } from '../../shared/validation.js';
 import { AUSTIN_PRESET_LOCATIONS, CURATED_PARKING_PHOTOS } from '../utils/constants';
 import { formatDateTime } from '../utils/formatters';
 import { getChainNowSec } from '../utils/eligibility';
@@ -57,8 +57,36 @@ export const HostWorkspace: React.FC<Props> = ({
   const [message, setMessage] = useState<string | null>(null);
   const [protectedBooking, setProtectedBooking] = useState(false);
   const [photoFailed, setPhotoFailed] = useState(false);
+  const [photoUpload, setPhotoUpload] = useState<number | null>(null);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const photoRequest = useRef<AbortController | null>(null);
   const [nowSec, setNowSec] = useState(() => getChainNowSec());
   const set = <K extends keyof DraftFields>(key: K, value: DraftFields[K]) => setForm((f) => ({ ...f, [key]: value }));
+  /** Uploads a picked photo. The photo field changes only after the upload has completed. */
+  async function choosePhoto(file: File) {
+    setPhotoError(null);
+    if (file.size > PHOTO_MAX_BYTES) {
+      setPhotoError('Photo must be 2 MB or smaller.');
+      return;
+    }
+    const request = new AbortController();
+    photoRequest.current = request;
+    setPhotoUpload(0);
+    try {
+      const path = await uploadPhoto(file, setPhotoUpload, request.signal);
+      // A different draft may have been opened since the upload began; its result belongs to the old one.
+      if (!request.signal.aborted) set('image', path);
+    } catch (err) {
+      if (!request.signal.aborted) setPhotoError(err instanceof Error ? err.message : 'Upload failed.');
+    } finally {
+      if (photoRequest.current === request) {
+        photoRequest.current = null;
+        setPhotoUpload(null);
+      }
+    }
+  }
+  // Leaving the workspace (sign-out, wallet or deployment change) abandons an upload still in flight.
+  useEffect(() => () => photoRequest.current?.abort(), []);
 
   const reloadDrafts = useCallback(async () => {
     try {
@@ -103,6 +131,8 @@ export const HostWorkspace: React.FC<Props> = ({
             : null);
 
   function fill(source: Partial<DraftFields>, keepDates: boolean) {
+    // Opening another draft, relisting or replacing abandons an upload begun for the previous form.
+    photoRequest.current?.abort();
     setForm({ ...EMPTY, ...source, ...(keepDates ? {} : { cutoff: '', start: '', end: '' }) });
     setProtectedBooking(false);
   }
@@ -255,9 +285,27 @@ export const HostWorkspace: React.FC<Props> = ({
         <label>Photo URL (https) or local path
           <input className="form-input" value={form.image} maxLength={1000} placeholder="https://… or /images/…" onChange={(e) => set('image', e.target.value)} />
         </label>
+        <label>Upload a photo (JPEG, PNG or WebP, 2 MB max)
+          <input className="form-input" type="file" accept="image/jpeg,image/png,image/webp"
+            disabled={!signedIn || photoUpload !== null}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = '';
+              if (file) void choosePhoto(file);
+            }} />
+        </label>
+        {!signedIn && <p className="auction-disclosure-subtext">Sign in with your wallet to upload a photo.</p>}
+        {photoUpload !== null && (
+          <div className="workspace-upload">
+            <progress value={photoUpload} max={1} aria-label="Photo upload progress" />
+            <span>{Math.round(photoUpload * 100)}%</span>
+            <button type="button" className="btn-table-action" onClick={() => photoRequest.current?.abort()}>Cancel upload</button>
+          </div>
+        )}
+        {photoError && <p role="alert">{photoError}</p>}
         <div className="workspace-photo" data-testid="photo-preview">
           {!photoOk ? (
-            <p role="alert">This photo reference is not allowed: use an https URL or a path starting with /. Uploads are not supported.</p>
+            <p role="alert">This photo reference is not allowed: use an https URL or a path starting with /.</p>
           ) : photoFailed ? (
             <p>The photo could not be loaded; the listing will still show it, so check the link or clear it to use the default photo.</p>
           ) : (
